@@ -304,11 +304,23 @@ def _modal_pre(config: dict[str, Any]) -> Optional[bool]:
     return None
 
 
-def _ssh_pre(config: dict[str, Any]) -> bool:
-    if config.get("ssh_host") and config.get("ssh_user"):
-        return True
-    return _reject("the SSH host and user are not configured (TERMINAL_SSH_HOST / TERMINAL_SSH_USER); "
-                   "run `hermes setup terminal` to enter them or pick the 'local' backend")
+def _host_family(family: Optional[str]) -> str:
+    from hermes_platform.host.facts import os_family
+    return family or os_family()
+
+
+def _ssh_pre(config: dict[str, Any], family: Optional[str] = None) -> bool:
+    if not (config.get("ssh_host") and config.get("ssh_user")):
+        return _reject("the SSH host and user are not configured (TERMINAL_SSH_HOST / TERMINAL_SSH_USER); "
+                       "run `hermes setup terminal` to enter them or pick the 'local' backend")
+    if _host_family(family) == "android":
+        # SSHEnvironment shells out to the OpenSSH client; Termux can install it, an embedding app has none.
+        from hermes_platform.resolver import locate_command
+        missing = [name for name in ("ssh", "scp") if not locate_command(name).found]
+        if missing:
+            return _reject(f"the ssh backend needs the OpenSSH client ({', '.join(missing)} not found on PATH) "
+                           "on this Android host")
+    return True
 
 
 def _daytona_post(config: dict[str, Any]) -> bool:
