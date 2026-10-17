@@ -1,0 +1,77 @@
+"""What the Android app's embedded interpreter runs before the core.
+
+The native bridge starts CPython with the stdlib and this directory on ``sys.path`` and calls
+:func:`start`. Frames to the app leave through ``native.emit``; the app's requests come back through
+:func:`submit`, one at a time, from the bridge thread.
+"""
+
+from __future__ import annotations
+
+import os
+import site
+import sys
+from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:  # the core is importable only after prepare()
+    from tui_gateway.embedded import EmbeddedTransport
+
+
+class Native(Protocol):
+    """The bridge's upcalls into the app (the native ``_hermes_native`` module)."""
+
+    def emit(self, line: str, /) -> bool: ...
+
+
+_transport: EmbeddedTransport | None = None
+
+
+def prepare(paths: dict[str, str]) -> None:
+    """Point the core at the app's directories and the extracted runtime. Runs before any core import."""
+    os.environ["HOME"] = paths["home"]
+    os.environ["HERMES_HOME"] = paths["hermes_home"]
+    os.environ["TMPDIR"] = paths["tmp"]
+    # The wheels' OpenSSL looks for its legacy provider under the Termux prefix, unreadable from an app:
+    # say so up front, or every `import cryptography` warns on stderr (logcat). Nothing else changes.
+    os.environ.setdefault("CRYPTOGRAPHY_OPENSSL_NO_LEGACY", "1")
+    # The process image is app_process64, not Python: subprocess spawners must see no interpreter.
+    # (_base_executable is private and undeclared; the core reads it to find the base interpreter.)
+    sys.executable = ""
+    sys._base_executable = ""  # ty: ignore[unresolved-attribute]
+    runtime = Path(paths["runtime"])
+    sys.path.append(str(runtime / "app"))
+    site.addsitedir(str(runtime / "site-packages"))
+
+
+def start(paths: dict[str, str], native: Native) -> None:
+    global _transport
+    prepare(paths)
+    from tui_gateway.embedded import EmbeddedTransport
+
+    _transport = EmbeddedTransport.connect(native.emit)
+
+
+def submit(frame: str) -> None:
+    if _transport is not None:
+        _transport.submit(frame)
+
+
+def stop() -> None:
+    global _transport
+    if _transport is not None:
+        _transport.close()
+        _transport = None
+
+
+def runtime_facts(_arg: str) -> str:
+    """The interpreter facts the app shows, as JSON (FTS5 backs session search; python.org's SQLite lacks it)."""
+    import json
+    import sqlite3
+
+    try:
+        sqlite3.connect(":memory:").execute("CREATE VIRTUAL TABLE probe USING fts5(text)")
+        fts5 = True
+    except sqlite3.OperationalError:
+        fts5 = False
+    return json.dumps({"python": sys.version.split()[0], "sqlite": sqlite3.sqlite_version, "fts5": fts5,
+                       "executable": sys.executable})

@@ -28,8 +28,10 @@ TESTS_ROOT = REPO_ROOT / "tests"
 # "installation": python driver for the tests/install shell e2e assets.
 # "_fixtures": topic modules tests/conftest.py is split into — suite-wide
 # plumbing (env filtering, live-system guard, platform gating), not tests.
+# "android": the Android app's Python half (apps/android/python/hermes_android),
+# which the app embeds beside the core; it is no root package.
 _NON_MIRROR_DIRS = {
-    "compat", "installation", "_fixtures",
+    "android", "compat", "installation", "_fixtures",
     "ci", "conformance", "dashboard", "desktop", "docker", "e2e", "evals",
     "fakes", "fixtures", "install", "integration", "manual",
     "monitoring", "perf_guards", "scripts", "secret_sources",

@@ -109,6 +109,9 @@ _PY_RELEVANT_SITE = (
     "website/docs/",
     "website/scripts/",
 )
+# Python source shipped inside an app tree: the Android app's interpreter imports
+# apps/android/python/hermes_android, and tests/android/ is its suite.
+_PY_RELEVANT_APPS = ("apps/android/python/",)
 # Cross-language contract files: data committed under a frontend tree that a
 # pytest pins against the Python side (emitter inventory, command registry).
 # Editing only the JSON in an apps/-only PR would otherwise skip the one test
@@ -509,7 +512,7 @@ def _is_nix(p: str) -> bool:
 
 
 def _py_irrelevant(p: str) -> bool:
-    if p.startswith(_PY_RELEVANT_SITE) or p in _PY_RELEVANT_CONTRACT_FILES:
+    if p.startswith(_PY_RELEVANT_SITE + _PY_RELEVANT_APPS) or p in _PY_RELEVANT_CONTRACT_FILES:
         return False
     return (
         _is_docs(p)

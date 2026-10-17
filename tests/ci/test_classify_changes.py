@@ -129,6 +129,11 @@ CASES = {
         ["apps/shared/src/gateway-contract.openrpc.json"],
         _lanes(python=True, frontend=True, e2e_desktop_core=True),
     ),
+    # The Android app's Python half is imported by the app's interpreter and tested by tests/android/.
+    "android app Python → python + frontend": (
+        ["apps/android/python/hermes_android/__init__.py"],
+        _lanes(python=True, frontend=True, scan=True),
+    ),
     "desktop slash-registry JSON → python + frontend": (
         ["apps/desktop/src/lib/desktop-slash-registry.json"],
         _lanes(python=True, frontend=True),
