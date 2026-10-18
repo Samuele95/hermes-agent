@@ -7,7 +7,9 @@ import com.nousresearch.hermes.android.turn.ForegroundTurnHost
 import com.nousresearch.hermes.bridge.CoreGateway
 import com.nousresearch.hermes.bridge.EmbeddedPython
 import com.nousresearch.hermes.bridge.HermesPaths
+import com.nousresearch.hermes.bridge.KeystoreSecretStore
 import com.nousresearch.hermes.bridge.RuntimeInstaller
+import com.nousresearch.hermes.bridge.SecretStore
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -37,6 +39,9 @@ class HermesApplication : Application() {
     private val state = MutableStateFlow<CoreState>(CoreState.Starting)
     private var started = false
 
+    /** Provider keys, wrapped by the app's AndroidKeyStore key; the core reads them as environment variables. */
+    val secrets: SecretStore by lazy { KeystoreSecretStore(File(noBackupFilesDir, "secrets")) { KeystoreSecretStore.androidKey() } }
+
     /** Starts the core on first use. */
     val core: StateFlow<CoreState>
         get() {
@@ -56,7 +61,7 @@ class HermesApplication : Application() {
     private suspend fun start(): CoreState.Ready {
         val began = SystemClock.elapsedRealtime()
         val runtime = withContext(Dispatchers.IO) { RuntimeInstaller(File(noBackupFilesDir, "runtime")).install(AssetPayload(assets)) }
-        val gateway = EmbeddedPython.connect(HermesPaths(runtime, filesDir, File(filesDir, ".hermes"), cacheDir))
+        val gateway = EmbeddedPython.connect(HermesPaths(runtime, filesDir, File(filesDir, ".hermes"), cacheDir), secrets)
         val chat = ChatSession(gateway, ForegroundTurnHost(this), scope).apply { open() }
         val facts = withContext(Dispatchers.IO) { JSONObject(EmbeddedPython.call("runtime_facts", "")) }
         val fts = if (facts.getBoolean("fts5")) "with FTS5" else "without FTS5"

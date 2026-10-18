@@ -69,12 +69,24 @@ def test_the_core_and_the_wheels_are_importable_with_pth_files_honoured(paths):
     assert sys.path.index(str(runtime / "app")) < sys.path.index(str(runtime / "site-packages"))
 
 
-def test_start_connects_the_host_as_a_gateway_peer(paths, monkeypatch):
+@pytest.fixture
+def isolated_home(paths, monkeypatch):
+    # start() registers the keystore source and enables it in this profile's config.yaml.
+    monkeypatch.setenv("HERMES_HOME", paths["hermes_home"])
+    yield
+    from agent.secret_sources import registry
+    registry._reset_registry_for_tests()
+
+
+def test_start_connects_the_host_as_a_gateway_peer(paths, isolated_home, monkeypatch):
     frames: list[dict] = []
     prepared: list[dict] = []
     monkeypatch.setattr(hermes_android, "prepare", prepared.append)  # host test: keep this interpreter's paths
 
     class Native:
+        def secrets(self) -> str:
+            return "{}"
+
         def emit(self, line: str, /) -> bool:
             frames.append(json.loads(line))
             return True
@@ -85,7 +97,10 @@ def test_start_connects_the_host_as_a_gateway_peer(paths, monkeypatch):
     finally:
         hermes_android.stop()
 
+    from agent.secret_sources import registry
+
     assert prepared == [paths]
+    assert registry.get_source("android_keystore") is not None  # before the core read its environment
     assert frames[0]["params"]["type"] == "gateway.ready"
     assert {"jsonrpc": "2.0", "id": 1, "result": {"pong": True}} in frames
 
@@ -105,13 +120,16 @@ def test_importing_the_bootstrap_imports_no_core_module():
     assert out.strip() == "[]"
 
 
-def test_stop_detaches_the_host_from_the_gateway(paths, monkeypatch):
+def test_stop_detaches_the_host_from_the_gateway(paths, isolated_home, monkeypatch):
     from tui_gateway import server
 
     frames: list[str] = []
     monkeypatch.setattr(hermes_android, "prepare", lambda paths: None)
 
     class Native:
+        def secrets(self) -> str:
+            return "{}"
+
         def emit(self, line: str, /) -> bool:
             frames.append(line)
             return True

@@ -3,12 +3,14 @@
 // 4-byte sequences, so emoji in a frame would be corrupted or abort under CheckJNI.
 #include <jni.h>
 #include <pthread.h>
+#include <string.h>
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 
 static JavaVM *vm;
 static jclass bridge;          // com.nousresearch.hermes.bridge.EmbeddedPython
 static jmethodID on_frame;     // static boolean onFrame(byte[])
+static jmethodID read_secrets; // static byte[] readSecrets()
 static pthread_key_t attached; // set on threads this file attached; its destructor detaches them
 static PyObject *bootstrap;    // the hermes_android module
 
@@ -55,8 +57,38 @@ static PyObject *native_emit(PyObject *self, PyObject *line) {
     return PyBool_FromLong(delivered);
 }
 
+// _hermes_native.secrets() -> str: the app's keystore secrets as a JSON object of variable name to value.
+static PyObject *native_secrets(PyObject *self, PyObject *unused) {
+    (void)self;
+    (void)unused;
+    JNIEnv *env;
+    jbyteArray bytes = NULL;
+    Py_BEGIN_ALLOW_THREADS
+    env = jni_env();
+    if (env != NULL) {
+        bytes = (*env)->CallStaticObjectMethod(env, bridge, read_secrets);
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);  // never described: the message could carry what was being read
+            bytes = NULL;
+        }
+    }
+    Py_END_ALLOW_THREADS
+    if (bytes == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "the app could not read its keystore");
+        return NULL;
+    }
+    jsize size = (*env)->GetArrayLength(env, bytes);
+    jbyte *data = (*env)->GetByteArrayElements(env, bytes, NULL);
+    PyObject *text = PyUnicode_DecodeUTF8((const char *)data, size, "strict");
+    memset(data, 0, (size_t)size);  // the plaintext lives on in Python only, not in the JVM heap
+    (*env)->ReleaseByteArrayElements(env, bytes, data, 0);
+    (*env)->DeleteLocalRef(env, bytes);
+    return text;
+}
+
 static PyMethodDef native_methods[] = {
     {"emit", native_emit, METH_O, "Hand one serialized frame to the app."},
+    {"secrets", native_secrets, METH_NOARGS, "The app's keystore secrets, as JSON."},
     {NULL, NULL, 0, NULL},
 };
 static struct PyModuleDef native_module = {PyModuleDef_HEAD_INIT, "_hermes_native", NULL, -1, native_methods,
@@ -113,7 +145,8 @@ JNIEXPORT void JNICALL Java_com_nousresearch_hermes_bridge_EmbeddedPython_native
         JNIEnv *env, jclass cls, jstring runtime, jstring home, jstring hermes_home, jstring tmp) {
     bridge = (*env)->NewGlobalRef(env, cls);
     on_frame = (*env)->GetStaticMethodID(env, cls, "onFrame", "([B)Z");
-    if (on_frame == NULL || pthread_key_create(&attached, detach) != 0) return;
+    read_secrets = (*env)->GetStaticMethodID(env, cls, "readSecrets", "()[B");
+    if (on_frame == NULL || read_secrets == NULL || pthread_key_create(&attached, detach) != 0) return;
     const char *r = (*env)->GetStringUTFChars(env, runtime, NULL), *h = (*env)->GetStringUTFChars(env, home, NULL);
     const char *hh = (*env)->GetStringUTFChars(env, hermes_home, NULL), *t = (*env)->GetStringUTFChars(env, tmp, NULL);
     PyImport_AppendInittab("_hermes_native", init_native);

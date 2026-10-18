@@ -29,6 +29,9 @@ object EmbeddedPython {
     @Volatile
     private var sink: FrameSink? = null
 
+    @Volatile
+    private var secrets: SecretStore? = null
+
     /** Starts the interpreter and connects the core's transport; frames reach [sink] from now on. */
     fun start(paths: HermesPaths, sink: FrameSink) {
         check(this.sink == null) { "the embedded interpreter is already running" }
@@ -40,8 +43,12 @@ object EmbeddedPython {
         }
     }
 
-    /** Starts the core and returns its gateway, having told the core that this app answers in-turn prompts. */
-    suspend fun connect(paths: HermesPaths): CoreGateway {
+    /**
+     * Starts the core and returns its gateway, having told the core that this app answers in-turn prompts.
+     * The core reads [secrets] as environment variables, through its `android_keystore` secret source.
+     */
+    suspend fun connect(paths: HermesPaths, secrets: SecretStore): CoreGateway {
+        this.secrets = secrets
         val gateway = FrameCoreGateway(::submit)
         withContext(Dispatchers.IO) { start(paths, gateway) }
         gateway.call(Methods.CLIENT_CAPABILITIES, ClientCapabilitiesParams(serverRequests = true))
@@ -70,6 +77,10 @@ object EmbeddedPython {
         sink.onFrame(String(frame, Charsets.UTF_8))
         return true
     }
+
+    /** The keystore's secrets as UTF-8 JSON, for the core's secret source; the caller wipes the bytes. */
+    @JvmStatic
+    private fun readSecrets(): ByteArray = SecretsJson.encode(secrets?.all().orEmpty())
 
     @JvmStatic
     private external fun nativeStart(runtime: String, home: String, hermesHome: String, tmp: String)

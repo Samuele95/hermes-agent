@@ -22,6 +22,8 @@ class Native(Protocol):
 
     def emit(self, line: str, /) -> bool: ...
 
+    def secrets(self) -> str: ...
+
 
 _transport: EmbeddedTransport | None = None
 
@@ -46,6 +48,10 @@ def prepare(paths: dict[str, str]) -> None:
 def start(paths: dict[str, str], native: Native) -> None:
     global _transport
     prepare(paths)
+    # Registered before the core's first env load (tui_gateway.server's import), which applies it.
+    from hermes_android import secrets
+
+    secrets.enable(native)
     from tui_gateway.embedded import EmbeddedTransport
 
     _transport = EmbeddedTransport.connect(native.emit)
@@ -75,3 +81,14 @@ def runtime_facts(_arg: str) -> str:
         fts5 = False
     return json.dumps({"python": sys.version.split()[0], "sqlite": sqlite3.sqlite_version, "fts5": fts5,
                        "executable": sys.executable})
+
+
+def secrets_changed(_arg: str) -> str:
+    """Re-pull the keystore's secrets after the app changed one; variables it no longer holds are revoked.
+    Agents already built keep the credentials they started with; new sessions see the change."""
+    from hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
+
+    home = os.environ["HERMES_HOME"]
+    reset_secret_source_cache(home)
+    load_hermes_dotenv(hermes_home=home)
+    return ""
