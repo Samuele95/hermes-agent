@@ -1,5 +1,6 @@
 plugins {
     alias(libs.plugins.android.library)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 // The payload `scripts/android/payload.py` assembled: the C glue compiles against its headers and libpython.
@@ -26,5 +27,6 @@ android {
 }
 
 dependencies {
+    api(libs.kotlinx.serialization.json)
     testImplementation(libs.junit)
 }

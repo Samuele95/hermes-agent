@@ -134,6 +134,10 @@ CASES = {
         ["apps/android/python/hermes_android/__init__.py"],
         _lanes(python=True, frontend=True, scan=True),
     ),
+    "generated Android Kotlin client → python + frontend": (
+        ["apps/android/bridge/src/main/java/com/nousresearch/hermes/bridge/protocol/Protocol.kt"],
+        _lanes(python=True, frontend=True),
+    ),
     "desktop slash-registry JSON → python + frontend": (
         ["apps/desktop/src/lib/desktop-slash-registry.json"],
         _lanes(python=True, frontend=True),
