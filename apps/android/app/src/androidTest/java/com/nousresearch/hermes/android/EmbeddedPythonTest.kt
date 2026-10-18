@@ -2,60 +2,63 @@ package com.nousresearch.hermes.android
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.nousresearch.hermes.bridge.CoreError
+import com.nousresearch.hermes.bridge.CoreGateway
 import com.nousresearch.hermes.bridge.EmbeddedPython
 import com.nousresearch.hermes.bridge.HermesPaths
 import com.nousresearch.hermes.bridge.RuntimeInstaller
+import com.nousresearch.hermes.bridge.protocol.ClientCapabilitiesParams
+import com.nousresearch.hermes.bridge.protocol.Method
+import com.nousresearch.hermes.bridge.protocol.Methods
+import com.nousresearch.hermes.bridge.protocol.PingParams
+import com.nousresearch.hermes.bridge.protocol.PingResult
 import java.io.File
-import java.util.concurrent.LinkedBlockingQueue
-import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** The core, embedded in the app process, answers over the in-process transport. */
+/** The core, embedded in the app process, answers the app's gateway over the in-process transport. */
 @RunWith(AndroidJUnit4::class)
 class EmbeddedPythonTest {
     companion object {
         // One interpreter per process: every test talks to the same one.
-        private val frames = LinkedBlockingQueue<String>()
-        private val ready: String by lazy {
+        private val core: CoreGateway by lazy {
             val context = InstrumentationRegistry.getInstrumentation().targetContext
             val runtime = RuntimeInstaller(File(context.noBackupFilesDir, "runtime")).install(AssetPayload(context.assets))
             val scratch = File(context.cacheDir, "embedded-python-test").apply { deleteRecursively(); mkdirs() }
-            EmbeddedPython.start(HermesPaths(runtime, File(scratch, "home"), File(scratch, "home/.hermes"), scratch)) { frames.put(it) }
-            next { it.has("method") }.toString()
-        }
-
-        private fun next(match: (JSONObject) -> Boolean): JSONObject {
-            while (true) {
-                val frame = JSONObject(frames.poll(60, TimeUnit.SECONDS) ?: throw AssertionError("no frame within 60 s"))
-                if (match(frame)) return frame
-            }
+            runBlocking { EmbeddedPython.connect(HermesPaths(runtime, File(scratch, "home"), File(scratch, "home/.hermes"), scratch)) }
         }
     }
 
     @Test
-    fun theCoreGreetsTheAppAndAnswersARequest() {
-        assertEquals("gateway.ready", JSONObject(ready).getJSONObject("params").getString("type"))
+    fun theCoreAnswersATypedRequest() = runBlocking {
+        assertEquals(PingResult(pong = true), core.call(Methods.PING, PingParams))
+    }
 
-        EmbeddedPython.submit("""{"jsonrpc":"2.0","id":1,"method":"ping"}""")
+    @Test
+    fun theAppIsAClientThatAnswersInTurnPrompts() = runBlocking {
+        val asked = core.call(Methods.CLIENT_CAPABILITIES, ClientCapabilitiesParams(serverRequests = true)).serverRequests
 
-        assertTrue(next { it.optInt("id") == 1 }.getJSONObject("result").getBoolean("pong"))
+        assertTrue("$asked", asked.containsAll(listOf("approval", "clarify", "secret")))
     }
 
     @Test
     fun framesCrossTheBridgeAsUtf8BothWays() {
-        ready
-        EmbeddedPython.submit("""{"jsonrpc":"2.0","id":2,"method":"no.such.😀"}""")
+        val unknown = Method("no.such.😀", PingParams.serializer(), PingResult.serializer())
 
-        assertTrue(next { it.optInt("id") == 2 }.getJSONObject("error").getString("message").contains("no.such.😀"))
+        val error = assertThrows(CoreError::class.java) { runBlocking { core.call(unknown, PingParams) } }
+
+        assertEquals(-32601, error.code)
+        assertTrue(error.message, error.message!!.contains("no.such.😀"))
     }
 
     @Test
     fun theInterpreterHasFts5AndOffersNoExecutable() {
-        ready
+        core
         val facts = JSONObject(EmbeddedPython.call("runtime_facts", ""))
 
         assertEquals("3.14.7", facts.getString("python"))

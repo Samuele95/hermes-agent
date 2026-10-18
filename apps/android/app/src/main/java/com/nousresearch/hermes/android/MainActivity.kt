@@ -13,6 +13,7 @@ import com.nousresearch.hermes.bridge.HermesPaths
 import com.nousresearch.hermes.bridge.RuntimeInstaller
 import java.io.File
 import kotlin.concurrent.thread
+import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
@@ -29,8 +30,7 @@ class MainActivity : ComponentActivity() {
             val started = SystemClock.elapsedRealtime()
             status.value = runCatching {
                 val runtime = RuntimeInstaller(File(noBackupFilesDir, "runtime")).install(AssetPayload(assets))
-                // The chat screen consumes frames; until it exists they are dropped.
-                EmbeddedPython.start(HermesPaths(runtime, filesDir, File(filesDir, ".hermes"), cacheDir)) {}
+                runBlocking { EmbeddedPython.connect(HermesPaths(runtime, filesDir, File(filesDir, ".hermes"), cacheDir)) }
                 val facts = JSONObject(EmbeddedPython.call("runtime_facts", ""))
                 "Core ready in ${SystemClock.elapsedRealtime() - started} ms (runtime ${runtime.name})\n" +
                     "Python ${facts.getString("python")} · SQLite ${facts.getString("sqlite")}" +

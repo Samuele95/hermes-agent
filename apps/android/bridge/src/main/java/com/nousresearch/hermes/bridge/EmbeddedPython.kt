@@ -1,9 +1,13 @@
 package com.nousresearch.hermes.bridge
 
+import com.nousresearch.hermes.bridge.protocol.ClientCapabilitiesParams
+import com.nousresearch.hermes.bridge.protocol.Methods
 import java.io.File
 import java.util.concurrent.Callable
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** Where the core runs: the extracted runtime, HOME, HERMES_HOME and the temp directory. */
 data class HermesPaths(val runtime: File, val home: File, val hermesHome: File, val tmp: File)
@@ -34,6 +38,14 @@ object EmbeddedPython {
             System.loadLibrary("hermes_bridge")
             nativeStart(paths.runtime.path, paths.home.path, paths.hermesHome.path, paths.tmp.path)
         }
+    }
+
+    /** Starts the core and returns its gateway, having told the core that this app answers in-turn prompts. */
+    suspend fun connect(paths: HermesPaths): CoreGateway {
+        val gateway = FrameCoreGateway(::submit)
+        withContext(Dispatchers.IO) { start(paths, gateway) }
+        gateway.call(Methods.CLIENT_CAPABILITIES, ClientCapabilitiesParams(serverRequests = true))
+        return gateway
     }
 
     /** Sends one JSON-RPC frame to the core; the answer arrives as a frame. */
