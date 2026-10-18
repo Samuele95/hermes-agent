@@ -1,41 +1,55 @@
 package com.nousresearch.hermes.android
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
-import android.os.SystemClock
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.runtime.mutableStateOf
-import com.nousresearch.hermes.bridge.EmbeddedPython
-import com.nousresearch.hermes.bridge.HermesPaths
-import com.nousresearch.hermes.bridge.RuntimeInstaller
-import java.io.File
-import kotlin.concurrent.thread
-import kotlinx.coroutines.runBlocking
-import org.json.JSONObject
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import com.nousresearch.hermes.android.chat.ChatScreen
 
 class MainActivity : ComponentActivity() {
-    private val status = mutableStateOf("Starting the core…")
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        val app = application as HermesApplication
         setContent {
             MaterialTheme {
-                Surface { Text("Hermes\n${status.value}") }
+                Surface(Modifier.fillMaxSize()) {
+                    val core by app.core.collectAsState()
+                    // Asked at the first message, not at launch: the notification only matters while a turn runs.
+                    val askToNotify = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+                    when (val state = core) {
+                        CoreState.Starting -> Text(stringResource(R.string.core_starting), Modifier.safeDrawingPadding().padding(16.dp))
+                        is CoreState.Failed -> Text(state.reason, Modifier.safeDrawingPadding().padding(16.dp),
+                                                    color = MaterialTheme.colorScheme.error)
+                        is CoreState.Ready -> {
+                            val chat by state.chat.state.collectAsState()
+                            ChatScreen(chat, about = state.about, onSend = { text ->
+                                if (Build.VERSION.SDK_INT >= 33 &&
+                                    checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                                    askToNotify.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                }
+                                app.send(text)
+                            })
+                        }
+                    }
+                }
             }
-        }
-        thread(name = "runtime-install") {
-            val started = SystemClock.elapsedRealtime()
-            status.value = runCatching {
-                val runtime = RuntimeInstaller(File(noBackupFilesDir, "runtime")).install(AssetPayload(assets))
-                runBlocking { EmbeddedPython.connect(HermesPaths(runtime, filesDir, File(filesDir, ".hermes"), cacheDir)) }
-                val facts = JSONObject(EmbeddedPython.call("runtime_facts", ""))
-                "Core ready in ${SystemClock.elapsedRealtime() - started} ms (runtime ${runtime.name})\n" +
-                    "Python ${facts.getString("python")} · SQLite ${facts.getString("sqlite")}" +
-                    if (facts.getBoolean("fts5")) " with FTS5" else " without FTS5"
-            }.getOrElse { "Core start failed: $it" }
         }
     }
 }

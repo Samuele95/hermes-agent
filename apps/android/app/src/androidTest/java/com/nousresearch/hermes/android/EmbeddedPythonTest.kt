@@ -5,15 +5,14 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.nousresearch.hermes.bridge.CoreError
 import com.nousresearch.hermes.bridge.CoreGateway
 import com.nousresearch.hermes.bridge.EmbeddedPython
-import com.nousresearch.hermes.bridge.HermesPaths
-import com.nousresearch.hermes.bridge.RuntimeInstaller
 import com.nousresearch.hermes.bridge.protocol.ClientCapabilitiesParams
 import com.nousresearch.hermes.bridge.protocol.Method
 import com.nousresearch.hermes.bridge.protocol.Methods
 import com.nousresearch.hermes.bridge.protocol.PingParams
 import com.nousresearch.hermes.bridge.protocol.PingResult
-import java.io.File
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
@@ -21,16 +20,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** The core, embedded in the app process, answers the app's gateway over the in-process transport. */
+/** The core the app embeds answers the app's gateway over the in-process transport. */
 @RunWith(AndroidJUnit4::class)
 class EmbeddedPythonTest {
     companion object {
-        // One interpreter per process: every test talks to the same one.
+        // One interpreter per process, owned by the application: every test talks to its core.
         private val core: CoreGateway by lazy {
-            val context = InstrumentationRegistry.getInstrumentation().targetContext
-            val runtime = RuntimeInstaller(File(context.noBackupFilesDir, "runtime")).install(AssetPayload(context.assets))
-            val scratch = File(context.cacheDir, "embedded-python-test").apply { deleteRecursively(); mkdirs() }
-            runBlocking { EmbeddedPython.connect(HermesPaths(runtime, File(scratch, "home"), File(scratch, "home/.hermes"), scratch)) }
+            val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as HermesApplication
+            val state = runBlocking { withTimeout(120_000) { app.core.first { it !is CoreState.Starting } } }
+            (state as? CoreState.Ready ?: error("the core did not start: $state")).gateway
         }
     }
 

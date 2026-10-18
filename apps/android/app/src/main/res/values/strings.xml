@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Hermes</string>
+    <string name="chat_hint">Message Hermes</string>
+    <string name="chat_send">Send</string>
+    <string name="core_starting">Starting the core…</string>
     <string name="turn_channel">Replies in progress</string>
     <string name="turn_running">Hermes is replying…</string>
 </resources>
