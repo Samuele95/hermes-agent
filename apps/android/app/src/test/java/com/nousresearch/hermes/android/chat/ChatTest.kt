@@ -1,5 +1,7 @@
 package com.nousresearch.hermes.android.chat
 
+import com.nousresearch.hermes.bridge.protocol.ClarifyQuestion
+import com.nousresearch.hermes.bridge.protocol.ApprovalChoice
 import com.nousresearch.hermes.bridge.CoreEvent
 import com.nousresearch.hermes.bridge.protocol.TurnStatus
 import kotlinx.serialization.json.Json
@@ -27,6 +29,19 @@ class ChatTest {
 
         assertFalse(done.running)
         assertEquals(listOf(Entry.User("hi"), Entry.Reply("Hello", TurnStatus.COMPLETE)), done.entries)
+    }
+
+    @Test
+    fun aTurnTheCoreEndsWithAnErrorIsOverAndSaysWhy() {
+        // prompt_turn emits message.start, then only `error` (a refused @-reference, an ownership refusal, a crash);
+        // the TUI ends the turn on `error` too (turnController.recordError).
+        val failed = Chat().sent("@file:/etc/x").after(event("message.start"), event("message.delta", """{"text":"Hel"}"""),
+                                                       event("status.update", """{"kind":"thinking","text":"thinking"}"""),
+                                                       event("error", """{"message":"Context injection refused."}"""))
+
+        assertFalse(failed.running)
+        assertEquals(null, failed.activity)
+        assertEquals(Entry.Notice("Context injection refused."), failed.entries.last())
     }
 
     @Test
@@ -88,5 +103,21 @@ class ChatTest {
         val chat = Chat().after(event("message.start"))
 
         assertEquals(chat, chat.reduce(event("message.delta", """{"rendered":"no text field"}""")))
+    }
+
+    @Test
+    fun aPromptWaitsInTheChatUntilTheCoreWithdrawsIt() {
+        val approval = Prompt.Approval("srq-1", "r1", "rm -rf build", "", listOf(ApprovalChoice.ONCE, ApprovalChoice.DENY))
+        val clarify = Prompt.Clarify("srq-2", listOf(ClarifyQuestion("q1", "Which colour?")))
+        val asked = Chat().asked(approval).asked(clarify)
+
+        val cancelled = asked.reduce(CoreEvent("request.cancel", "s1", Json.parseToJsonElement("""{"id":"srq-2","method":"clarify","reason":"timeout"}""")))
+        val denied = cancelled.reduce(CoreEvent("approval.cancelled", "s1", Json.parseToJsonElement(
+            """{"session_id":"s1","stored_session_id":"db","reason":"interrupted","cancelled_count":1,"request_ids":["r1"]}""")))
+
+        assertEquals(listOf(approval, clarify), asked.prompts)
+        assertEquals(listOf(approval), cancelled.prompts)
+        assertEquals(emptyList<Prompt>(), denied.prompts)
+        assertEquals(emptyList<Prompt>(), asked.settled("srq-1").settled("srq-2").prompts)
     }
 }

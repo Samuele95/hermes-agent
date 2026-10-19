@@ -2,6 +2,7 @@ package com.nousresearch.hermes.bridge
 
 import com.nousresearch.hermes.bridge.protocol.Event
 import com.nousresearch.hermes.bridge.protocol.Method
+import com.nousresearch.hermes.bridge.protocol.Request
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CompletableDeferred
@@ -26,8 +27,15 @@ data class CoreEvent(val type: String, val sessionId: String?, val payload: Json
         if (type == event.name) wire.decodeFromJsonElement(event.payload, payload ?: JsonObject(emptyMap())) else null
 }
 
-/** A core→client request waiting on the user (clarify, approval, secret), answered once with [CoreGateway.answer]. */
-data class InTurnPrompt(val id: String, val method: String, val params: JsonObject)
+/**
+ * A core→client request waiting on the user (clarify, approval, secret), settled once: answered with
+ * [CoreGateway.answer] or declined with [CoreGateway.decline].
+ */
+data class InTurnPrompt(val id: String, val method: String, val params: JsonObject) {
+    /** The params as [request]'s type, or null when this prompt is another request or unreadable. */
+    fun <P, R> decode(request: Request<P, R>): P? =
+        if (method == request.name) runCatching { wire.decodeFromJsonElement(request.params, params) }.getOrNull() else null
+}
 
 /** An error response from the core. */
 class CoreError(val code: Int, message: String) : Exception(message)
@@ -42,7 +50,14 @@ interface CoreGateway {
     val prompts: SharedFlow<InTurnPrompt>
 
     fun answer(prompt: InTurnPrompt, result: JsonObject)
+
+    /** Settles [prompt] with no answer at once (an error response), so the core does not wait out its deadline. */
+    fun decline(prompt: InTurnPrompt, reason: String)
 }
+
+/** Answers [prompt] with [request]'s typed result. */
+fun <P, R> CoreGateway.answer(prompt: InTurnPrompt, request: Request<P, R>, result: R) =
+    answer(prompt, wire.encodeToJsonElement(request.result, result) as JsonObject)
 
 // The core adds fields over time; the app reads the ones it models and leaves defaults to the core.
 internal val wire = Json {
@@ -56,6 +71,11 @@ internal val wire = Json {
  * Collect [events] and [prompts] before the first call: frames nobody collects are not replayed.
  */
 class FrameCoreGateway(private val send: (String) -> Unit) : CoreGateway, FrameSink {
+    private companion object {
+        /** JSON-RPC's implementation-defined server-error range; the core treats any error response as no answer. */
+        const val DECLINED = -32000
+    }
+
     private val ids = AtomicLong()
     private val pending = ConcurrentHashMap<Long, CompletableDeferred<JsonElement>>()
     private val eventFlow = MutableSharedFlow<CoreEvent>(extraBufferCapacity = Channel.UNLIMITED)
@@ -79,6 +99,11 @@ class FrameCoreGateway(private val send: (String) -> Unit) : CoreGateway, FrameS
 
     override fun answer(prompt: InTurnPrompt, result: JsonObject) {
         send(frame("id" to JsonPrimitive(prompt.id), "result" to result))
+    }
+
+    override fun decline(prompt: InTurnPrompt, reason: String) {
+        send(frame("id" to JsonPrimitive(prompt.id),
+                   "error" to JsonObject(mapOf("code" to JsonPrimitive(DECLINED), "message" to JsonPrimitive(reason)))))
     }
 
     override fun onFrame(frame: String) {

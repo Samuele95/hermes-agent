@@ -17,7 +17,7 @@ class FakeCoreGateway(private val reply: (method: String, params: JsonObject) ->
     val calls = mutableListOf<Pair<String, JsonObject>>()
 
     override val events: SharedFlow<CoreEvent> = eventFlow
-    override val prompts: SharedFlow<InTurnPrompt> = MutableSharedFlow()
+    override val prompts: SharedFlow<InTurnPrompt> get() = promptFlow
 
     override suspend fun <P, R> call(method: Method<P, R>, params: P): R {
         val sent = json.encodeToJsonElement(method.params, params) as JsonObject
@@ -25,7 +25,15 @@ class FakeCoreGateway(private val reply: (method: String, params: JsonObject) ->
         return json.decodeFromString(method.result, reply(method.name, sent))
     }
 
-    override fun answer(prompt: InTurnPrompt, result: JsonObject) = Unit
+    private val promptFlow = MutableSharedFlow<InTurnPrompt>(extraBufferCapacity = 64)
+    /** Each settled prompt: its id and the result sent, or `declined: <reason>`. */
+    val settled = mutableListOf<Pair<String, String>>()
+
+    override fun answer(prompt: InTurnPrompt, result: JsonObject) { settled += prompt.id to result.toString() }
+
+    override fun decline(prompt: InTurnPrompt, reason: String) { settled += prompt.id to "declined: $reason" }
+
+    suspend fun ask(id: String, method: String, params: String) = promptFlow.emit(InTurnPrompt(id, method, json.parseToJsonElement(params) as JsonObject))
 
     suspend fun emit(type: String, session: String, payload: String? = null) =
         eventFlow.emit(CoreEvent(type, session, payload?.let { json.parseToJsonElement(it) }))

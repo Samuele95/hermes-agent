@@ -1,9 +1,12 @@
 package com.nousresearch.hermes.bridge
 
+import com.nousresearch.hermes.bridge.protocol.ApprovalChoice
+import com.nousresearch.hermes.bridge.protocol.ApprovalResult
 import com.nousresearch.hermes.bridge.protocol.Events
 import com.nousresearch.hermes.bridge.protocol.Methods
 import com.nousresearch.hermes.bridge.protocol.PingParams
 import com.nousresearch.hermes.bridge.protocol.PingResult
+import com.nousresearch.hermes.bridge.protocol.Requests
 import com.nousresearch.hermes.bridge.protocol.StreamDeltaPayload
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
@@ -80,6 +83,32 @@ class FrameCoreGatewayTest {
 
         assertEquals("clarify" to "s1", prompt.await().method to prompt.await().params.getValue("session_id").jsonPrimitive.content)
         assertEquals(Json.parseToJsonElement("""{"jsonrpc":"2.0","id":"srq-0123456789ab","result":{"answers":{}}}"""), sent.single())
+    }
+
+    @Test
+    fun aPromptDecodesAsItsRequestAndIsAnsweredWithItsTypedResult() = runTest(UnconfinedTestDispatcher()) {
+        val prompt = async { gateway.prompts.first() }
+        gateway.onFrame("""{"jsonrpc":"2.0","id":"srq-1","method":"approval","params":{"session_id":"s1","request_id":"r1","command":"rm -rf build"}}""")
+
+        val approval = prompt.await().decode(Requests.APPROVAL)
+        gateway.answer(prompt.await(), Requests.APPROVAL, ApprovalResult(ApprovalChoice.DENY))
+
+        assertEquals("rm -rf build", approval?.command)
+        assertEquals(null, prompt.await().decode(Requests.CLARIFY))
+        assertEquals(Json.parseToJsonElement("""{"jsonrpc":"2.0","id":"srq-1","result":{"choice":"deny"}}"""), sent.single())
+    }
+
+    @Test
+    fun aDeclinedPromptIsAnsweredWithAnErrorSoTheCoreStopsWaiting() = runTest(UnconfinedTestDispatcher()) {
+        val prompt = async { gateway.prompts.first() }
+        gateway.onFrame("""{"jsonrpc":"2.0","id":"srq-2","method":"sudo","params":{"session_id":"s1","command":"apt"}}""")
+
+        gateway.decline(prompt.await(), "not available in the Android app")
+
+        val frame = sent.single()
+        assertEquals("srq-2", frame.getValue("id").jsonPrimitive.content)
+        assertEquals("not available in the Android app", frame.getValue("error").jsonObject.getValue("message").jsonPrimitive.content)
+        assertTrue("result" !in frame)
     }
 
     @Test

@@ -57,7 +57,12 @@ class HermesApplication : Application() {
         }
 
     fun send(text: String) {
-        scope.launch { (state.value as? CoreState.Ready)?.chat?.send(text) }
+        chat { send(text) }
+    }
+
+    /** Runs one chat action on the app's scope, so it outlives the activity that asked for it. */
+    fun chat(action: suspend ChatSession.() -> Unit) {
+        scope.launch { (state.value as? CoreState.Ready)?.chat?.action() }
     }
 
     /** Runs one setup action on the app's scope, so it outlives the activity that asked for it. */
@@ -69,7 +74,11 @@ class HermesApplication : Application() {
         val began = SystemClock.elapsedRealtime()
         val runtime = withContext(Dispatchers.IO) { RuntimeInstaller(File(noBackupFilesDir, "runtime")).install(AssetPayload(assets)) }
         val gateway = EmbeddedPython.connect(HermesPaths(runtime, filesDir, File(filesDir, ".hermes"), cacheDir), secrets)
-        val chat = ChatSession(gateway, ForegroundTurnHost(this), scope).apply { open() }
+        val keepSecret: suspend (String, ByteArray) -> Unit = { name, value ->
+            secrets.put(name, value)
+            withContext(Dispatchers.IO) { EmbeddedPython.call("secrets_changed", "") }
+        }
+        val chat = ChatSession(gateway, ForegroundTurnHost(this), scope, keepSecret).apply { open() }
         val setup = ProviderSetup(gateway, secrets, secretsChanged = { withContext(Dispatchers.IO) { EmbeddedPython.call("secrets_changed", "") } },
                                   session = { chat.sessionId }, reopenChat = chat::open,
                                   saveEndpoint = { request -> withContext(Dispatchers.IO) { EmbeddedPython.call("save_custom_endpoint", request) } })

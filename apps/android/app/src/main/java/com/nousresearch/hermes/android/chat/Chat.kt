@@ -17,13 +17,21 @@ sealed interface Entry {
     data class Notice(val text: String) : Entry
 }
 
-/** A chat's transcript. While a turn runs, [streaming] is the reply written so far and [activity] what the agent is doing. */
-data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? = null, val activity: String? = null) {
+/**
+ * A chat's transcript. While a turn runs, [streaming] is the reply written so far, [activity] what the agent
+ * is doing, and [prompts] what it is waiting on the user for.
+ */
+data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? = null, val activity: String? = null,
+                val prompts: List<Prompt> = emptyList()) {
     val running: Boolean get() = streaming != null
 
     fun sent(text: String): Chat = copy(entries = entries + Entry.User(text))
 
     fun notice(text: String): Chat = copy(entries = entries + Entry.Notice(text))
+
+    fun asked(prompt: Prompt): Chat = copy(prompts = prompts + prompt)
+
+    fun settled(id: String): Chat = copy(prompts = prompts.filterNot { it.id == id })
 
     /** The chat after one event of its session. A payload the app cannot read leaves it unchanged. */
     fun reduce(event: CoreEvent): Chat = runCatching { apply(event) }.getOrDefault(this)
@@ -37,7 +45,13 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
             copy(entries = entries.map { if (it is Entry.Tool && it.id == done.toolId) it.copy(summary = done.summary, done = true) else it })
         }
         Events.STATUS_UPDATE.name -> copy(activity = event.decode(Events.STATUS_UPDATE)!!.text)
-        Events.ERROR.name -> notice(event.decode(Events.ERROR)!!.message)
+        // The core may end a turn with `error` alone (a refused @-reference, an ownership refusal, a crash), and the
+        // TUI treats every `error` as the end of the turn: so does the chat, keeping the message as a notice.
+        Events.ERROR.name -> notice(event.decode(Events.ERROR)!!.message).copy(streaming = null, activity = null)
+        Events.REQUEST_CANCEL.name -> settled(event.decode(Events.REQUEST_CANCEL)!!.id)
+        Events.APPROVAL_CANCELLED.name -> event.decode(Events.APPROVAL_CANCELLED)!!.requestIds.toSet().let { ids ->
+            copy(prompts = prompts.filterNot { it is Prompt.Approval && it.requestId in ids })
+        }
         else -> this
     }
 
