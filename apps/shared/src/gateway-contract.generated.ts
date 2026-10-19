@@ -1993,6 +1993,31 @@ export interface ModelDisconnectResult {
   name: string
   disconnected: boolean
 }
+export interface NousLoginStartParams {
+  profile?: string | null
+  session_id?: string | null
+}
+export interface NousLoginStartResult {
+  login_id: string
+  user_code: string
+  verification_url: string
+  expires_in: number
+  poll_interval: number
+}
+export interface NousLoginParams {
+  profile?: string | null
+  login_id: string
+  session_id?: string | null
+}
+/** ``approved``: the account is stored (auth.json) and Nous lists as signed in; ``model`` is the default the config now carries when the sign-in moved it. */
+export interface NousLoginPollResult {
+  status: 'pending' | 'approved' | 'expired' | 'cancelled' | 'error'
+  error_message?: string | null
+  model?: string | null
+}
+export interface NousLoginCancelResult {
+  cancelled: boolean
+}
 export interface ProfilesListParams {
   profile?: string | null
   include_sessions?: boolean | string | null
@@ -5343,6 +5368,12 @@ export interface RpcMethods {
   'model.options': { params: ModelOptionsParams; result: ModelOptionsResult }
   /** Save an API key for a provider and return its refreshed inventory row. */
   'model.save_key': { params: ModelSaveKeyParams; result: ModelSaveKeyResult }
+  /** Abandon a pending Nous sign-in; an approval that arrives later is not stored. */
+  'nous.login.cancel': { params: NousLoginParams; result: NousLoginCancelResult }
+  /** A Nous sign-in's progress; an unknown or other-profile login_id is an error status. */
+  'nous.login.poll': { params: NousLoginParams; result: NousLoginPollResult }
+  /** Start a Nous Portal device-code sign-in: show user_code, open verification_url, poll nous.login.poll. */
+  'nous.login.start': { params: NousLoginStartParams; result: NousLoginStartResult }
   /** Write onboarding.run in the root profile's config.yaml; answers the new state. */
   'onboarding.set_run': { params: OnboardingSetRunParams; result: OnboardingRunStateResult }
   /** Skip setup: end the session's onboarding run and close the card that waits. */
@@ -5748,6 +5779,9 @@ export const RPC_METHODS = [
   'model.disconnect',
   'model.options',
   'model.save_key',
+  'nous.login.cancel',
+  'nous.login.poll',
+  'nous.login.start',
   'onboarding.set_run',
   'onboarding.skip',
   'onboarding.start',

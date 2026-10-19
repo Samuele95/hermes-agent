@@ -446,6 +446,42 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"slug": slug, "name": pconfig.name if pconfig else slug, "disconnected": True})
 
 
+def _resolved_home() -> str:
+    from hermes_constants import get_hermes_home
+    return str(get_hermes_home().expanduser().resolve(strict=False))
+
+
+@method("nous.login.start")
+@_profile_scoped
+@_catch(5037)
+def _(rid, params: dict) -> dict:
+    """Start a Nous Portal device-code sign-in → ``{login_id, user_code, verification_url, expires_in,
+    poll_interval}``: the client shows the code, opens the URL and polls ``nous.login.poll`` (for
+    clients without the dashboard's ``/api/providers/oauth`` routes). On the RPC pool (_LONG_HANDLERS)."""
+    from tui_gateway import nous_login
+    try:
+        return _ok(rid, nous_login.start(_resolved_home()))
+    except nous_login.GuestIdentity as e:
+        return _err(rid, 4036, str(e))
+
+
+@method("nous.login.poll")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """``{status: pending|approved|expired|cancelled|error, error_message?, model?}``; ``approved``
+    means the account is stored (auth.json) and Nous lists as signed in."""
+    from tui_gateway import nous_login
+    return _ok(rid, nous_login.poll(str(params.get("login_id") or ""), _resolved_home()))
+
+
+@method("nous.login.cancel")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Abandon a pending sign-in → ``{cancelled}``; an approval that arrives later is not stored."""
+    from tui_gateway import nous_login
+    return _ok(rid, nous_login.cancel(str(params.get("login_id") or ""), _resolved_home()))
+
+
 def register(server) -> None:
     """Rebind this module's helpers + handlers onto ``server`` and register the handlers."""
     bind_module(globals(), server, skip=("_",))
