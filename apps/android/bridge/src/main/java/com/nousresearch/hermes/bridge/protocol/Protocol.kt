@@ -25,6 +25,7 @@ object Methods {
     val CONFIG_GET = Method("config.get", ConfigGetParams.serializer(), ConfigGetResult.serializer())
     val CONFIG_SET = Method("config.set", ConfigSetParams.serializer(), ConfigSetResult.serializer())
     val GATEWAY_CAPABILITIES = Method("gateway.capabilities", PingParams.serializer(), GatewayCapabilitiesResult.serializer())
+    val MODEL_DISCONNECT = Method("model.disconnect", ModelDisconnectParams.serializer(), ModelDisconnectResult.serializer())
     val MODEL_OPTIONS = Method("model.options", ModelOptionsParams.serializer(), ModelOptionsResult.serializer())
     val PING = Method("ping", PingParams.serializer(), PingResult.serializer())
     val PROMPT_SUBMIT = Method("prompt.submit", PromptSubmitParams.serializer(), PromptSubmitResult.serializer())
@@ -460,6 +461,19 @@ data class ModelCapabilities(
     @SerialName("ultrafast") val ultrafast: Boolean = false,
     @SerialName("reasoning") val reasoning: Boolean,
     @SerialName("can_disable_reasoning") val canDisableReasoning: Boolean? = null,
+)
+
+@Serializable
+data class ModelDisconnectParams(
+    @SerialName("slug") val slug: String,
+    @SerialName("session_id") val sessionId: String? = null,
+)
+
+@Serializable
+data class ModelDisconnectResult(
+    @SerialName("slug") val slug: String,
+    @SerialName("name") val name: String,
+    @SerialName("disconnected") val disconnected: Boolean,
 )
 
 /** One ``hermes_cli/inventory.py::build_models_payload`` provider row (the union of every field */

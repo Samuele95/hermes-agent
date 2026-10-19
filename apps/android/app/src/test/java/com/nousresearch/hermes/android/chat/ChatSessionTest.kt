@@ -81,4 +81,22 @@ class ChatSessionTest {
 
         assertEquals(listOf(Entry.User("hello"), Entry.Notice("session busy")), chat.state.value.entries)
     }
+
+    @Test
+    fun reopeningStartsANewSessionWithAnEmptyTranscript() = runTest(UnconfinedTestDispatcher()) {
+        var created = 0
+        val fresh = FakeCoreGateway { method, _ ->
+            when (method) {
+                "session.create" -> """{"session_id":"s${++created}","stored_session_id":"db","message_count":0,"messages":[],"info":{}}"""
+                else -> submit()
+            }
+        }
+        val chat = ChatSession(fresh, host, backgroundScope).apply { open() }
+        chat.send("hello")
+
+        chat.open()
+
+        assertEquals("s2", chat.sessionId)
+        assertEquals(emptyList<Entry>(), chat.state.value.entries)
+    }
 }

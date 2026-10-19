@@ -30,6 +30,10 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, sc
     @Volatile
     private var id: String? = null
 
+    /** The core session this chat sends to; the chat must be open. */
+    val sessionId: String
+        get() = checkNotNull(id) { "open() the chat first" }
+
     init {
         // Collect before the first request: the core does not replay events.
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -37,12 +41,14 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, sc
         }
     }
 
+    /** Opens a new core session; reopening leaves the previous one, and its transcript, behind. */
     suspend fun open() {
         id = core.call(Methods.SESSION_CREATE, SessionCreateParams(source = SOURCE)).sessionId
+        chat.value = Chat()
     }
 
     suspend fun send(text: String) {
-        val session = checkNotNull(id) { "open() the chat before sending" }
+        val session = sessionId
         chat.update { it.sent(text) }
         try {
             core.call(Methods.PROMPT_SUBMIT, PromptSubmitParams(sessionId = session, text = JsonPrimitive(text)))
