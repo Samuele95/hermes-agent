@@ -36,7 +36,7 @@ SURFACE = Surface(
     methods=("client.capabilities", "config.get", "config.set", "gateway.capabilities", "model.disconnect",
              "model.options", "nous.login.cancel", "nous.login.poll", "nous.login.start", "ping", "prompt.submit",
              "request.answer", "session.create", "session.history", "session.interrupt",
-             "session.list", "session.resume", "session.save", "setup.status"),
+             "session.list", "session.most_recent", "session.resume", "session.save", "setup.status", "skills.manage"),
     events=("approval.cancelled", "error", "message.complete", "message.delta", "message.interim", "message.start",
             "reasoning.available", "reasoning.delta", "session.info", "session.title", "session.usage",
             "request.cancel", "status.update", "thinking.delta", "tool.complete", "tool.generating", "tool.start"),

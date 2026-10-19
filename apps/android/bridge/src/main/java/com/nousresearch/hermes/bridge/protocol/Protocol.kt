@@ -37,9 +37,11 @@ object Methods {
     val SESSION_HISTORY = Method("session.history", SessionHistoryParams.serializer(), SessionHistoryResult.serializer())
     val SESSION_INTERRUPT = Method("session.interrupt", SessionInterruptParams.serializer(), SessionInterruptResult.serializer())
     val SESSION_LIST = Method("session.list", SessionListParams.serializer(), SessionListResult.serializer())
+    val SESSION_MOST_RECENT = Method("session.most_recent", SessionMostRecentParams.serializer(), SessionMostRecentResult.serializer())
     val SESSION_RESUME = Method("session.resume", SessionResumeParams.serializer(), SessionResumeResult.serializer())
     val SESSION_SAVE = Method("session.save", SessionSaveParams.serializer(), SessionSaveResult.serializer())
     val SETUP_STATUS = Method("setup.status", ProfileParams.serializer(), SetupStatusResult.serializer())
+    val SKILLS_MANAGE = Method("skills.manage", SkillsManageParams.serializer(), SkillsManageResult.serializer())
 }
 
 object Requests {
@@ -860,6 +862,19 @@ data class SessionLiveInfo(
     @SerialName("lazy") val lazy: Boolean? = null,
 )
 
+@Serializable
+data class SessionMostRecentParams(
+    @SerialName("profile") val profile: String? = null,
+)
+
+@Serializable
+data class SessionMostRecentResult(
+    @SerialName("session_id") val sessionId: String?,
+    @SerialName("title") val title: String? = null,
+    @SerialName("started_at") val startedAt: Double? = null,
+    @SerialName("source") val source: String? = null,
+)
+
 /** ``session_id`` is the STORED id (or an exact title); the reply's ``session_id`` is the runtime id. */
 @Serializable
 data class SessionResumeParams(
@@ -939,6 +954,66 @@ data class SetupStatusResult(
     @SerialName("error_code") val errorCode: String? = null,
     @SerialName("retryable") val retryable: Boolean? = null,
     @SerialName("retry_after") val retryAfter: Long? = null,
+)
+
+/** ``hermes_cli.skills_hub.browse_skills`` row. */
+@Serializable
+data class SkillBrowseItem(
+    @SerialName("name") val name: String = "",
+    @SerialName("description") val description: String = "",
+    @SerialName("source") val source: String = "",
+    @SerialName("trust") val trust: String? = null,
+    @SerialName("identifier") val identifier: String? = null,
+)
+
+@Serializable
+data class SkillHubHit(
+    @SerialName("name") val name: String,
+    @SerialName("description") val description: String,
+)
+
+/** ``hermes_cli.skills_hub.inspect_skill``; ``{}`` when the identifier resolves nowhere. */
+@Serializable
+data class SkillInspectInfo(
+    @SerialName("name") val name: String? = null,
+    @SerialName("description") val description: String? = null,
+    @SerialName("source") val source: String? = null,
+    @SerialName("identifier") val identifier: String? = null,
+    @SerialName("tags") val tags: List<String>? = null,
+    @SerialName("skill_md_preview") val skillMdPreview: String? = null,
+)
+
+@Serializable
+enum class SkillsAction {
+    @SerialName("list") LIST,
+    @SerialName("search") SEARCH,
+    @SerialName("install") INSTALL,
+    @SerialName("browse") BROWSE,
+    @SerialName("inspect") INSPECT,
+}
+
+/** ``query`` is the search text / hub identifier / browse page (digits); ``page`` / ``page_size`` */
+@Serializable
+data class SkillsManageParams(
+    @SerialName("profile") val profile: String? = null,
+    @SerialName("action") val action: SkillsAction = SkillsAction.LIST,
+    @SerialName("query") val query: String? = null,
+    @SerialName("page") val page: Long? = null,
+    @SerialName("page_size") val pageSize: Long? = null,
+)
+
+/** Shape follows the action: ``list`` → ``skills`` (category → names); ``search`` → ``results``; */
+@Serializable
+data class SkillsManageResult(
+    @SerialName("skills") val skills: Map<String, List<String>>? = null,
+    @SerialName("results") val results: List<SkillHubHit>? = null,
+    @SerialName("installed") val installed: Boolean? = null,
+    @SerialName("name") val name: String? = null,
+    @SerialName("items") val items: List<SkillBrowseItem>? = null,
+    @SerialName("page") val page: Long? = null,
+    @SerialName("total_pages") val totalPages: Long? = null,
+    @SerialName("total") val total: Long? = null,
+    @SerialName("info") val info: SkillInspectInfo? = null,
 )
 
 /** ``server._status_update`` and the direct emitters (goal / loop / heartbeat / process). */
