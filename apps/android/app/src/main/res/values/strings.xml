@@ -18,6 +18,16 @@
     <string name="setup_endpoint_url">Base URL (e.g. http://127.0.0.1:11434/v1)</string>
     <string name="setup_endpoint_key">API key (optional)</string>
     <string name="setup_use_anyway">Use it anyway</string>
+    <string name="prompt_approval">Hermes wants to run</string>
+    <string name="prompt_allow_once">Allow once</string>
+    <string name="prompt_allow_session">Allow for this chat</string>
+    <string name="prompt_allow_always">Always allow</string>
+    <string name="prompt_deny">Deny</string>
+    <string name="prompt_answer">Answer</string>
+    <string name="prompt_skip">Skip</string>
+    <string name="prompt_your_answer">Your answer</string>
+    <string name="prompt_other">Other…</string>
+    <string name="prompt_secret_kept">Kept in this phone\'s keystore as %1$s, never written to a file in the clear.</string>
     <string name="core_starting">Starting the core…</string>
     <string name="turn_channel">Replies in progress</string>
     <string name="turn_running">Hermes is replying…</string>

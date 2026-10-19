@@ -37,7 +37,7 @@ import com.nousresearch.hermes.android.R
 /** A chat's transcript and its message field. It holds only the draft; [onSend] gets the trimmed text. */
 @Composable
 fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifier, about: String? = null,
-               onSetup: (() -> Unit)? = null) {
+               onSetup: (() -> Unit)? = null, answers: PromptAnswers? = null) {
     var draft by rememberSaveable { mutableStateOf("") }
     val list = rememberLazyListState()
     val rows = chat.entries.size + (if (chat.running) 1 else 0) + (if (chat.activity != null) 1 else 0)
@@ -53,6 +53,8 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
             chat.streaming?.let { text -> item { Bubble(text.ifEmpty { "…" }, mine = false) } }
             chat.activity?.let { text -> item { Text(text, style = MaterialTheme.typography.labelMedium) } }
         }
+        // One question at a time, the oldest first: the turn waits on it.
+        if (answers != null) chat.prompts.firstOrNull()?.let { PromptCard(it, answers) }
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(draft, { draft = it }, Modifier.weight(1f).testTag("draft"),
                               placeholder = { Text(stringResource(R.string.chat_hint)) })

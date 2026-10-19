@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.nousresearch.hermes.android.chat.ChatScreen
+import com.nousresearch.hermes.android.chat.PromptAnswers
 import com.nousresearch.hermes.android.setup.SetupScreen
 
 class MainActivity : ComponentActivity() {
@@ -49,7 +50,10 @@ class MainActivity : ComponentActivity() {
                                             onEndpoint = { name, url, model, key -> app.setup { saveEndpoint(name, url, model, key) } })
                                 return@Surface
                             }
-                            ChatScreen(chat, about = state.about, onSetup = { app.setup { open() } }, onSend = { text ->
+                            val answers = PromptAnswers(approve = { p, choice -> app.chat { approve(p, choice) } },
+                                                        clarify = { p, given -> app.chat { clarify(p, given) } },
+                                                        secret = { p, value -> app.chat { secret(p, value) } })
+                            ChatScreen(chat, about = state.about, onSetup = { app.setup { open() } }, answers = answers, onSend = { text ->
                                 if (Build.VERSION.SDK_INT >= 33 &&
                                     checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                                     askToNotify.launch(Manifest.permission.POST_NOTIFICATIONS)
