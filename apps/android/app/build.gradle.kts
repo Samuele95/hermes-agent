@@ -14,6 +14,8 @@ android {
         versionName = "0.1.0"
         ndk { abiFilters += "arm64-v8a" }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // The smoke test needs an endpoint: scripts/smoke.sh runs it, connectedAndroidTest leaves it out.
+        testInstrumentationRunnerArguments["notAnnotation"] = "com.nousresearch.hermes.android.Smoke"
     }
     buildTypes {
         debug { applicationIdSuffix = ".debug" }
