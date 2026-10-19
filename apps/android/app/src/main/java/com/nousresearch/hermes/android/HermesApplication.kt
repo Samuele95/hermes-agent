@@ -71,7 +71,8 @@ class HermesApplication : Application() {
         val gateway = EmbeddedPython.connect(HermesPaths(runtime, filesDir, File(filesDir, ".hermes"), cacheDir), secrets)
         val chat = ChatSession(gateway, ForegroundTurnHost(this), scope).apply { open() }
         val setup = ProviderSetup(gateway, secrets, secretsChanged = { withContext(Dispatchers.IO) { EmbeddedPython.call("secrets_changed", "") } },
-                                  session = { chat.sessionId }, reopenChat = chat::open)
+                                  session = { chat.sessionId }, reopenChat = chat::open,
+                                  saveEndpoint = { request -> withContext(Dispatchers.IO) { EmbeddedPython.call("save_custom_endpoint", request) } })
         // Undispatched: setup is showing before the core is Ready, so the chat never flashes first.
         if (setup.needed()) scope.launch(start = CoroutineStart.UNDISPATCHED) { setup.open() }
         val facts = withContext(Dispatchers.IO) { JSONObject(EmbeddedPython.call("runtime_facts", "")) }

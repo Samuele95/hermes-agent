@@ -92,3 +92,10 @@ def secrets_changed(_arg: str) -> str:
     reset_secret_source_cache(home)
     load_hermes_dotenv(hermes_home=home)
     return ""
+
+
+def save_custom_endpoint(arg: str) -> str:
+    """The app's call into :func:`hermes_android.endpoints.save_custom_endpoint`."""
+    from hermes_android import endpoints
+
+    return endpoints.save_custom_endpoint(arg)

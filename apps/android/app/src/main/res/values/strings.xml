@@ -12,6 +12,11 @@
     <string name="setup_save_key">Save key</string>
     <string name="setup_model_name">Model name</string>
     <string name="setup_use_model">Use this model</string>
+    <string name="setup_add_endpoint">Add a custom endpoint</string>
+    <string name="setup_add_endpoint_detail">Any OpenAI-compatible server: Ollama, llama.cpp, vLLM…</string>
+    <string name="setup_endpoint_name">Name</string>
+    <string name="setup_endpoint_url">Base URL (e.g. http://127.0.0.1:11434/v1)</string>
+    <string name="setup_endpoint_key">API key (optional)</string>
     <string name="setup_use_anyway">Use it anyway</string>
     <string name="core_starting">Starting the core…</string>
     <string name="turn_channel">Replies in progress</string>

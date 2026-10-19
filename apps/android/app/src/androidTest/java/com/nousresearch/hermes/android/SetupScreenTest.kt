@@ -31,7 +31,9 @@ class SetupScreenTest {
 
     private fun show(setup: Setup) = compose.setContent {
         SetupScreen(setup, onPick = { picked += "pick:$it" }, onKey = { picked += "key:" + String(it) },
-                    onModel = { model, confirmed -> picked += "model:$model:$confirmed" }, onBack = {}, onClose = {})
+                    onModel = { model, confirmed -> picked += "model:$model:$confirmed" }, onBack = {}, onClose = {},
+                    onAddEndpoint = { picked += "add-endpoint" },
+                    onEndpoint = { name, url, model, key -> picked += "endpoint:$name|$url|$model|${key?.let(::String)}" })
     }
 
     @Test
@@ -66,6 +68,30 @@ class SetupScreenTest {
         compose.onNodeWithTag("setup-confirm").performClick()
 
         assertEquals(listOf("model:deepseek-flash:true"), picked)
+    }
+
+    @Test
+    fun aCustomEndpointIsOfferedAboveTheProviders() {
+        show(Setup(SetupStep.Providers(listOf(deepseek))))
+
+        compose.onNodeWithTag("add-endpoint").performClick()
+
+        assertEquals(listOf("add-endpoint"), picked)
+    }
+
+    @Test
+    fun anEndpointNeedsNameUrlAndModelAndItsBlankKeyIsNoKey() {
+        show(Setup(SetupStep.Endpoint))
+        compose.onNodeWithTag("endpoint-key").assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Password))
+
+        compose.onNodeWithTag("endpoint-name").performTextInput(" Host Ollama ")
+        compose.onNodeWithTag("endpoint-url").performTextInput("http://127.0.0.1:11434/v1")
+        compose.onNodeWithTag("endpoint-save").assertIsNotEnabled()
+        compose.onNodeWithTag("endpoint-model").performTextInput("gemma4")
+        compose.onNodeWithTag("endpoint-key").performTextInput("   ")
+        compose.onNodeWithTag("endpoint-save").performClick()
+
+        assertEquals(listOf("endpoint:Host Ollama|http://127.0.0.1:11434/v1|gemma4|null"), picked)
     }
 
     @Test

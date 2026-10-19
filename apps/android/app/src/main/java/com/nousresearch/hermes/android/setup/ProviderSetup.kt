@@ -13,7 +13,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 /** A provider the app can set up: one that takes a pasted key ([keyEnv]), or one already signed in ([ready]). */
 data class ProviderChoice(val slug: String, val name: String, val keyEnv: String?, val ready: Boolean, val models: List<String>)
@@ -26,6 +30,9 @@ sealed interface SetupStep {
     data class Key(val provider: ProviderChoice) : SetupStep
 
     data class Models(val provider: ProviderChoice) : SetupStep
+
+    /** A custom OpenAI-compatible endpoint: name, base URL, model and an optional key. */
+    data object Endpoint : SetupStep
 }
 
 /** A model the core will only use once the user confirms (an expensive one), with the core's own wording. */
@@ -39,7 +46,9 @@ data class Setup(val step: SetupStep = SetupStep.Loading, val busy: Boolean = fa
  * goes to [secrets] and reaches the core only as an environment variable ([secretsChanged]), and the
  * chosen model becomes the default through [session], a live session (the core refuses sessionless
  * defaults). That session then gives way to a new one ([reopenChat]): a session created before the switch
- * runs its first turn on the old default model. [state] is null while setup is closed.
+ * runs its first turn on the old default model. A custom endpoint becomes a `providers.<id>` entry through
+ * [saveEndpoint] (the bridge's `save_custom_endpoint`, JSON in and out) before the same steps.
+ * [state] is null while setup is closed.
  */
 class ProviderSetup(
     private val core: CoreGateway,
@@ -47,6 +56,7 @@ class ProviderSetup(
     private val secretsChanged: suspend () -> Unit,
     private val session: suspend () -> String,
     private val reopenChat: suspend () -> Unit,
+    private val saveEndpoint: suspend (String) -> String,
 ) {
     private companion object {
         /** `model.disconnect`'s answer when the provider holds no credential. */
@@ -80,13 +90,7 @@ class ProviderSetup(
         val provider = (setup.value?.step as? SetupStep.Key)?.provider ?: return
         val name = checkNotNull(provider.keyEnv)
         step {
-            try {
-                secrets.put(name, key)
-            } catch (failed: Exception) {  // the keystore's own failure; its message is not shown
-                throw CoreError(0, "Could not store the key (${failed.javaClass.simpleName}).")
-            } finally {
-                key.fill(0)
-            }
+            store(name, key)
             secretsChanged()
             val signedIn = listed(refresh = true).firstOrNull { it.slug == provider.slug && it.ready }
             if (signedIn == null) {
@@ -114,8 +118,46 @@ class ProviderSetup(
         }
     }
 
+    fun addEndpoint() {
+        setup.update { it?.copy(step = SetupStep.Endpoint, error = null) }
+    }
+
+    /** Saves the endpoint, keeps its [key] (when given; the caller's copy is wiped), then makes [model] the default. */
+    suspend fun saveEndpoint(name: String, baseUrl: String, model: String, key: ByteArray?) {
+        if (setup.value?.step != SetupStep.Endpoint) return
+        val hasKey = key != null && key.isNotEmpty()
+        step {
+            val request = JsonObject(mapOf("name" to JsonPrimitive(name), "base_url" to JsonPrimitive(baseUrl),
+                                           "model" to JsonPrimitive(model), "has_key" to JsonPrimitive(hasKey)))
+            val saved = try {
+                Json.parseToJsonElement(saveEndpoint(request.toString())).jsonObject
+            } catch (failed: RuntimeException) {  // a bridge failure carries a traceback, not words for the user
+                key?.fill(0)
+                throw CoreError(0, "Could not save the endpoint (${failed.javaClass.simpleName}).")
+            }
+            saved["error"]?.let { key?.fill(0); throw CoreError(0, it.jsonPrimitive.content) }
+            val keyEnv = saved.getValue("key_env").jsonPrimitive.content
+            if (hasKey) {
+                store(keyEnv, key!!)
+                secretsChanged()
+            }
+            SetupStep.Models(ProviderChoice(saved.getValue("id").jsonPrimitive.content, name, keyEnv.ifEmpty { null }, true, listOf(model)))
+        }
+        if (setup.value?.error == null) choose(model)
+    }
+
     fun back() {
         setup.update { it?.copy(step = SetupStep.Providers(choices), error = null, confirm = null) }
+    }
+
+    private fun store(name: String, key: ByteArray) {
+        try {
+            secrets.put(name, key)
+        } catch (failed: Exception) {  // the keystore's own failure; its message is not shown
+            throw CoreError(0, "Could not store the key (${failed.javaClass.simpleName}).")
+        } finally {
+            key.fill(0)
+        }
     }
 
     /**

@@ -35,10 +35,11 @@ import com.nousresearch.hermes.android.R
 /** Provider setup: pick a provider, paste its key when it needs one, pick a model. Stateless but for the fields. */
 @Composable
 fun SetupScreen(setup: Setup, onPick: (String) -> Unit, onKey: (ByteArray) -> Unit, onModel: (String, Boolean) -> Unit,
-                onBack: () -> Unit, onClose: () -> Unit, modifier: Modifier = Modifier) {
+                onBack: () -> Unit, onClose: () -> Unit, modifier: Modifier = Modifier, onAddEndpoint: () -> Unit = {},
+                onEndpoint: (name: String, baseUrl: String, model: String, key: ByteArray?) -> Unit = { _, _, _, _ -> }) {
     Column(modifier.fillMaxSize().safeDrawingPadding().padding(12.dp).testTag("setup"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            if (setup.step is SetupStep.Key || setup.step is SetupStep.Models) {
+            if (setup.step is SetupStep.Key || setup.step is SetupStep.Models || setup.step is SetupStep.Endpoint) {
                 TextButton(onBack, Modifier.testTag("setup-back"), enabled = !setup.busy) { Text(stringResource(R.string.setup_back)) }
             }
             Text(stringResource(R.string.setup_title), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
@@ -49,6 +50,10 @@ fun SetupScreen(setup: Setup, onPick: (String) -> Unit, onKey: (ByteArray) -> Un
         when (val step = setup.step) {
             SetupStep.Loading -> Unit
             is SetupStep.Providers -> LazyColumn(Modifier.weight(1f)) {
+                item {
+                    Choice(stringResource(R.string.setup_add_endpoint), stringResource(R.string.setup_add_endpoint_detail),
+                           Modifier.testTag("add-endpoint"), onClick = onAddEndpoint)
+                }
                 items(step.choices, key = { it.slug }) { provider ->
                     Choice(provider.name, if (provider.ready) stringResource(R.string.setup_signed_in) else provider.keyEnv,
                            Modifier.testTag("provider-${provider.slug}")) { onPick(provider.slug) }
@@ -56,6 +61,7 @@ fun SetupScreen(setup: Setup, onPick: (String) -> Unit, onKey: (ByteArray) -> Un
             }
             is SetupStep.Key -> KeyField(step.provider, enabled = !setup.busy, onKey)
             is SetupStep.Models -> ModelPicker(step.provider, setup, onModel, Modifier.weight(1f))
+            SetupStep.Endpoint -> EndpointForm(enabled = !setup.busy, onEndpoint)
         }
     }
 }
@@ -70,6 +76,28 @@ private fun KeyField(provider: ProviderChoice, enabled: Boolean, onKey: (ByteArr
                       keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false))
     Button({ onKey(key.trim().toByteArray()); key = "" }, Modifier.testTag("key-save"), enabled = enabled && key.isNotBlank()) {
         Text(stringResource(R.string.setup_save_key))
+    }
+}
+
+@Composable
+private fun EndpointForm(enabled: Boolean, onEndpoint: (String, String, String, ByteArray?) -> Unit) {
+    var name by rememberSaveable { mutableStateOf("") }
+    var url by rememberSaveable { mutableStateOf("") }
+    var model by rememberSaveable { mutableStateOf("") }
+    var key by remember { mutableStateOf("") }  // never saved state, as in KeyField
+    OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth().testTag("endpoint-name"), singleLine = true,
+                      label = { Text(stringResource(R.string.setup_endpoint_name)) })
+    OutlinedTextField(url, { url = it }, Modifier.fillMaxWidth().testTag("endpoint-url"), singleLine = true,
+                      label = { Text(stringResource(R.string.setup_endpoint_url)) },
+                      keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false))
+    OutlinedTextField(model, { model = it }, Modifier.fillMaxWidth().testTag("endpoint-model"), singleLine = true,
+                      label = { Text(stringResource(R.string.setup_model_name)) })
+    OutlinedTextField(key, { key = it }, Modifier.fillMaxWidth().testTag("endpoint-key"), singleLine = true,
+                      label = { Text(stringResource(R.string.setup_endpoint_key)) }, visualTransformation = PasswordVisualTransformation(),
+                      keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false))
+    Button({ onEndpoint(name.trim(), url.trim(), model.trim(), key.trim().takeIf { it.isNotEmpty() }?.toByteArray()); key = "" },
+           Modifier.testTag("endpoint-save"), enabled = enabled && listOf(name, url, model).all { it.isNotBlank() }) {
+        Text(stringResource(R.string.setup_use_model))
     }
 }
 

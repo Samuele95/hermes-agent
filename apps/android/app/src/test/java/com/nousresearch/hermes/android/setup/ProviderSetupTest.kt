@@ -4,7 +4,9 @@ import com.nousresearch.hermes.android.chat.FakeCoreGateway
 import com.nousresearch.hermes.bridge.CoreError
 import com.nousresearch.hermes.bridge.SecretStore
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertArrayEquals
@@ -39,8 +41,10 @@ class ProviderSetupTest {
             else -> error("unexpected $method")
         }
     }
+    private var endpointSaved: (JsonObject) -> String = { """{"id":"host-ollama","key_env":"HERMES_CUSTOM_HOST_OLLAMA_API_KEY"}""" }
     private val setup = ProviderSetup(core, secrets, secretsChanged = { log += "secrets_changed" }, session = { "s1" },
-                                      reopenChat = { log += "reopen_chat" })
+                                      reopenChat = { log += "reopen_chat" },
+                                      saveEndpoint = { request -> log += "save_endpoint"; endpointSaved(Json.parseToJsonElement(request).jsonObject) })
 
     private fun ProviderSetup.step() = state.value?.step
 
@@ -152,6 +156,51 @@ class ProviderSetupTest {
         assertEquals("config.set model requires a live session", setup.state.value?.error)
         assertEquals(false, setup.state.value?.busy)
         assertTrue(setup.step() is SetupStep.Models)
+    }
+
+    @Test
+    fun anEndpointIsSavedItsKeyKeptAndItsModelBecomesTheDefault() = runTest {
+        var request: JsonObject? = null
+        endpointSaved = { request = it; """{"id":"host-ollama","key_env":"HERMES_CUSTOM_HOST_OLLAMA_API_KEY"}""" }
+        setup.open()
+        setup.addEndpoint()
+        val key = "sk-x".toByteArray()
+
+        setup.saveEndpoint("Host Ollama", "http://127.0.0.1:11434/v1", "gemma4", key)
+
+        assertEquals(listOf("Host Ollama", "http://127.0.0.1:11434/v1", "gemma4", "true"),
+                     listOf("name", "base_url", "model", "has_key").map { request!!.getValue(it).jsonPrimitive.content })
+        assertArrayEquals("sk-x".toByteArray(), held["HERMES_CUSTOM_HOST_OLLAMA_API_KEY"])
+        assertArrayEquals(ByteArray(4), key)
+        assertEquals(listOf("save_endpoint", "secrets_changed", "config.set", "reopen_chat"), log.drop(1))
+        assertEquals("gemma4 --provider host-ollama --global", core.calls.last().second.getValue("value").jsonPrimitive.content)
+        assertNull(setup.state.value)
+    }
+
+    @Test
+    fun anEndpointWithoutAKeyTouchesNoSecret() = runTest {
+        endpointSaved = { """{"id":"host-ollama","key_env":""}""" }
+        setup.open()
+        setup.addEndpoint()
+
+        setup.saveEndpoint("Host Ollama", "http://127.0.0.1:11434/v1", "gemma4", null)
+
+        assertTrue(held.isEmpty())
+        assertEquals(listOf("save_endpoint", "config.set", "reopen_chat"), log.drop(1))
+    }
+
+    @Test
+    fun anIncompleteEndpointIsRefusedInTheCoresWords() = runTest {
+        endpointSaved = { """{"error":"An endpoint needs a name, a model and an http(s) base URL."}""" }
+        setup.open()
+        setup.addEndpoint()
+
+        setup.saveEndpoint("Host Ollama", "127.0.0.1", "gemma4", "sk-x".toByteArray())
+
+        assertEquals("An endpoint needs a name, a model and an http(s) base URL.", setup.state.value?.error)
+        assertTrue(setup.step() is SetupStep.Endpoint)
+        assertTrue(held.isEmpty())
+        assertEquals(listOf("save_endpoint"), log.drop(1))
     }
 
     @Test

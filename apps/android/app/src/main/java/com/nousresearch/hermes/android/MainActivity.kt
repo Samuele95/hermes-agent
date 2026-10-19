@@ -44,7 +44,9 @@ class MainActivity : ComponentActivity() {
                             setup?.let {
                                 SetupScreen(it, onPick = state.setup::pick, onKey = { key -> app.setup { submitKey(key) } },
                                             onModel = { model, confirmed -> app.setup { choose(model, confirmed) } },
-                                            onBack = state.setup::back, onClose = state.setup::close)
+                                            onBack = state.setup::back, onClose = state.setup::close,
+                                            onAddEndpoint = state.setup::addEndpoint,
+                                            onEndpoint = { name, url, model, key -> app.setup { saveEndpoint(name, url, model, key) } })
                                 return@Surface
                             }
                             ChatScreen(chat, about = state.about, onSetup = { app.setup { open() } }, onSend = { text ->
