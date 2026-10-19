@@ -1,9 +1,13 @@
 package com.nousresearch.hermes.android
 
 import android.Manifest
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -43,10 +47,10 @@ class MainActivity : ComponentActivity() {
                             val chat by state.chat.state.collectAsState()
                             val setup by state.setup.state.collectAsState()
                             setup?.let {
-                                SetupScreen(it, onPick = state.setup::pick, onKey = { key -> app.setup { submitKey(key) } },
+                                SetupScreen(it, onPick = { slug -> app.setup { pick(slug) } }, onKey = { key -> app.setup { submitKey(key) } },
                                             onModel = { model, confirmed -> app.setup { choose(model, confirmed) } },
                                             onBack = state.setup::back, onClose = state.setup::close,
-                                            onAddEndpoint = state.setup::addEndpoint,
+                                            onAddEndpoint = state.setup::addEndpoint, onOpenUrl = ::openInBrowser,
                                             onEndpoint = { name, url, model, key -> app.setup { saveEndpoint(name, url, model, key) } })
                                 return@Surface
                             }
@@ -64,6 +68,14 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+        }
+    }
+
+    private fun openInBrowser(url: String) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(this, url, Toast.LENGTH_LONG).show()  // no browser: the URL itself, to open elsewhere
         }
     }
 }

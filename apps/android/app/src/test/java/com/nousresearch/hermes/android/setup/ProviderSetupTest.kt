@@ -4,6 +4,8 @@ import com.nousresearch.hermes.android.chat.FakeCoreGateway
 import com.nousresearch.hermes.bridge.CoreError
 import com.nousresearch.hermes.bridge.SecretStore
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
@@ -26,18 +28,23 @@ class ProviderSetupTest {
     }
     private val log = mutableListOf<String>()
     private var deepseekRow = UNAUTHENTICATED_DEEPSEEK
+    private var nousRow = """{"slug":"nous","name":"Nous Portal","models":[],"authenticated":false,"auth_type":"oauth_device_code","key_env":""}"""
+    private val polls = ArrayDeque(listOf("""{"status":"pending"}""", """{"status":"approved"}"""))
     private var disconnect: (JsonObject) -> String = { """{"slug":"deepseek","name":"DeepSeek","disconnected":true}""" }
     private var configSet: (JsonObject) -> String = { """{"key":"model","value":"deepseek-v4-pro","scope":"global"}""" }
     private val core = FakeCoreGateway { method, params ->
         log += method
         when (method) {
             "setup.status" -> """{"provider_configured":false}"""
-            "model.options" -> """{"providers":[$deepseekRow,
-                {"slug":"nous","name":"Nous Portal","models":[],"authenticated":false,"auth_type":"oauth_device_code","key_env":""},
+            "model.options" -> """{"providers":[$deepseekRow, $nousRow,
+                {"slug":"openai-codex","name":"OpenAI Codex","models":[],"authenticated":false,"auth_type":"oauth_external","key_env":""},
                 {"slug":"openrouter","name":"OpenRouter","models":[],"authenticated":false,"auth_type":"api_key","key_env":""},
                 {"slug":"copilot","name":"GitHub Copilot","models":["gpt-5"],"authenticated":true}]}"""
             "config.set" -> configSet(params)
             "model.disconnect" -> disconnect(params)
+            "nous.login.start" -> """{"login_id":"L1","user_code":"NOUS-1234","verification_url":"https://portal.test/device?user_code=NOUS-1234","expires_in":600,"poll_interval":1}"""
+            "nous.login.poll" -> polls.removeFirst().also { if ("approved" in it) nousRow = READY_NOUS }
+            "nous.login.cancel" -> """{"cancelled":true}"""
             else -> error("unexpected $method")
         }
     }
@@ -58,8 +65,10 @@ class ProviderSetupTest {
         setup.open()
 
         val offered = (setup.step() as SetupStep.Providers).choices
-        assertEquals(listOf("deepseek" to "DEEPSEEK_API_KEY", "copilot" to null), offered.map { it.slug to it.keyEnv })
-        assertEquals(listOf(false, true), offered.map { it.ready })
+        assertEquals(listOf("deepseek", "nous", "copilot"), offered.map { it.slug })
+        assertEquals(listOf("DEEPSEEK_API_KEY", null, null), offered.map { it.keyEnv })
+        assertEquals(listOf(false, false, true), offered.map { it.ready })
+        assertEquals(listOf(false, true, false), offered.map { it.signIn })
     }
 
     @Test
@@ -204,6 +213,49 @@ class ProviderSetupTest {
     }
 
     @Test
+    fun nousPortalSignsInWithACodeAndThenOffersItsModels() = runTest {
+        setup.open()
+
+        val signing = launch { setup.pick("nous") }
+        runCurrent()
+        val shown = setup.step() as SetupStep.SignIn
+        assertEquals("NOUS-1234" to "https://portal.test/device?user_code=NOUS-1234", shown.userCode to shown.url)
+        signing.join()
+
+        assertEquals(listOf("nous/hermes-4"), (setup.step() as SetupStep.Models).provider.models)
+        assertEquals(listOf("nous.login.start", "nous.login.poll", "nous.login.poll", "model.options"), log.drop(1))
+        assertTrue(core.calls.last().second.getValue("refresh").jsonPrimitive.boolean)
+    }
+
+    @Test
+    fun aSignInThatEndsWithoutApprovalReturnsToTheListWithTheCoresWords() = runTest {
+        polls.clear()
+        polls += """{"status":"expired","error_message":"The sign-in code expired."}"""
+        setup.open()
+
+        setup.pick("nous")
+
+        assertTrue(setup.step() is SetupStep.Providers)
+        assertEquals("The sign-in code expired.", setup.state.value?.error)
+    }
+
+    @Test
+    fun goingBackDuringASignInCancelsIt() = runTest {
+        polls.clear()
+        repeat(5) { polls += """{"status":"pending"}""" }
+        setup.open()
+        val signing = launch { setup.pick("nous") }
+        runCurrent()
+
+        setup.back()
+        signing.join()
+
+        assertEquals("nous.login.cancel", log.last())
+        assertEquals("L1", core.calls.last().second.getValue("login_id").jsonPrimitive.content)
+        assertTrue(setup.step() is SetupStep.Providers)
+    }
+
+    @Test
     fun backReturnsToTheProviderList() = runTest {
         setup.open()
         setup.pick("deepseek")
@@ -214,6 +266,7 @@ class ProviderSetupTest {
     }
 
     private companion object {
+        const val READY_NOUS = """{"slug":"nous","name":"Nous Portal","models":["nous/hermes-4"],"authenticated":true}"""
         const val UNAUTHENTICATED_DEEPSEEK =
             """{"slug":"deepseek","name":"DeepSeek","models":[],"authenticated":false,"auth_type":"api_key","key_env":"DEEPSEEK_API_KEY"}"""
     }

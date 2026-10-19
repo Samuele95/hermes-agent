@@ -27,6 +27,9 @@ object Methods {
     val GATEWAY_CAPABILITIES = Method("gateway.capabilities", PingParams.serializer(), GatewayCapabilitiesResult.serializer())
     val MODEL_DISCONNECT = Method("model.disconnect", ModelDisconnectParams.serializer(), ModelDisconnectResult.serializer())
     val MODEL_OPTIONS = Method("model.options", ModelOptionsParams.serializer(), ModelOptionsResult.serializer())
+    val NOUS_LOGIN_CANCEL = Method("nous.login.cancel", NousLoginParams.serializer(), NousLoginCancelResult.serializer())
+    val NOUS_LOGIN_POLL = Method("nous.login.poll", NousLoginParams.serializer(), NousLoginPollResult.serializer())
+    val NOUS_LOGIN_START = Method("nous.login.start", NousLoginStartParams.serializer(), NousLoginStartResult.serializer())
     val PING = Method("ping", PingParams.serializer(), PingResult.serializer())
     val PROMPT_SUBMIT = Method("prompt.submit", PromptSubmitParams.serializer(), PromptSubmitResult.serializer())
     val REQUEST_ANSWER = Method("request.answer", RequestAnswerParams.serializer(), RequestAnswerResult.serializer())
@@ -530,6 +533,41 @@ data class ModelPricing(
     @SerialName("discount_percent") val discountPercent: Long? = null,
     @SerialName("was_input") val wasInput: String? = null,
     @SerialName("was_output") val wasOutput: String? = null,
+)
+
+@Serializable
+data class NousLoginCancelResult(
+    @SerialName("cancelled") val cancelled: Boolean,
+)
+
+@Serializable
+data class NousLoginParams(
+    @SerialName("profile") val profile: String? = null,
+    @SerialName("login_id") val loginId: String,
+    @SerialName("session_id") val sessionId: String? = null,
+)
+
+/** ``approved``: the account is stored (auth.json) and Nous lists as signed in; ``model`` is the */
+@Serializable
+data class NousLoginPollResult(
+    @SerialName("status") val status: String,
+    @SerialName("error_message") val errorMessage: String? = null,
+    @SerialName("model") val model: String? = null,
+)
+
+@Serializable
+data class NousLoginStartParams(
+    @SerialName("profile") val profile: String? = null,
+    @SerialName("session_id") val sessionId: String? = null,
+)
+
+@Serializable
+data class NousLoginStartResult(
+    @SerialName("login_id") val loginId: String,
+    @SerialName("user_code") val userCode: String,
+    @SerialName("verification_url") val verificationUrl: String,
+    @SerialName("expires_in") val expiresIn: Long,
+    @SerialName("poll_interval") val pollInterval: Long,
 )
 
 /** One unanswered server→client request (``server_requests.Request.snapshot``); the reconnecting */

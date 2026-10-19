@@ -8,7 +8,11 @@ import com.nousresearch.hermes.bridge.protocol.Methods
 import com.nousresearch.hermes.bridge.protocol.ModelDisconnectParams
 import com.nousresearch.hermes.bridge.protocol.ModelOptionProvider
 import com.nousresearch.hermes.bridge.protocol.ModelOptionsParams
+import com.nousresearch.hermes.bridge.protocol.NousLoginParams
+import com.nousresearch.hermes.bridge.protocol.NousLoginStartParams
 import com.nousresearch.hermes.bridge.protocol.ProfileParams
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -19,8 +23,12 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-/** A provider the app can set up: one that takes a pasted key ([keyEnv]), or one already signed in ([ready]). */
-data class ProviderChoice(val slug: String, val name: String, val keyEnv: String?, val ready: Boolean, val models: List<String>)
+/**
+ * A provider the app can set up: one that takes a pasted key ([keyEnv]), one signed in through the
+ * core's device-code flow ([signIn]: Nous Portal), or one already signed in ([ready]).
+ */
+data class ProviderChoice(val slug: String, val name: String, val keyEnv: String?, val ready: Boolean, val models: List<String>,
+                          val signIn: Boolean = false)
 
 sealed interface SetupStep {
     data object Loading : SetupStep
@@ -33,6 +41,9 @@ sealed interface SetupStep {
 
     /** A custom OpenAI-compatible endpoint: name, base URL, model and an optional key. */
     data object Endpoint : SetupStep
+
+    /** A device-code sign-in waiting for the user to approve [userCode] at [url]. */
+    data class SignIn(val provider: ProviderChoice, val loginId: String, val userCode: String, val url: String) : SetupStep
 }
 
 /** A model the core will only use once the user confirms (an expensive one), with the core's own wording. */
@@ -61,6 +72,9 @@ class ProviderSetup(
     private companion object {
         /** `model.disconnect`'s answer when the provider holds no credential. */
         const val NOTHING_TO_DISCONNECT = 4005
+
+        /** How often a waiting sign-in asks the core; the core polls the portal on its own schedule. */
+        val POLL_INTERVAL = 1.seconds
     }
 
     private val setup = MutableStateFlow<Setup?>(null)
@@ -80,9 +94,54 @@ class ProviderSetup(
         setup.value = null
     }
 
-    fun pick(slug: String) {
+    suspend fun pick(slug: String) {
         val provider = choices.first { it.slug == slug }
-        setup.update { it?.copy(step = if (provider.ready) SetupStep.Models(provider) else SetupStep.Key(provider), error = null) }
+        when {
+            provider.ready -> setup.update { it?.copy(step = SetupStep.Models(provider), error = null) }
+            provider.signIn -> signIn(provider)
+            else -> setup.update { it?.copy(step = SetupStep.Key(provider), error = null) }
+        }
+    }
+
+    /**
+     * Runs the core's Nous Portal sign-in: shows the code, polls until the user approved it in the browser,
+     * then lists the account's models. Leaving the step (back, close) cancels the sign-in at the core.
+     */
+    private suspend fun signIn(provider: ProviderChoice) {
+        step {
+            val started = core.call(Methods.NOUS_LOGIN_START, NousLoginStartParams())
+            SetupStep.SignIn(provider, started.loginId, started.userCode, started.verificationUrl)
+        }
+        val waiting = setup.value?.step as? SetupStep.SignIn ?: return
+        while (true) {
+            delay(POLL_INTERVAL)
+            if ((setup.value?.step as? SetupStep.SignIn)?.loginId != waiting.loginId) {
+                try {
+                    core.call(Methods.NOUS_LOGIN_CANCEL, NousLoginParams(loginId = waiting.loginId))
+                } catch (_: CoreError) {
+                    // nothing left to cancel
+                }
+                return
+            }
+            val polled = try {
+                core.call(Methods.NOUS_LOGIN_POLL, NousLoginParams(loginId = waiting.loginId))
+            } catch (refused: CoreError) {
+                setup.update { it?.copy(step = SetupStep.Providers(choices), error = refused.message) }
+                return
+            }
+            when (polled.status) {
+                "pending" -> continue
+                "approved" -> step {
+                    val signedIn = listed(refresh = true).firstOrNull { it.slug == provider.slug && it.ready }
+                        ?: throw CoreError(0, "${provider.name} did not list the account.")
+                    SetupStep.Models(signedIn)
+                }
+                else -> setup.update {
+                    it?.copy(step = SetupStep.Providers(choices), error = polled.errorMessage ?: "${provider.name} sign-in ${polled.status}.")
+                }
+            }
+            return
+        }
     }
 
     /** Stores [key] under the provider's variable and wipes the caller's copy; a key the core does not take is forgotten. */
@@ -189,9 +248,14 @@ class ProviderSetup(
     }
 }
 
-/** Offered: providers already signed in, and those that take a pasted key. Sign-in flows (OAuth, SDKs) come later. */
+/**
+ * Offered: providers already signed in, those that take a pasted key, and Nous Portal, whose device-code
+ * sign-in the core runs (`nous.login.*`). Other sign-in flows (OAuth elsewhere, SDKs) come later.
+ */
 internal fun offered(row: ModelOptionProvider): ProviderChoice? {
+    val ready = row.authenticated == true
     val keyEnv = row.keyEnv?.takeIf { row.authType == "api_key" && it.isNotEmpty() }
-    if (row.authenticated != true && keyEnv == null) return null
-    return ProviderChoice(row.slug, row.name, keyEnv, row.authenticated == true, row.models.orEmpty())
+    val signIn = !ready && row.slug == "nous" && row.authType == "oauth_device_code"
+    if (!ready && keyEnv == null && !signIn) return null
+    return ProviderChoice(row.slug, row.name, keyEnv, ready, row.models.orEmpty(), signIn)
 }

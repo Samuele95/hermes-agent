@@ -34,7 +34,8 @@ class Surface:
 
 SURFACE = Surface(
     methods=("client.capabilities", "config.get", "config.set", "gateway.capabilities", "model.disconnect",
-             "model.options", "ping", "prompt.submit", "request.answer", "session.create", "session.history", "session.interrupt",
+             "model.options", "nous.login.cancel", "nous.login.poll", "nous.login.start", "ping", "prompt.submit",
+             "request.answer", "session.create", "session.history", "session.interrupt",
              "session.list", "session.resume", "session.save", "setup.status"),
     events=("approval.cancelled", "error", "message.complete", "message.delta", "message.interim", "message.start",
             "reasoning.available", "reasoning.delta", "session.info", "session.title", "session.usage",

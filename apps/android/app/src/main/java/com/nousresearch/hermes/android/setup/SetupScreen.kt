@@ -27,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -36,10 +37,11 @@ import com.nousresearch.hermes.android.R
 @Composable
 fun SetupScreen(setup: Setup, onPick: (String) -> Unit, onKey: (ByteArray) -> Unit, onModel: (String, Boolean) -> Unit,
                 onBack: () -> Unit, onClose: () -> Unit, modifier: Modifier = Modifier, onAddEndpoint: () -> Unit = {},
-                onEndpoint: (name: String, baseUrl: String, model: String, key: ByteArray?) -> Unit = { _, _, _, _ -> }) {
+                onEndpoint: (name: String, baseUrl: String, model: String, key: ByteArray?) -> Unit = { _, _, _, _ -> },
+                onOpenUrl: (String) -> Unit = {}) {
     Column(modifier.fillMaxSize().safeDrawingPadding().padding(12.dp).testTag("setup"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            if (setup.step is SetupStep.Key || setup.step is SetupStep.Models || setup.step is SetupStep.Endpoint) {
+            if (setup.step !is SetupStep.Loading && setup.step !is SetupStep.Providers) {
                 TextButton(onBack, Modifier.testTag("setup-back"), enabled = !setup.busy) { Text(stringResource(R.string.setup_back)) }
             }
             Text(stringResource(R.string.setup_title), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
@@ -62,6 +64,7 @@ fun SetupScreen(setup: Setup, onPick: (String) -> Unit, onKey: (ByteArray) -> Un
             is SetupStep.Key -> KeyField(step.provider, enabled = !setup.busy, onKey)
             is SetupStep.Models -> ModelPicker(step.provider, setup, onModel, Modifier.weight(1f))
             SetupStep.Endpoint -> EndpointForm(enabled = !setup.busy, onEndpoint)
+            is SetupStep.SignIn -> SignIn(step, onOpenUrl)
         }
     }
 }
@@ -77,6 +80,17 @@ private fun KeyField(provider: ProviderChoice, enabled: Boolean, onKey: (ByteArr
     Button({ onKey(key.trim().toByteArray()); key = "" }, Modifier.testTag("key-save"), enabled = enabled && key.isNotBlank()) {
         Text(stringResource(R.string.setup_save_key))
     }
+}
+
+@Composable
+private fun SignIn(step: SetupStep.SignIn, onOpenUrl: (String) -> Unit) {
+    Text(stringResource(R.string.setup_sign_in, step.provider.name), style = MaterialTheme.typography.titleSmall)
+    Text(stringResource(R.string.setup_sign_in_code))
+    Text(step.userCode, Modifier.testTag("signin-code"), style = MaterialTheme.typography.headlineMedium,
+         fontFamily = FontFamily.Monospace)
+    Button({ onOpenUrl(step.url) }, Modifier.testTag("signin-open")) { Text(stringResource(R.string.setup_sign_in_open)) }
+    Text(stringResource(R.string.setup_sign_in_waiting), style = MaterialTheme.typography.bodySmall)
+    LinearProgressIndicator(Modifier.fillMaxWidth())
 }
 
 @Composable

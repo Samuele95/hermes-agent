@@ -33,7 +33,8 @@ class SetupScreenTest {
         SetupScreen(setup, onPick = { picked += "pick:$it" }, onKey = { picked += "key:" + String(it) },
                     onModel = { model, confirmed -> picked += "model:$model:$confirmed" }, onBack = {}, onClose = {},
                     onAddEndpoint = { picked += "add-endpoint" },
-                    onEndpoint = { name, url, model, key -> picked += "endpoint:$name|$url|$model|${key?.let(::String)}" })
+                    onEndpoint = { name, url, model, key -> picked += "endpoint:$name|$url|$model|${key?.let(::String)}" },
+                    onOpenUrl = { picked += "open:$it" })
     }
 
     @Test
@@ -92,6 +93,17 @@ class SetupScreenTest {
         compose.onNodeWithTag("endpoint-save").performClick()
 
         assertEquals(listOf("endpoint:Host Ollama|http://127.0.0.1:11434/v1|gemma4|null"), picked)
+    }
+
+    @Test
+    fun aSignInShowsItsCodeAndOpensItsPage() {
+        val nous = ProviderChoice("nous", "Nous Portal", null, ready = false, models = emptyList(), signIn = true)
+        show(Setup(SetupStep.SignIn(nous, "L1", "NOUS-1234", "https://portal.test/device?user_code=NOUS-1234")))
+
+        compose.onNodeWithTag("signin-code").assert(androidx.compose.ui.test.hasText("NOUS-1234"))
+        compose.onNodeWithTag("signin-open").performClick()
+
+        assertEquals(listOf("open:https://portal.test/device?user_code=NOUS-1234"), picked)
     }
 
     @Test

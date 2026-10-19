@@ -17,6 +17,10 @@
     <string name="setup_endpoint_name">Name</string>
     <string name="setup_endpoint_url">Base URL (e.g. http://127.0.0.1:11434/v1)</string>
     <string name="setup_endpoint_key">API key (optional)</string>
+    <string name="setup_sign_in">Sign in to %1$s</string>
+    <string name="setup_sign_in_code">Open the sign-in page and confirm this code:</string>
+    <string name="setup_sign_in_open">Open the sign-in page</string>
+    <string name="setup_sign_in_waiting">Waiting for you to approve in the browser…</string>
     <string name="setup_use_anyway">Use it anyway</string>
     <string name="prompt_approval">Hermes wants to run</string>
     <string name="prompt_allow_once">Allow once</string>
