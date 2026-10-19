@@ -3,6 +3,16 @@
     <string name="app_name">Hermes</string>
     <string name="chat_hint">Message Hermes</string>
     <string name="chat_send">Send</string>
+    <string name="chat_model">Model</string>
+    <string name="setup_title">Set up a provider</string>
+    <string name="setup_later">Later</string>
+    <string name="setup_back">Back</string>
+    <string name="setup_signed_in">Ready</string>
+    <string name="setup_key_hint">Paste your %1$s key (%2$s). It is kept in this phone\'s keystore and never written to a file in the clear.</string>
+    <string name="setup_save_key">Save key</string>
+    <string name="setup_model_name">Model name</string>
+    <string name="setup_use_model">Use this model</string>
+    <string name="setup_use_anyway">Use it anyway</string>
     <string name="core_starting">Starting the core…</string>
     <string name="turn_channel">Replies in progress</string>
     <string name="turn_running">Hermes is replying…</string>

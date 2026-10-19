@@ -31,7 +31,12 @@ class AppTest {
 
     @Test
     fun aMessageSentFromTheScreenIsAnsweredByTheEmbeddedCore() {
-        compose.waitUntil(60_000) { compose.onAllNodes(hasTestTag("draft")).fetchSemanticsNodes().isNotEmpty() }
+        // A fresh install opens on provider setup; "Later" leads to the chat.
+        compose.waitUntil(60_000) {
+            listOf("draft", "setup").any { compose.onAllNodes(hasTestTag(it)).fetchSemanticsNodes().isNotEmpty() }
+        }
+        if (compose.onAllNodes(hasTestTag("setup")).fetchSemanticsNodes().isNotEmpty()) compose.onNodeWithTag("setup-close").performClick()
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("draft")).fetchSemanticsNodes().isNotEmpty() }
 
         compose.onNodeWithTag("draft").performTextInput("hello")
         compose.onNodeWithTag("send").performClick()

@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.nousresearch.hermes.android.chat.ChatScreen
+import com.nousresearch.hermes.android.setup.SetupScreen
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -39,7 +40,14 @@ class MainActivity : ComponentActivity() {
                                                     color = MaterialTheme.colorScheme.error)
                         is CoreState.Ready -> {
                             val chat by state.chat.state.collectAsState()
-                            ChatScreen(chat, about = state.about, onSend = { text ->
+                            val setup by state.setup.state.collectAsState()
+                            setup?.let {
+                                SetupScreen(it, onPick = state.setup::pick, onKey = { key -> app.setup { submitKey(key) } },
+                                            onModel = { model, confirmed -> app.setup { choose(model, confirmed) } },
+                                            onBack = state.setup::back, onClose = state.setup::close)
+                                return@Surface
+                            }
+                            ChatScreen(chat, about = state.about, onSetup = { app.setup { open() } }, onSend = { text ->
                                 if (Build.VERSION.SDK_INT >= 33 &&
                                     checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                                     askToNotify.launch(Manifest.permission.POST_NOTIFICATIONS)

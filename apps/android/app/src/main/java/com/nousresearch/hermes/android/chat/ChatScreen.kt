@@ -19,6 +19,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -35,14 +36,18 @@ import com.nousresearch.hermes.android.R
 
 /** A chat's transcript and its message field. It holds only the draft; [onSend] gets the trimmed text. */
 @Composable
-fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifier, about: String? = null) {
+fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifier, about: String? = null,
+               onSetup: (() -> Unit)? = null) {
     var draft by rememberSaveable { mutableStateOf("") }
     val list = rememberLazyListState()
     val rows = chat.entries.size + (if (chat.running) 1 else 0) + (if (chat.activity != null) 1 else 0)
     LaunchedEffect(rows, chat.streaming) { if (rows > 0) list.animateScrollToItem(rows - 1) }
 
     Column(modifier.fillMaxSize().safeDrawingPadding()) {
-        about?.let { Text(it, Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.labelSmall) }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(about.orEmpty(), Modifier.weight(1f), style = MaterialTheme.typography.labelSmall)
+            onSetup?.let { TextButton(it, Modifier.testTag("open-setup")) { Text(stringResource(R.string.chat_model)) } }
+        }
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), list, PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(chat.entries) { EntryRow(it) }
             chat.streaming?.let { text -> item { Bubble(text.ifEmpty { "…" }, mine = false) } }

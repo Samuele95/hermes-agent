@@ -3,6 +3,7 @@ package com.nousresearch.hermes.android
 import android.app.Application
 import android.os.SystemClock
 import com.nousresearch.hermes.android.chat.ChatSession
+import com.nousresearch.hermes.android.setup.ProviderSetup
 import com.nousresearch.hermes.android.turn.ForegroundTurnHost
 import com.nousresearch.hermes.bridge.CoreGateway
 import com.nousresearch.hermes.bridge.EmbeddedPython
@@ -12,6 +13,7 @@ import com.nousresearch.hermes.bridge.RuntimeInstaller
 import com.nousresearch.hermes.bridge.SecretStore
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,7 +27,7 @@ import org.json.JSONObject
 sealed interface CoreState {
     data object Starting : CoreState
 
-    data class Ready(val gateway: CoreGateway, val chat: ChatSession, val about: String) : CoreState
+    data class Ready(val gateway: CoreGateway, val chat: ChatSession, val setup: ProviderSetup, val about: String) : CoreState
 
     data class Failed(val reason: String) : CoreState
 }
@@ -58,14 +60,23 @@ class HermesApplication : Application() {
         scope.launch { (state.value as? CoreState.Ready)?.chat?.send(text) }
     }
 
+    /** Runs one setup action on the app's scope, so it outlives the activity that asked for it. */
+    fun setup(action: suspend ProviderSetup.() -> Unit) {
+        scope.launch { (state.value as? CoreState.Ready)?.setup?.action() }
+    }
+
     private suspend fun start(): CoreState.Ready {
         val began = SystemClock.elapsedRealtime()
         val runtime = withContext(Dispatchers.IO) { RuntimeInstaller(File(noBackupFilesDir, "runtime")).install(AssetPayload(assets)) }
         val gateway = EmbeddedPython.connect(HermesPaths(runtime, filesDir, File(filesDir, ".hermes"), cacheDir), secrets)
         val chat = ChatSession(gateway, ForegroundTurnHost(this), scope).apply { open() }
+        val setup = ProviderSetup(gateway, secrets, secretsChanged = { withContext(Dispatchers.IO) { EmbeddedPython.call("secrets_changed", "") } },
+                                  session = { chat.sessionId }, reopenChat = chat::open)
+        // Undispatched: setup is showing before the core is Ready, so the chat never flashes first.
+        if (setup.needed()) scope.launch(start = CoroutineStart.UNDISPATCHED) { setup.open() }
         val facts = withContext(Dispatchers.IO) { JSONObject(EmbeddedPython.call("runtime_facts", "")) }
         val fts = if (facts.getBoolean("fts5")) "with FTS5" else "without FTS5"
-        return CoreState.Ready(gateway, chat, "Python ${facts.getString("python")} · SQLite ${facts.getString("sqlite")} $fts · " +
+        return CoreState.Ready(gateway, chat, setup, "Python ${facts.getString("python")} · SQLite ${facts.getString("sqlite")} $fts · " +
             "ready in ${SystemClock.elapsedRealtime() - began} ms")
     }
 }
