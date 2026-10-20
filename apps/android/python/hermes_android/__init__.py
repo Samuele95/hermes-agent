@@ -52,9 +52,28 @@ def start(paths: dict[str, str], native: Native) -> None:
     from hermes_android import secrets
 
     secrets.enable(native)
+    _seed_bundled_skills()
     from tui_gateway.embedded import EmbeddedTransport
 
     _transport = EmbeddedTransport.connect(native.emit)
+
+
+def _seed_bundled_skills() -> None:
+    """Copy the bundled skills into the home, as the CLI does at its startup (``hermes_cli.main``), which
+    the app's host never runs: at once into a home that has none, so the first session sees them,
+    else in the background to pick up an updated payload's changes."""
+    from agent.memory_provider import spawn_context_thread
+    from hermes_constants import get_hermes_home
+    from tools.skills_sync import sync_skills
+
+    skills = get_hermes_home() / "skills"
+    if skills.is_dir() and next(skills.rglob("SKILL.md"), None) is not None:
+        spawn_context_thread(sync_skills, name="bundled-skills-sync", kwargs={"quiet": True}).start()
+        return
+    sync_skills(quiet=True)
+    from hermes_cli import banner
+
+    banner._available_skills_cache = None  # computed before the seed: empty
 
 
 def submit(frame: str) -> None:

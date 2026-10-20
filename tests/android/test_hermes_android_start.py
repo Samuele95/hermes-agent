@@ -11,6 +11,7 @@ import importlib
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -103,6 +104,34 @@ def test_start_connects_the_host_as_a_gateway_peer(paths, isolated_home, monkeyp
     assert registry.get_source("android_keystore") is not None  # before the core read its environment
     assert frames[0]["params"]["type"] == "gateway.ready"
     assert {"jsonrpc": "2.0", "id": 1, "result": {"pong": True}} in frames
+
+
+def test_start_seeds_the_bundled_skills_into_a_home_that_has_none(paths, isolated_home, monkeypatch):
+    # The CLI seeds them at its startup (hermes_cli.main); the app's host never runs it.
+    frames: list[dict] = []
+    monkeypatch.setattr(hermes_android, "prepare", lambda _paths: None)
+
+    class Native:
+        def secrets(self) -> str:
+            return "{}"
+
+        def emit(self, line: str, /) -> bool:
+            frames.append(json.loads(line))
+            return True
+
+    hermes_android.start(paths, Native())
+    try:
+        hermes_android.submit(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "skills.manage", "params": {}}))
+        deadline = time.monotonic() + 30  # skills.manage answers from the RPC pool
+        while not any(f.get("id") == 1 for f in frames) and time.monotonic() < deadline:
+            time.sleep(0.05)
+    finally:
+        hermes_android.stop()
+
+    from hermes_constants import get_hermes_home
+    assert next((get_hermes_home() / "skills").rglob("SKILL.md"), None) is not None
+    listed = next(f["result"]["skills"] for f in frames if f.get("id") == 1)
+    assert "github" in [name for names in listed.values() for name in names]
 
 
 def test_importing_the_bootstrap_imports_no_core_module():
