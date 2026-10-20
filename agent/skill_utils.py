@@ -6,7 +6,6 @@ import hashlib
 import logging
 import os
 import re
-import sys
 from pathlib import Path, PurePath
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -86,17 +85,20 @@ def parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
     return frontmatter, body
 
 
-def skill_matches_platform_list(platforms: Any) -> bool:
-    """Return True when *platforms* is compatible with the current OS."""
+def skill_matches_platform_list(platforms: Any, family: Optional[str] = None) -> bool:
+    """Return True when *platforms* is compatible with *family* (default: this host's OS family).
+    Android (an embedding app, Termux) also takes ``linux`` skills: a Linux kernel and a POSIX userland."""
     if not platforms:
         return True
     if not isinstance(platforms, list):
         platforms = [platforms]
-    current = sys.platform
+    if family is None:
+        from hermes_platform.host.facts import os_family
+        family = os_family()
     for platform in platforms:
         normalized = str(platform).lower().strip()
         mapped = PLATFORM_MAP.get(normalized, normalized)
-        if current.startswith(mapped):
+        if family.startswith(mapped) or (family == "android" and mapped == "linux"):
             return True
     return False
 
