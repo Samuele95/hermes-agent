@@ -29,6 +29,17 @@ _SSH_MULTIPLEX = os.name != "nt"
 _load_hermes_env_vars = load_hermes_env_vars
 
 
+def openssh_client_missing() -> list[str]:
+    """Which of the OpenSSH programs this backend's default transport runs (``ssh``, ``scp``) are not on PATH.
+    The same lookup as :func:`_ensure_ssh_available`, which that transport then requires."""
+    return [tool for tool in ("ssh", "scp") if not shutil.which(tool)]
+
+
+def openssh_client_available() -> bool:
+    """Both OpenSSH programs this backend's default transport runs resolve."""
+    return not openssh_client_missing()
+
+
 def _ensure_ssh_available() -> None:
     """Fail fast with a clear error when the SSH client is unavailable."""
     for tool in ("ssh", "scp"):

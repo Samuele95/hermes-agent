@@ -209,7 +209,16 @@ _build_vercel_env = functools.partial(_build_sandbox_env, "vercel_sandbox")
 def _build_ssh_env(*, cwd, timeout, ssh_config, probe_only=False, **_):
     if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
         raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
-    return _SSHEnvironment(host=ssh_config["host"], user=ssh_config["user"], port=ssh_config.get("port", 22),
+    from tools.environments.remote_common import ensure_lazy_dep
+    from tools.environments.ssh import openssh_client_available
+
+    cls = _SSHEnvironment
+    if not openssh_client_available():
+        # No OpenSSH client (the Android app, Termux without openssh, Windows without ssh.exe): the same
+        # backend over asyncssh, installed on first use like any opt-in backend's SDK.
+        ensure_lazy_dep("asyncssh")
+        cls = importlib.import_module("tools.environments.asyncssh_env").AsyncsshSSHEnvironment
+    return cls(host=ssh_config["host"], user=ssh_config["user"], port=ssh_config.get("port", 22),
                            key_path=ssh_config.get("key", ""), cwd=cwd, timeout=timeout, probe_only=probe_only,
                            persistent=ssh_config.get("persistent", True))
 
@@ -314,12 +323,15 @@ def _ssh_pre(config: dict[str, Any], family: Optional[str] = None) -> bool:
         return _reject("the SSH host and user are not configured (TERMINAL_SSH_HOST / TERMINAL_SSH_USER); "
                        "run `hermes setup terminal` to enter them or pick the 'local' backend")
     if _host_family(family) == "android":
-        # SSHEnvironment shells out to the OpenSSH client; Termux can install it, an embedding app has none.
-        from hermes_platform.resolver import locate_command
-        missing = [name for name in ("ssh", "scp") if not locate_command(name).found]
+        # Termux can install the OpenSSH client; an embedding app has none but ships asyncssh, which the
+        # backend then uses. A gate never installs: asyncssh counts only once it is present.
+        from tools.environments.ssh import openssh_client_missing
+        missing = openssh_client_missing()
         if missing:
-            return _reject(f"the ssh backend needs the OpenSSH client ({', '.join(missing)} not found on PATH) "
-                           "on this Android host")
+            import pm.extras
+            if not pm.extras.available("asyncssh"):
+                return _reject(f"the ssh backend needs the OpenSSH client ({', '.join(missing)} not found on PATH) "
+                               "or the asyncssh extra on this Android host")
     return True
 
 
