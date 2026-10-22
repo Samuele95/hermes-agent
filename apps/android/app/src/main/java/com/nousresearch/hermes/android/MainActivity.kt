@@ -2,6 +2,8 @@ package com.nousresearch.hermes.android
 
 import android.Manifest
 import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -27,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import com.nousresearch.hermes.android.chat.ChatScreen
 import com.nousresearch.hermes.android.chat.PromptAnswers
 import com.nousresearch.hermes.android.setup.SetupScreen
+import com.nousresearch.hermes.android.setup.SshScreen
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -46,6 +49,12 @@ class MainActivity : ComponentActivity() {
                         is CoreState.Ready -> {
                             val chat by state.chat.state.collectAsState()
                             val setup by state.setup.state.collectAsState()
+                            val ssh by state.ssh.state.collectAsState()
+                            ssh?.let {
+                                SshScreen(it, onLook = { target -> app.ssh { look(target) } }, onTrust = { app.ssh { trust() } },
+                                          onCheck = { app.ssh { checkLogin() } }, onCopy = ::copyPublicKey, onClose = state.ssh::close)
+                                return@Surface
+                            }
                             setup?.let {
                                 SetupScreen(it, onPick = { slug -> app.setup { pick(slug) } }, onKey = { key -> app.setup { submitKey(key) } },
                                             onModel = { model, confirmed -> app.setup { choose(model, confirmed) } },
@@ -57,7 +66,8 @@ class MainActivity : ComponentActivity() {
                             val answers = PromptAnswers(approve = { p, choice -> app.chat { approve(p, choice) } },
                                                         clarify = { p, given -> app.chat { clarify(p, given) } },
                                                         secret = { p, value -> app.chat { secret(p, value) } })
-                            ChatScreen(chat, about = state.about, onSetup = { app.setup { open() } }, answers = answers, onSend = { text ->
+                            ChatScreen(chat, about = state.about, onSetup = { app.setup { open() } }, answers = answers,
+                                       onTerminal = state.ssh::open, onSend = { text ->
                                 if (Build.VERSION.SDK_INT >= 33 &&
                                     checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                                     askToNotify.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -69,6 +79,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /** The public key goes on the clipboard so the user can paste it into the host's authorized_keys. */
+    private fun copyPublicKey(publicKey: String) {
+        getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("SSH public key", publicKey))
     }
 
     private fun openInBrowser(url: String) {
