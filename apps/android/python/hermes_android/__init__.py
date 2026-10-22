@@ -118,3 +118,39 @@ def save_custom_endpoint(arg: str) -> str:
     from hermes_android import endpoints
 
     return endpoints.save_custom_endpoint(arg)
+
+
+def ssh_new_key(arg: str) -> str:
+    from hermes_android import ssh
+
+    return ssh.new_key(arg)
+
+
+def ssh_host_key(arg: str) -> str:
+    from hermes_android import ssh
+
+    return ssh.host_key(arg)
+
+
+def ssh_trust_host(arg: str) -> str:
+    from hermes_android import ssh
+
+    return ssh.trust_host(arg)
+
+
+def ssh_configure(arg: str) -> str:
+    from hermes_android import ssh
+
+    return ssh.configure(arg)
+
+
+def ssh_public_key(arg: str) -> str:
+    from hermes_android import ssh
+
+    return ssh.public_key(arg)
+
+
+def ssh_check_login(arg: str) -> str:
+    from hermes_android import ssh
+
+    return ssh.check_login(arg)
