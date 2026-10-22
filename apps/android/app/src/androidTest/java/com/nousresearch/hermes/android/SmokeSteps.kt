@@ -1,7 +1,11 @@
 package com.nousresearch.hermes.android
 
 import android.Manifest
+import android.accessibilityservice.AccessibilityService
+import android.graphics.Bitmap
 import android.os.Build
+import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import android.util.Log
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.ComposeTestRule
@@ -11,6 +15,7 @@ import androidx.compose.ui.test.performTextInput
 import androidx.test.platform.app.InstrumentationRegistry
 import com.nousresearch.hermes.android.chat.Chat
 import com.nousresearch.hermes.android.chat.Entry
+import java.io.File
 
 /**
  * What the smoke tests do on the real screen, against the endpoint `scripts/smoke.sh` or
@@ -59,6 +64,28 @@ class SmokeSteps(private val compose: ComposeTestRule) {
         val turn = chat().entries.drop(before + 1)
         Log.i(TAG, "turn after ${System.currentTimeMillis() - began} ms: $turn")
         return turn
+    }
+
+    /**
+     * Saves the screen as `<name>.png` in the app's external files dir (`adb pull` reaches it). What covers the app
+     * is closed first: Android 16's compatibility dialog over a debuggable app with 4 KB-aligned libraries, opened at
+     * every start (Dv13), which holds the focus as the `android` window, then the keyboard it hands the focus back to.
+     */
+    fun screenshot(name: String) {
+        val ui = InstrumentationRegistry.getInstrumentation().uiAutomation
+        fun dump(service: String) = ParcelFileDescriptor.AutoCloseInputStream(ui.executeShellCommand("dumpsys $service"))
+            .bufferedReader().use { it.readText() }
+        repeat(3) {
+            val covered = Regex("""mCurrentFocus=Window\{\S+ u0 android\}""").containsMatchIn(dump("window")) ||
+                "mInputShown=true" in dump("input_method")
+            if (!covered) return@repeat
+            ui.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+            SystemClock.sleep(1_000)
+        }
+        compose.waitForIdle()
+        File(app.getExternalFilesDir(null), "$name.png").outputStream().use {
+            ui.takeScreenshot().compress(Bitmap.CompressFormat.PNG, 100, it)
+        }
     }
 
     companion object {
