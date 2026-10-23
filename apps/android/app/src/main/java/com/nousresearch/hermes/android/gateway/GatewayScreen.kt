@@ -1,0 +1,59 @@
+package com.nousresearch.hermes.android.gateway
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import com.nousresearch.hermes.android.R
+
+/**
+ * The optional always-on gateway (D12, D23): on/off from what runs, start at boot, and on Samsung phones
+ * the system setting the app cannot change for the user ("Never sleeping apps").
+ */
+@Composable
+fun GatewayScreen(state: GatewayUi, samsung: Boolean, onOn: () -> Unit, onOff: () -> Unit,
+                  onStartAtBoot: (Boolean) -> Unit, onClose: () -> Unit, modifier: Modifier = Modifier) {
+    Column(modifier.fillMaxSize().safeDrawingPadding().padding(12.dp).testTag("gateway"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(stringResource(R.string.gateway_screen_title), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+            TextButton(onClose, Modifier.testTag("gateway-close")) { Text(stringResource(R.string.ssh_done)) }
+        }
+        Text(stringResource(R.string.gateway_explain))
+        val on = state.status != GatewayStatus.STOPPED
+        Setting(stringResource(R.string.gateway_switch), on, "gateway-switch") { if (it) onOn() else onOff() }
+        val status = when (state.status) {
+            GatewayStatus.STOPPED -> R.string.gateway_status_stopped
+            GatewayStatus.STARTING -> R.string.gateway_status_starting
+            GatewayStatus.RUNNING -> R.string.gateway_status_running
+        }
+        Text(stringResource(status), Modifier.testTag("gateway-status-${state.status.name.lowercase()}"),
+             style = MaterialTheme.typography.bodySmall)
+        Setting(stringResource(R.string.gateway_boot), state.startAtBoot, "gateway-boot", onStartAtBoot)
+        Text(stringResource(R.string.gateway_battery_hint), style = MaterialTheme.typography.bodySmall)
+        if (samsung) {
+            Text(stringResource(R.string.gateway_samsung_hint), Modifier.testTag("gateway-samsung-hint"),
+                 style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun Setting(label: String, checked: Boolean, tag: String, onChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, Modifier.weight(1f))
+        Switch(checked, onChange, Modifier.testTag(tag))
+    }
+}

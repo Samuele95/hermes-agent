@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -21,6 +22,8 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -28,6 +31,11 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.nousresearch.hermes.android.chat.ChatScreen
 import com.nousresearch.hermes.android.chat.PromptAnswers
+import com.nousresearch.hermes.android.gateway.GatewayScreen
+import com.nousresearch.hermes.android.gateway.GatewayUi
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import com.nousresearch.hermes.android.setup.SetupScreen
 import com.nousresearch.hermes.android.setup.SshScreen
 
@@ -50,6 +58,11 @@ class MainActivity : ComponentActivity() {
                             val chat by state.chat.state.collectAsState()
                             val setup by state.setup.state.collectAsState()
                             val ssh by state.ssh.state.collectAsState()
+                            val gateway by app.gateway.state.collectAsState()
+                            gateway?.let {
+                                GatewayPanel(it, app)
+                                return@Surface
+                            }
                             ssh?.let {
                                 SshScreen(it, onLook = { target -> app.ssh { look(target) } }, onTrust = { app.ssh { trust() } },
                                           onCheck = { app.ssh { checkLogin() } }, onCopy = ::copyPublicKey, onClose = state.ssh::close)
@@ -67,7 +80,7 @@ class MainActivity : ComponentActivity() {
                                                         clarify = { p, given -> app.chat { clarify(p, given) } },
                                                         secret = { p, value -> app.chat { secret(p, value) } })
                             ChatScreen(chat, about = state.about, onSetup = { app.setup { open() } }, answers = answers,
-                                       onTerminal = state.ssh::open, onSend = { text ->
+                                       onTerminal = state.ssh::open, onGateway = app.gateway::open, onSend = { text ->
                                 if (Build.VERSION.SDK_INT >= 33 &&
                                     checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                                     askToNotify.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -79,6 +92,28 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /** The gateway screen, kept current while it shows, and the battery dialog when the gateway was just turned on. */
+    @Composable
+    private fun GatewayPanel(ui: GatewayUi, app: HermesApplication) {
+        LaunchedEffect(Unit) {
+            while (true) {
+                withContext(Dispatchers.IO) { app.gateway.refresh() }
+                delay(1_000)
+            }
+        }
+        LaunchedEffect(ui.askBatteryExemption) {
+            if (!ui.askBatteryExemption) return@LaunchedEffect
+            app.gateway.batteryAsked()
+            try {
+                startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+            } catch (_: ActivityNotFoundException) {
+                // No such screen on this build of Android: the gateway runs anyway, Doze may pause it.
+            }
+        }
+        GatewayScreen(ui, samsung = Build.MANUFACTURER.equals("samsung", ignoreCase = true), onOn = app.gateway::turnOn,
+                      onOff = app.gateway::turnOff, onStartAtBoot = app.gateway::setStartAtBoot, onClose = app.gateway::close)
     }
 
     /** The public key goes on the clipboard so the user can paste it into the host's authorized_keys. */

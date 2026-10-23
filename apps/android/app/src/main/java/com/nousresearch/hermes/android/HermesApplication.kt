@@ -3,6 +3,11 @@ package com.nousresearch.hermes.android
 import android.app.Application
 import android.os.SystemClock
 import com.nousresearch.hermes.android.chat.ChatSession
+import com.nousresearch.hermes.android.gateway.GatewayControl
+import com.nousresearch.hermes.android.gateway.PrefsGatewaySettings
+import com.nousresearch.hermes.android.gateway.ServiceGatewayLauncher
+import com.nousresearch.hermes.android.gateway.batteryExempt
+import com.nousresearch.hermes.android.gateway.observeGateway
 import com.nousresearch.hermes.android.setup.ProviderSetup
 import com.nousresearch.hermes.android.setup.SshSetup
 import com.nousresearch.hermes.android.turn.ForegroundTurnHost
@@ -44,6 +49,12 @@ class HermesApplication : Application() {
 
     /** Provider keys, wrapped by the app's AndroidKeyStore key; the core reads them as environment variables. */
     val secrets: SecretStore by lazy { KeystoreSecretStore(File(noBackupFilesDir, "secrets")) { KeystoreSecretStore.androidKey() } }
+
+    /** The optional always-on gateway's controls; they need no core (the gateway runs in its own process). */
+    val gateway: GatewayControl by lazy {
+        GatewayControl(PrefsGatewaySettings(getSharedPreferences("gateway", MODE_PRIVATE)), ServiceGatewayLauncher(this),
+                       observe = { observeGateway(this) }, batteryExempt = { batteryExempt(this) })
+    }
 
     /** Starts the core on first use. */
     val core: StateFlow<CoreState>

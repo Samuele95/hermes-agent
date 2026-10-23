@@ -37,7 +37,8 @@ import com.nousresearch.hermes.android.R
 /** A chat's transcript and its message field. It holds only the draft; [onSend] gets the trimmed text. */
 @Composable
 fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifier, about: String? = null,
-               onSetup: (() -> Unit)? = null, answers: PromptAnswers? = null, onTerminal: (() -> Unit)? = null) {
+               onSetup: (() -> Unit)? = null, answers: PromptAnswers? = null, onTerminal: (() -> Unit)? = null,
+               onGateway: (() -> Unit)? = null) {
     var draft by rememberSaveable { mutableStateOf("") }
     val list = rememberLazyListState()
     val rows = chat.entries.size + (if (chat.running) 1 else 0) + (if (chat.activity != null) 1 else 0)
@@ -46,6 +47,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
     Column(modifier.fillMaxSize().safeDrawingPadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(about.orEmpty(), Modifier.weight(1f), style = MaterialTheme.typography.labelSmall)
+            onGateway?.let { TextButton(it, Modifier.testTag("open-gateway")) { Text(stringResource(R.string.chat_gateway)) } }
             onTerminal?.let { TextButton(it, Modifier.testTag("open-ssh")) { Text(stringResource(R.string.chat_terminal)) } }
             onSetup?.let { TextButton(it, Modifier.testTag("open-setup")) { Text(stringResource(R.string.chat_model)) } }
         }

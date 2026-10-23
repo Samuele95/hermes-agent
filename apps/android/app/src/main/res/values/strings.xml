@@ -5,6 +5,7 @@
     <string name="chat_send">Send</string>
     <string name="chat_model">Model</string>
     <string name="chat_terminal">Terminal</string>
+    <string name="chat_gateway">Gateway</string>
     <string name="ssh_title">Remote terminal (SSH)</string>
     <string name="ssh_done">Done</string>
     <string name="ssh_host">Host</string>
@@ -57,4 +58,13 @@
     <string name="gateway_restarting">Restarting…</string>
     <string name="gateway_stop">Stop</string>
     <string name="gateway_failed">Hermes gateway stopped</string>
+    <string name="gateway_screen_title">Always-on gateway</string>
+    <string name="gateway_explain">Keeps Hermes reachable from your messaging bot and runs your scheduled jobs while the app is closed. It runs in the background with a notification.</string>
+    <string name="gateway_switch">Always-on gateway</string>
+    <string name="gateway_status_stopped">Off.</string>
+    <string name="gateway_status_starting">Starting…</string>
+    <string name="gateway_status_running">Running.</string>
+    <string name="gateway_boot">Start when the phone starts</string>
+    <string name="gateway_battery_hint">When you turn it on, Android asks whether Hermes may ignore battery optimization: allowing it keeps the gateway connected while the phone sleeps.</string>
+    <string name="gateway_samsung_hint">On Samsung phones, also add Hermes to Settings › Battery › Background usage limits › Never sleeping apps, or the phone may put the gateway to sleep.</string>
 </resources>

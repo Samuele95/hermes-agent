@@ -8,6 +8,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- The optional always-on gateway (D23): a specialUse foreground service in its own process. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <application
         android:name=".HermesApplication"
         android:allowBackup="false"
@@ -34,5 +36,13 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Always-on messaging gateway and scheduled jobs: keeps the user's own Hermes bot connected and runs the jobs the user scheduled, while the app is closed." />
         </service>
+        <!-- Starts the gateway after a reboot, only when the user turned "start at boot" on. -->
+        <receiver
+            android:name=".gateway.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

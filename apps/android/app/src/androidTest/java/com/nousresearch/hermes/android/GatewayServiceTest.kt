@@ -9,9 +9,11 @@ import android.os.SystemClock
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.nousresearch.hermes.android.gateway.GatewayService
+import com.nousresearch.hermes.android.gateway.GatewayStatus
 import java.io.File
 import org.json.JSONObject
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -76,6 +78,20 @@ class GatewayServiceTest {
 
         waitFor("a drained stop") { if (state()?.optString("gateway_state") == "stopped") true else null }
         waitFor("the gateway process to end", 60) { if (gatewayPid() == null) true else null }
+    }
+
+    @Test
+    fun theAppsControlsDriveAndSeeTheGateway() {
+        val control = (context.applicationContext as HermesApplication).gateway
+        control.open()
+        assertEquals(GatewayStatus.STOPPED, control.state.value?.status)
+
+        control.turnOn()
+        waitFor("the controls to see it serving") { control.refresh(); control.state.value?.status?.takeIf { it == GatewayStatus.RUNNING } }
+        control.turnOff()
+
+        waitFor("the controls to see it stopped", 60) { control.refresh(); control.state.value?.status?.takeIf { it == GatewayStatus.STOPPED } }
+        control.close()
     }
 
     @Test
