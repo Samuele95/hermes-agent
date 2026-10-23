@@ -3,6 +3,11 @@
 The native bridge starts CPython with the stdlib and this directory on ``sys.path`` and calls
 :func:`start`. Frames to the app leave through ``native.emit``; the app's requests come back through
 :func:`submit`, one at a time, from the bridge thread.
+
+The app's optional ``:gateway`` process (D12) starts its own interpreter with the role ``gateway``: the
+same directories and keystore secrets, no chat transport, and a :class:`~hermes_android.gateway_host.GatewayHost`
+the app drives with :func:`gateway_start` / :func:`gateway_stop`, whose state changes leave through
+``native.emit``.
 """
 
 from __future__ import annotations
@@ -16,6 +21,8 @@ from typing import TYPE_CHECKING, Protocol
 if TYPE_CHECKING:  # the core is importable only after prepare()
     from tui_gateway.embedded import EmbeddedTransport
 
+    from hermes_android.gateway_host import GatewayHost
+
 
 class Native(Protocol):
     """The bridge's upcalls into the app (the native ``_hermes_native`` module)."""
@@ -26,6 +33,7 @@ class Native(Protocol):
 
 
 _transport: EmbeddedTransport | None = None
+_gateway: GatewayHost | None = None
 
 
 def prepare(paths: dict[str, str]) -> None:
@@ -46,12 +54,17 @@ def prepare(paths: dict[str, str]) -> None:
 
 
 def start(paths: dict[str, str], native: Native) -> None:
-    global _transport
+    global _transport, _gateway
     prepare(paths)
     # Registered before the core's first env load (tui_gateway.server's import), which applies it.
     from hermes_android import secrets
 
     secrets.enable(native)
+    if paths.get("role") == "gateway":
+        from hermes_android.gateway_host import GatewayHost
+
+        _gateway = GatewayHost(native.emit)
+        return
     _seed_bundled_skills()
     from tui_gateway.embedded import EmbeddedTransport
 
@@ -82,10 +95,33 @@ def submit(frame: str) -> None:
 
 
 def stop() -> None:
-    global _transport
+    global _transport, _gateway
     if _transport is not None:
         _transport.close()
         _transport = None
+    if _gateway is not None:
+        _gateway.stop()
+        _gateway = None
+
+
+def gateway_start(_arg: str) -> str:
+    """Starts the gateway in this (``:gateway``) process; its state changes arrive through ``native.emit``."""
+    if _gateway is not None:
+        _gateway.start()
+    return gateway_state("")
+
+
+def gateway_stop(_arg: str) -> str:
+    """Asks the gateway to drain and stop; ``stopped`` arrives through ``native.emit`` once it has."""
+    if _gateway is not None:
+        _gateway.stop()
+    return gateway_state("")
+
+
+def gateway_state(_arg: str) -> str:
+    import json
+
+    return json.dumps({"gateway": _gateway.state() if _gateway is not None else "stopped"})
 
 
 def runtime_facts(_arg: str) -> str:
