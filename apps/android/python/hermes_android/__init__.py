@@ -190,3 +190,21 @@ def ssh_check_login(arg: str) -> str:
     from hermes_android import ssh
 
     return ssh.check_login(arg)
+
+
+def telegram_configure(arg: str) -> str:
+    from hermes_android import telegram
+
+    return telegram.configure(arg)
+
+
+def telegram_status(arg: str) -> str:
+    from hermes_android import telegram
+
+    return telegram.status(arg)
+
+
+def telegram_check(arg: str) -> str:
+    from hermes_android import telegram
+
+    return telegram.check(arg)
