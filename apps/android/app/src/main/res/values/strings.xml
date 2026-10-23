@@ -50,4 +50,11 @@
     <string name="core_starting">Starting the core…</string>
     <string name="turn_channel">Replies in progress</string>
     <string name="turn_running">Hermes is replying…</string>
+    <string name="gateway_channel">Always-on gateway</string>
+    <string name="gateway_title">Hermes gateway</string>
+    <string name="gateway_starting">Starting…</string>
+    <string name="gateway_running">Running: scheduled jobs, and messages to your bot once it is set up, are handled here.</string>
+    <string name="gateway_restarting">Restarting…</string>
+    <string name="gateway_stop">Stop</string>
+    <string name="gateway_failed">Hermes gateway stopped</string>
 </resources>

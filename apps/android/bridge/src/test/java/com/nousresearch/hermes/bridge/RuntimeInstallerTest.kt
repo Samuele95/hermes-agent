@@ -6,6 +6,7 @@ import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.nio.file.Files
+import java.util.concurrent.TimeUnit
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlin.random.Random
@@ -23,6 +24,9 @@ class RuntimeInstallerTest {
     fun setUp() {
         root = Files.createTempDirectory("runtime-installer").toFile()
     }
+
+    /** What the root holds besides the installers' shared lock file. */
+    private fun installedEntries(): List<String> = root.list()!!.filter { it != ".lock" }.sorted()
 
     private fun zipOf(vararg entries: Pair<String, String>): ByteArray =
         zipOfBytes(*entries.map { (name, body) -> name to body.toByteArray() }.toTypedArray())
@@ -56,6 +60,60 @@ class RuntimeInstallerTest {
         assertEquals("y", File(dir, "site/hermes.py").readText())
     }
 
+    /** Hands its bytes out slowly, so two installers overlap for the whole extraction. */
+    private class SlowPayload(override val buildId: String, private val bytes: ByteArray) : PayloadSource {
+        val opens = java.util.concurrent.atomic.AtomicInteger()
+        override fun open(): InputStream {
+            opens.incrementAndGet()
+            return object : InputStream() {
+                private val inner = ByteArrayInputStream(bytes)
+                override fun read(): Int = inner.read()
+                override fun read(b: ByteArray, off: Int, len: Int): Int {
+                    Thread.sleep(5)
+                    return inner.read(b, off, minOf(len, 64))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun twoInstallersAtOnceShareOneExtraction() {
+        // The chat's process and the gateway's (`:gateway`) may both start on a fresh install.
+        val payload = SlowPayload("b1", zipOfBytes(*(1..20).map { "lib/m$it.py" to Random.nextBytes(512) }.toTypedArray()))
+        val installed = java.util.concurrent.ConcurrentLinkedQueue<Result<File>>()
+        val threads = (1..2).map { Thread { installed += runCatching { RuntimeInstaller(root).install(payload) } } }
+
+        threads.forEach(Thread::start)
+        threads.forEach { it.join(30_000) }
+
+        assertEquals(listOf(File(root, "b1"), File(root, "b1")), installed.map { it.getOrThrow() })
+        assertEquals(1, payload.opens.get())
+        assertEquals(20, File(root, "b1/lib").listFiles()!!.size)
+        assertEquals(listOf("b1"), installedEntries())
+    }
+
+    @Test
+    fun twoProcessesAtOnceShareOneExtraction() {
+        // The in-process monitor cannot order two processes: only the lock file does.
+        val zip = File(root.parentFile, "${root.name}.zip").apply {
+            writeBytes(zipOfBytes(*(1..20).map { "lib/m$it.py" to Random.nextBytes(512) }.toTypedArray()))
+            deleteOnExit()
+        }
+        val log = File(root.parentFile, "${root.name}.opens").apply { deleteOnExit() }
+        val java = File(System.getProperty("java.home"), "bin/java").path
+        val children = (1..2).map {
+            ProcessBuilder(java, "-cp", System.getProperty("java.class.path"), RuntimeInstallerChild::class.java.name,
+                           root.path, zip.path, log.path).inheritIO().start()
+        }
+
+        val exits = children.map { if (it.waitFor(60, TimeUnit.SECONDS)) it.exitValue() else -1 }
+
+        assertEquals(listOf(0, 0), exits)
+        assertEquals(1, log.readLines().size)
+        assertEquals(20, File(root, "b1/lib").listFiles()!!.size)
+        assertEquals(listOf("b1"), installedEntries())
+    }
+
     @Test
     fun aSecondInstallOfTheSameBuildDoesNotExtractAgain() {
         val payload = Payload("b1", zipOf("a.py" to "1"))
@@ -75,7 +133,7 @@ class RuntimeInstallerTest {
         val dir = installer.install(Payload("b2", zipOf("a.py" to "new")))
 
         assertEquals("new", File(dir, "a.py").readText())
-        assertEquals(listOf("b2"), root.list()!!.sorted())
+        assertEquals(listOf("b2"), installedEntries())
     }
 
     @Test
@@ -92,7 +150,7 @@ class RuntimeInstallerTest {
         assertThrows(IOException::class.java) { RuntimeInstaller(root).install(broken) }
 
         assertFalse(File(root, "b1").exists())
-        assertTrue(root.list()!!.isEmpty())
+        assertTrue(installedEntries().isEmpty())
     }
 
     @Test

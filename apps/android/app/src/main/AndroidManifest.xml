@@ -6,6 +6,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- The optional always-on gateway (D23): a specialUse foreground service in its own process. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <application
         android:name=".HermesApplication"
         android:allowBackup="false"
@@ -23,5 +25,14 @@
             android:name=".turn.TurnService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+        <service
+            android:name=".gateway.GatewayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:process=":gateway">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Always-on messaging gateway and scheduled jobs: keeps the user's own Hermes bot connected and runs the jobs the user scheduled, while the app is closed." />
+        </service>
     </application>
 </manifest>

@@ -32,14 +32,17 @@ object EmbeddedPython {
     @Volatile
     private var secrets: SecretStore? = null
 
-    /** Starts the interpreter and connects the core's transport; frames reach [sink] from now on. */
-    fun start(paths: HermesPaths, sink: FrameSink) {
+    /**
+     * Starts the interpreter; frames reach [sink] from now on. The `chat` role connects the core's
+     * transport; the `gateway` role (the app's `:gateway` process) prepares the messaging gateway instead.
+     */
+    fun start(paths: HermesPaths, sink: FrameSink, role: String = "chat") {
         check(this.sink == null) { "the embedded interpreter is already running" }
         this.sink = sink
         listOf(paths.home, paths.hermesHome, paths.tmp).forEach { it.mkdirs() }
         onBridge {
             System.loadLibrary("hermes_bridge")
-            nativeStart(paths.runtime.path, paths.home.path, paths.hermesHome.path, paths.tmp.path)
+            nativeStart(paths.runtime.path, paths.home.path, paths.hermesHome.path, paths.tmp.path, role)
         }
     }
 
@@ -53,6 +56,15 @@ object EmbeddedPython {
         withContext(Dispatchers.IO) { start(paths, gateway) }
         gateway.call(Methods.CLIENT_CAPABILITIES, ClientCapabilitiesParams(serverRequests = true))
         return gateway
+    }
+
+    /**
+     * Starts the interpreter as this process's gateway host (`hermes_android.gateway_host`), reading [secrets]
+     * like the chat's; its state changes reach [events] as JSON lines. [call] `gateway_start` to run it.
+     */
+    fun startGateway(paths: HermesPaths, secrets: SecretStore, events: FrameSink) {
+        this.secrets = secrets
+        start(paths, events, role = "gateway")
     }
 
     /** Sends one JSON-RPC frame to the core; the answer arrives as a frame. */
@@ -83,7 +95,7 @@ object EmbeddedPython {
     private fun readSecrets(): ByteArray = SecretsJson.encode(secrets?.all().orEmpty())
 
     @JvmStatic
-    private external fun nativeStart(runtime: String, home: String, hermesHome: String, tmp: String)
+    private external fun nativeStart(runtime: String, home: String, hermesHome: String, tmp: String, role: String)
 
     @JvmStatic
     private external fun nativeSubmit(frame: ByteArray)

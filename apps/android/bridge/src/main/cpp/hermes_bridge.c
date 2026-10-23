@@ -142,20 +142,22 @@ static PyStatus initialize(const char *runtime) {
 }
 
 JNIEXPORT void JNICALL Java_com_nousresearch_hermes_bridge_EmbeddedPython_nativeStart(
-        JNIEnv *env, jclass cls, jstring runtime, jstring home, jstring hermes_home, jstring tmp) {
+        JNIEnv *env, jclass cls, jstring runtime, jstring home, jstring hermes_home, jstring tmp, jstring role) {
     bridge = (*env)->NewGlobalRef(env, cls);
     on_frame = (*env)->GetStaticMethodID(env, cls, "onFrame", "([B)Z");
     read_secrets = (*env)->GetStaticMethodID(env, cls, "readSecrets", "()[B");
     if (on_frame == NULL || read_secrets == NULL || pthread_key_create(&attached, detach) != 0) return;
     const char *r = (*env)->GetStringUTFChars(env, runtime, NULL), *h = (*env)->GetStringUTFChars(env, home, NULL);
     const char *hh = (*env)->GetStringUTFChars(env, hermes_home, NULL), *t = (*env)->GetStringUTFChars(env, tmp, NULL);
+    const char *ro = (*env)->GetStringUTFChars(env, role, NULL);
     PyImport_AppendInittab("_hermes_native", init_native);
     PyStatus status = initialize(r);
     if (PyStatus_Exception(status)) {
         (*env)->ThrowNew(env, (*env)->FindClass(env, "java/lang/RuntimeException"),
                          status.err_msg ? status.err_msg : "Py_InitializeFromConfig failed");
     } else {
-        PyObject *paths = Py_BuildValue("{s:s,s:s,s:s,s:s}", "runtime", r, "home", h, "hermes_home", hh, "tmp", t);
+        PyObject *paths = Py_BuildValue("{s:s,s:s,s:s,s:s,s:s}", "runtime", r, "home", h, "hermes_home", hh, "tmp", t,
+                                         "role", ro);
         PyObject *native = PyImport_ImportModule("_hermes_native");
         bootstrap = PyImport_ImportModule("hermes_android");
         PyObject *done = paths && native && bootstrap ? PyObject_CallMethod(bootstrap, "start", "OO", paths, native) : NULL;
@@ -169,6 +171,7 @@ JNIEXPORT void JNICALL Java_com_nousresearch_hermes_bridge_EmbeddedPython_native
     (*env)->ReleaseStringUTFChars(env, home, h);
     (*env)->ReleaseStringUTFChars(env, hermes_home, hh);
     (*env)->ReleaseStringUTFChars(env, tmp, t);
+    (*env)->ReleaseStringUTFChars(env, role, ro);
 }
 
 static PyObject *decode(JNIEnv *env, jbyteArray bytes) {
