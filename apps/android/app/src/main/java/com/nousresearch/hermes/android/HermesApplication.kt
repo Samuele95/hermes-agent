@@ -6,6 +6,7 @@ import com.nousresearch.hermes.android.chat.ChatSession
 import com.nousresearch.hermes.android.gateway.GatewayControl
 import com.nousresearch.hermes.android.gateway.PrefsGatewaySettings
 import com.nousresearch.hermes.android.gateway.ServiceGatewayLauncher
+import com.nousresearch.hermes.android.gateway.TelegramSetup
 import com.nousresearch.hermes.android.gateway.batteryExempt
 import com.nousresearch.hermes.android.gateway.observeGateway
 import com.nousresearch.hermes.android.setup.ProviderSetup
@@ -33,7 +34,8 @@ import org.json.JSONObject
 sealed interface CoreState {
     data object Starting : CoreState
 
-    data class Ready(val gateway: CoreGateway, val chat: ChatSession, val setup: ProviderSetup, val ssh: SshSetup, val about: String) : CoreState
+    data class Ready(val gateway: CoreGateway, val chat: ChatSession, val setup: ProviderSetup, val ssh: SshSetup,
+                     val telegram: TelegramSetup, val about: String) : CoreState
 
     data class Failed(val reason: String) : CoreState
 }
@@ -87,6 +89,11 @@ class HermesApplication : Application() {
         scope.launch { (state.value as? CoreState.Ready)?.ssh?.action() }
     }
 
+    /** Runs one Telegram setup action on the app's scope, so it outlives the activity that asked for it. */
+    fun telegram(action: suspend TelegramSetup.() -> Unit) {
+        scope.launch { (state.value as? CoreState.Ready)?.telegram?.action() }
+    }
+
     private suspend fun start(): CoreState.Ready {
         val began = SystemClock.elapsedRealtime()
         val runtime = withContext(Dispatchers.IO) { RuntimeInstaller(File(noBackupFilesDir, "runtime")).install(AssetPayload(assets)) }
@@ -101,11 +108,13 @@ class HermesApplication : Application() {
                                   saveEndpoint = { request -> withContext(Dispatchers.IO) { EmbeddedPython.call("save_custom_endpoint", request) } })
         val ssh = SshSetup(secrets, secretsChanged = { withContext(Dispatchers.IO) { EmbeddedPython.call("secrets_changed", "") } },
                            bridge = { function, request -> withContext(Dispatchers.IO) { EmbeddedPython.call(function, request) } })
+        val telegram = TelegramSetup(secrets, secretsChanged = { withContext(Dispatchers.IO) { EmbeddedPython.call("secrets_changed", "") } },
+                                     bridge = { function, request -> withContext(Dispatchers.IO) { EmbeddedPython.call(function, request) } })
         // Undispatched: setup is showing before the core is Ready, so the chat never flashes first.
         if (setup.needed()) scope.launch(start = CoroutineStart.UNDISPATCHED) { setup.open() }
         val facts = withContext(Dispatchers.IO) { JSONObject(EmbeddedPython.call("runtime_facts", "")) }
         val fts = if (facts.getBoolean("fts5")) "with FTS5" else "without FTS5"
-        return CoreState.Ready(gateway, chat, setup, ssh, "Python ${facts.getString("python")} · SQLite ${facts.getString("sqlite")} $fts · " +
+        return CoreState.Ready(gateway, chat, setup, ssh, telegram, "Python ${facts.getString("python")} · SQLite ${facts.getString("sqlite")} $fts · " +
             "ready in ${SystemClock.elapsedRealtime() - began} ms")
     }
 }

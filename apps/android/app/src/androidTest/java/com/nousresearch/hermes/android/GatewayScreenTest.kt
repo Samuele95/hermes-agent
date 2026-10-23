@@ -1,14 +1,22 @@
 package com.nousresearch.hermes.android
 
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextReplacement
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.nousresearch.hermes.android.gateway.GatewayScreen
 import com.nousresearch.hermes.android.gateway.GatewayStatus
 import com.nousresearch.hermes.android.gateway.GatewayUi
+import com.nousresearch.hermes.android.gateway.TelegramState
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -22,9 +30,51 @@ class GatewayScreenTest {
 
     private val calls = mutableListOf<String>()
 
-    private fun show(state: GatewayUi, samsung: Boolean = false) = compose.setContent {
+    private fun show(state: GatewayUi, samsung: Boolean = false, telegram: TelegramState? = null) = compose.setContent {
         GatewayScreen(state, samsung, onOn = { calls += "on" }, onOff = { calls += "off" },
-                      onStartAtBoot = { calls += "boot $it" }, onClose = { calls += "close" })
+                      onStartAtBoot = { calls += "boot $it" }, onClose = { calls += "close" },
+                      telegram = telegram, onTelegramSave = { token, user -> calls += "telegram ${token?.decodeToString()} $user" })
+    }
+
+    private val stopped = GatewayUi(GatewayStatus.STOPPED, startAtBoot = false)
+
+    @Test
+    fun aNewBotIsSavedWithItsTokenAndTheAllowedUser() {
+        show(stopped, telegram = TelegramState())
+
+        compose.onNodeWithTag("telegram-save").assertIsNotEnabled()
+        compose.onNodeWithTag("telegram-token").assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Password))
+        compose.onNodeWithTag("telegram-token").performTextInput(" 123:abc ")
+        compose.onNodeWithTag("telegram-user").performTextInput("42")
+        compose.onNodeWithTag("telegram-save").performClick()
+
+        assertEquals(listOf("telegram 123:abc 42"), calls)
+    }
+
+    @Test
+    fun aBotAlreadySetUpShowsItselfAndKeepsItsTokenWhenOnlyTheUserChanges() {
+        show(stopped, telegram = TelegramState(tokenHeld = true, allowedUser = "42", bot = "@phone_hermes_bot"))
+
+        compose.onNodeWithText("@phone_hermes_bot", substring = true).assertExists()
+        compose.onNodeWithTag("telegram-user").performTextReplacement("43")
+        compose.onNodeWithTag("telegram-save").performClick()
+
+        assertEquals(listOf("telegram null 43"), calls)
+    }
+
+    @Test
+    fun aBuildWithoutTelegramSaysSoInsteadOfAForm() {
+        show(stopped, telegram = TelegramState(sdk = false))
+
+        compose.onNodeWithTag("telegram-no-sdk").assertExists()
+        compose.onNodeWithTag("telegram-token").assertDoesNotExist()
+    }
+
+    @Test
+    fun telegramsWordsAreShownWhenSetupFails() {
+        show(stopped, telegram = TelegramState(error = "Telegram refused the token (401)"))
+
+        compose.onNodeWithTag("telegram-error").assertExists()
     }
 
     @Test

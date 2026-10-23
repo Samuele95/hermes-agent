@@ -33,6 +33,7 @@ import com.nousresearch.hermes.android.chat.ChatScreen
 import com.nousresearch.hermes.android.chat.PromptAnswers
 import com.nousresearch.hermes.android.gateway.GatewayScreen
 import com.nousresearch.hermes.android.gateway.GatewayUi
+import com.nousresearch.hermes.android.gateway.TelegramSetup
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -60,7 +61,7 @@ class MainActivity : ComponentActivity() {
                             val ssh by state.ssh.state.collectAsState()
                             val gateway by app.gateway.state.collectAsState()
                             gateway?.let {
-                                GatewayPanel(it, app)
+                                GatewayPanel(it, app, state.telegram)
                                 return@Surface
                             }
                             ssh?.let {
@@ -96,7 +97,9 @@ class MainActivity : ComponentActivity() {
 
     /** The gateway screen, kept current while it shows, and the battery dialog when the gateway was just turned on. */
     @Composable
-    private fun GatewayPanel(ui: GatewayUi, app: HermesApplication) {
+    private fun GatewayPanel(ui: GatewayUi, app: HermesApplication, telegram: TelegramSetup) {
+        val bot by telegram.state.collectAsState()
+        LaunchedEffect(Unit) { app.telegram { open() } }
         LaunchedEffect(Unit) {
             while (true) {
                 withContext(Dispatchers.IO) { app.gateway.refresh() }
@@ -113,7 +116,9 @@ class MainActivity : ComponentActivity() {
             }
         }
         GatewayScreen(ui, samsung = Build.MANUFACTURER.equals("samsung", ignoreCase = true), onOn = app.gateway::turnOn,
-                      onOff = app.gateway::turnOff, onStartAtBoot = app.gateway::setStartAtBoot, onClose = app.gateway::close)
+                      onOff = app.gateway::turnOff, onStartAtBoot = app.gateway::setStartAtBoot,
+                      onClose = { telegram.close(); app.gateway.close() },
+                      telegram = bot, onTelegramSave = { token, user -> app.telegram { save(token, user) } })
     }
 
     /** The public key goes on the clipboard so the user can paste it into the host's authorized_keys. */
