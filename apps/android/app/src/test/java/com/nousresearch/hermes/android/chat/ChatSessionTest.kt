@@ -4,6 +4,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Assert.assertArrayEquals
 import com.nousresearch.hermes.bridge.protocol.ApprovalChoice
 import com.nousresearch.hermes.android.turn.TurnHost
+import com.nousresearch.hermes.bridge.protocol.BackendContract
 import com.nousresearch.hermes.bridge.CoreError
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
@@ -26,9 +27,10 @@ class ChatSessionTest {
     }
     private var submit: () -> String = { """{"status":"streaming"}""" }
     private var sessions = 0
+    private var contract = """"desktop_contract":${BackendContract.BACKEND_CONTRACT}"""
     private val core = FakeCoreGateway { method, _ ->
         when (method) {
-            "session.create" -> """{"session_id":"s${++sessions}","stored_session_id":"db1","message_count":0,"messages":[],"info":{}}"""
+            "session.create" -> """{"session_id":"s${++sessions}","stored_session_id":"db1","message_count":0,"messages":[],"info":{$contract}}"""
             "prompt.submit" -> submit()
             "session.interrupt" -> """{"status":"interrupted"}"""
             else -> error("unexpected $method")
@@ -57,6 +59,23 @@ class ChatSessionTest {
         assertEquals(Triple("prompt.submit", "s1", "hello"),
                      Triple(method, params.getValue("session_id").jsonPrimitive.content, params.getValue("text").jsonPrimitive.content))
         assertEquals(listOf(Entry.User("hello")), chat.state.value.entries)
+    }
+
+    @Test
+    fun aCoreOnTheContractTheAppWasBuiltForOpensQuietly() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+
+        assertEquals(emptyList<Entry>(), chat.state.value.entries)
+    }
+
+    @Test
+    fun aCoreOnAnotherContractIsSaidOnOpen() = runTest(UnconfinedTestDispatcher()) {
+        for (reported in listOf(""""desktop_contract":${BackendContract.BACKEND_CONTRACT + 1}""", "")) {  // newer, or none
+            contract = reported
+            val chat = openChat().apply { open() }
+
+            assertTrue("a notice for $reported", chat.state.value.entries.single() is Entry.Notice)
+        }
     }
 
     @Test
@@ -157,7 +176,7 @@ class ChatSessionTest {
         var created = 0
         val fresh = FakeCoreGateway { method, _ ->
             when (method) {
-                "session.create" -> """{"session_id":"s${++created}","stored_session_id":"db","message_count":0,"messages":[],"info":{}}"""
+                "session.create" -> """{"session_id":"s${++created}","stored_session_id":"db","message_count":0,"messages":[],"info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}}}"""
                 else -> submit()
             }
         }
@@ -251,7 +270,7 @@ class ChatSessionTest {
     fun aQuestionTheCoreWithdrewGetsNoAnswerAndReopeningDeclinesTheRest() = runTest(UnconfinedTestDispatcher()) {
         var created = 0
         val fresh = FakeCoreGateway { method, _ ->
-            if (method == "session.create") """{"session_id":"s${++created}","stored_session_id":"db","message_count":0,"messages":[],"info":{}}"""
+            if (method == "session.create") """{"session_id":"s${++created}","stored_session_id":"db","message_count":0,"messages":[],"info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}}}"""
             else submit()
         }
         val chat = ChatSession(fresh, host, backgroundScope, keepSecret = { _, _ -> }).apply { open() }

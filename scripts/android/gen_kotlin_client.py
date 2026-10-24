@@ -21,6 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACT = ROOT / "apps" / "shared" / "src" / "gateway-contract.openrpc.json"
+SERVER = ROOT / "tui_gateway" / "server.py"  # holds DESKTOP_BACKEND_CONTRACT
 PACKAGE = "com.nousresearch.hermes.bridge.protocol"
 OUT = ROOT / "apps" / "android" / "bridge" / "src" / "main" / "java" / Path(*PACKAGE.split(".")) / "Protocol.kt"
 
@@ -212,7 +213,15 @@ def _schema_of(entry: dict | None, where: str) -> dict:
     return entry["schema"]
 
 
-def render(contract: dict, surface: Surface = SURFACE) -> str:
+def core_backend_contract() -> int:
+    """The core's ``DESKTOP_BACKEND_CONTRACT`` (``tui_gateway/server.py``), read without importing the core."""
+    match = re.search(r"^DESKTOP_BACKEND_CONTRACT = (\d+)$", SERVER.read_text(encoding="utf-8-sig"), re.MULTILINE)
+    if match is None:
+        raise ValueError(f"DESKTOP_BACKEND_CONTRACT not found in {SERVER}")
+    return int(match.group(1))
+
+
+def render(contract: dict, surface: Surface = SURFACE, backend_contract: int | None = None) -> str:
     r = _Renderer(contract["components"]["schemas"])
     by_name = {kind: {entry["name"]: entry for entry in contract[key]}
                for kind, key in (("method", "methods"), ("event", "x-notifications"), ("request", "x-server-requests"))}
@@ -223,6 +232,9 @@ def render(contract: dict, surface: Surface = SURFACE) -> str:
         return by_name[kind][name]
 
     out = [HEADER, PRELUDE.format(package=PACKAGE)]
+    contract_number = core_backend_contract() if backend_contract is None else backend_contract
+    out.append("\n/** The `desktop_contract` the core reports in session.create, as this client was generated against. */\n"
+               f"object BackendContract {{\n    const val BACKEND_CONTRACT = {contract_number}\n}}\n")
     for title, kind, names in (("Methods", "method", surface.methods), ("Requests", "request", surface.requests)):
         out.append(f"\nobject {title} {{\n")
         cls = "Method" if kind == "method" else "Request"

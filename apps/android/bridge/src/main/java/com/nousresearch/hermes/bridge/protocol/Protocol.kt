@@ -20,6 +20,11 @@ class Event<P>(val name: String, val payload: KSerializer<P>)
 /** A core→client request (an in-turn prompt) and the serializers of its params and the answer. */
 class Request<P, R>(val name: String, val params: KSerializer<P>, val result: KSerializer<R>)
 
+/** The `desktop_contract` the core reports in session.create, as this client was generated against. */
+object BackendContract {
+    const val BACKEND_CONTRACT = 8
+}
+
 object Methods {
     val CLIENT_CAPABILITIES = Method("client.capabilities", ClientCapabilitiesParams.serializer(), ClientCapabilitiesResult.serializer())
     val CONFIG_GET = Method("config.get", ConfigGetParams.serializer(), ConfigGetResult.serializer())

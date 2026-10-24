@@ -15,6 +15,9 @@ import com.nousresearch.hermes.bridge.protocol.Methods
 import com.nousresearch.hermes.bridge.protocol.PromptSubmitParams
 import com.nousresearch.hermes.bridge.protocol.Requests
 import com.nousresearch.hermes.bridge.protocol.SessionCreateParams
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.JsonElement
+import com.nousresearch.hermes.bridge.protocol.BackendContract
 import com.nousresearch.hermes.bridge.protocol.SessionInterruptParams
 import com.nousresearch.hermes.bridge.protocol.ValueResult
 import java.util.concurrent.ConcurrentHashMap
@@ -75,14 +78,27 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, sc
     /** Opens a new core session; reopening leaves the previous one, and its transcript, behind. */
     suspend fun open() {
         val previous = id
-        val created = core.call(Methods.SESSION_CREATE, SessionCreateParams(source = SOURCE)).sessionId
+        val created = core.call(Methods.SESSION_CREATE, SessionCreateParams(source = SOURCE))
         // The previous session's turn would end in events this chat no longer follows: it ends here for the app.
         if (previous != null && chat.value.running) turns.end(previous)
-        id = created
+        id = created.sessionId
         chat.value = Chat()
+        contractNotice(created.info.desktopContract)?.let { notice -> chat.update { it.notice(notice) } }
         // The previous session's questions lose their card: settle them rather than leave its turn waiting.
         waiting.values.forEach { core.decline(it, "the chat moved to a new session") }
         waiting.clear()
+    }
+
+    /**
+     * The core and this client were built against the same `desktop_contract`, or the user hears that they were not:
+     * a payload rebuilt from another core would otherwise fail later, in ways that look like the core's own. The
+     * desktop warns the same way; a missing value reads as an older core.
+     */
+    private fun contractNotice(reported: JsonElement?): String? {
+        val core = (reported as? JsonPrimitive)?.intOrNull ?: 0
+        if (core == BackendContract.BACKEND_CONTRACT) return null
+        return "This app was built for core protocol ${BackendContract.BACKEND_CONTRACT}, but its core reports $core. " +
+            "Rebuild the app so the two match; some features may not work until then."
     }
 
     suspend fun send(text: String) {

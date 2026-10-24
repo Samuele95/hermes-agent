@@ -105,3 +105,12 @@ def test_an_event_without_payload_fields_carries_a_raw_object():
     out = gen.render(contract, surface=gen.Surface(methods=(), events=("message.start",), requests=()))
 
     assert 'val MESSAGE_START = Event("message.start", JsonObject.serializer())' in out
+
+
+def test_the_client_names_the_backend_contract_it_was_built_against():
+    # The core reports `desktop_contract` in every session.create; the app compares it with this number,
+    # as the desktop does, so a payload rebuilt from a newer core with a stale client says so.
+    from tui_gateway.server import DESKTOP_BACKEND_CONTRACT
+
+    assert gen.core_backend_contract() == DESKTOP_BACKEND_CONTRACT
+    assert f"const val BACKEND_CONTRACT = {DESKTOP_BACKEND_CONTRACT}" in gen.OUT.read_text(encoding="utf-8-sig")
