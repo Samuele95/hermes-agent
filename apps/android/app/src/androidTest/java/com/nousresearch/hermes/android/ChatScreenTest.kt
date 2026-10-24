@@ -7,6 +7,8 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
@@ -46,6 +48,27 @@ class ChatScreenTest {
 
         compose.onNodeWithText("Hel").assertExists()
         compose.onNodeWithText("Thinking…").assertExists()
+    }
+
+    @Test
+    fun theModelsReasoningShowsWhileItStreams() {
+        compose.setContent { ChatScreen(Chat(streaming = "", reasoning = "Weighing the options"), onSend = {}) }
+
+        compose.onNodeWithTag("reasoning-streaming").assertExists()
+        compose.onNodeWithText("Weighing the options", substring = true).assertExists()
+    }
+
+    @Test
+    fun aRepliesReasoningIsFoldedAwayUntilAskedFor() {
+        val chat = Chat(listOf(Entry.Reply("It is 42.", TurnStatus.COMPLETE, reasoning = "Counted twice"),
+                               Entry.Reply("Plain answer.", TurnStatus.COMPLETE)))
+        compose.setContent { ChatScreen(chat, onSend = {}) }
+
+        compose.onNodeWithText("Counted twice", substring = true).assertDoesNotExist()
+        compose.onAllNodesWithTag("reasoning-toggle").assertCountEquals(1)  // the plain answer has none
+        compose.onNodeWithTag("reasoning-toggle").performClick()
+
+        compose.onNodeWithText("Counted twice", substring = true).assertExists()
     }
 
     @Test

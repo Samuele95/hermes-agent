@@ -45,6 +45,43 @@ class ChatTest {
     }
 
     @Test
+    fun theReasoningStreamsBesideTheReplyAndStaysWithIt() {
+        val reasoning = Chat().sent("why?").after(event("message.start"), event("reasoning.delta", """{"text":"Think"}"""),
+                                                 event("reasoning.delta", """{"text":"ing."}"""))
+        assertEquals("Thinking.", reasoning.reasoning)
+
+        val done = reasoning.reduce(event("message.complete", """{"text":"Because.","status":"complete"}"""))
+
+        assertEquals(null, done.reasoning)
+        assertEquals(Entry.Reply("Because.", TurnStatus.COMPLETE, reasoning = "Thinking."), done.entries.last())
+    }
+
+    @Test
+    fun theCompletedReasoningIsAuthoritativeAndAPreviewStandsInUntilThen() {
+        val previewed = Chat().after(event("message.start"), event("reasoning.available", """{"text":"short preview"}"""))
+        assertEquals("short preview", previewed.reasoning)
+
+        val done = previewed.reduce(event("message.complete", """{"text":"ok","reasoning":"the full reasoning"}"""))
+
+        assertEquals("the full reasoning", (done.entries.last() as Entry.Reply).reasoning)
+    }
+
+    @Test
+    fun aReplyWithoutReasoningCarriesNone() {
+        val done = Chat().after(event("message.start"), event("message.complete", """{"text":"ok"}"""))
+
+        assertEquals(null, (done.entries.last() as Entry.Reply).reasoning)
+    }
+
+    @Test
+    fun aFailedTurnDropsItsPartialReasoning() {
+        val failed = Chat().after(event("message.start"), event("reasoning.delta", """{"text":"hm"}"""),
+                                  event("error", """{"message":"refused"}"""))
+
+        assertEquals(null, failed.reasoning)
+    }
+
+    @Test
     fun theCompletedTextIsAuthoritativeOverTheStream() {
         val chat = Chat().after(event("message.start"), event("message.delta", """{"text":"Draft"}"""),
                                 event("message.complete", """{"text":"Final answer"}"""))

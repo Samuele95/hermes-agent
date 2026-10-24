@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.nousresearch.hermes.android.R
@@ -53,6 +54,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
         }
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), list, PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(chat.entries) { EntryRow(it) }
+            chat.reasoning?.takeIf { chat.running && it.isNotBlank() }?.let { text -> item { Reasoning(text, Modifier.testTag("reasoning-streaming")) } }
             chat.streaming?.let { text -> item { Bubble(text.ifEmpty { "…" }, mine = false) } }
             chat.activity?.let { text -> item { Text(text, style = MaterialTheme.typography.labelMedium) } }
         }
@@ -72,6 +74,14 @@ private fun EntryRow(entry: Entry) {
     when (entry) {
         is Entry.User -> Bubble(entry.text, mine = true)
         is Entry.Reply -> Column(Modifier.testTag("entry-reply")) {
+            entry.reasoning?.let { reasoning ->
+                var shown by rememberSaveable { mutableStateOf(false) }
+                TextButton({ shown = !shown }, Modifier.testTag("reasoning-toggle")) {
+                    Text(stringResource(if (shown) R.string.chat_reasoning_hide else R.string.chat_reasoning_show),
+                         style = MaterialTheme.typography.labelMedium)
+                }
+                if (shown) Reasoning(reasoning)
+            }
             if (entry.text.isNotEmpty()) Bubble(entry.text, mine = false)
             // The core often words the error into the reply itself; show it apart only when it did not.
             entry.error?.takeUnless { it in entry.text }?.let { Text(it, color = MaterialTheme.colorScheme.error) }
@@ -81,6 +91,13 @@ private fun EntryRow(entry: Entry) {
                               style = MaterialTheme.typography.labelMedium)
         is Entry.Notice -> Text(entry.text, Modifier.testTag("entry-notice"), color = MaterialTheme.colorScheme.error)
     }
+}
+
+/** The model's reasoning: set apart from the reply, quieter than it. */
+@Composable
+private fun Reasoning(text: String, modifier: Modifier = Modifier) {
+    Text(text, modifier.padding(horizontal = 4.dp), style = MaterialTheme.typography.bodySmall,
+         color = MaterialTheme.colorScheme.onSurfaceVariant, fontStyle = FontStyle.Italic)
 }
 
 @Composable

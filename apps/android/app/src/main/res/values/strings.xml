@@ -6,6 +6,8 @@
     <string name="chat_model">Model</string>
     <string name="chat_terminal">Terminal</string>
     <string name="chat_gateway">Gateway</string>
+    <string name="chat_reasoning_show">Show reasoning</string>
+    <string name="chat_reasoning_hide">Hide reasoning</string>
     <string name="ssh_title">Remote terminal (SSH)</string>
     <string name="ssh_done">Done</string>
     <string name="ssh_host">Host</string>
