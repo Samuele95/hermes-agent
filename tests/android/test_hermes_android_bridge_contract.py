@@ -51,7 +51,7 @@ def test_the_contract_uses_only_known_types():
 def test_a_call_the_contract_does_not_name_is_refused(monkeypatch):
     started = _record(monkeypatch, "start", {})
 
-    for name in ("start", "stop", "prepare", "_seed_bundled_skills", "no_such_call"):
+    for name in ("start", "stop", "prepare", "submit", "no_such_call"):
         with pytest.raises(LookupError):
             hermes_android.call(name, "{}")
     assert started == []

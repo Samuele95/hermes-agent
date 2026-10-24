@@ -69,28 +69,10 @@ def start(paths: dict[str, str], native: Native) -> None:
 
         _gateway = GatewayHost(native.emit)
         return
-    _seed_bundled_skills()
-    from tui_gateway.embedded import EmbeddedTransport
+    from tui_gateway.embedded import EmbeddedTransport, seed_bundled_skills
 
+    seed_bundled_skills()  # the CLI does it at its startup, which the app's host never runs
     _transport = EmbeddedTransport.connect(native.emit)
-
-
-def _seed_bundled_skills() -> None:
-    """Copy the bundled skills into the home, as the CLI does at its startup (``hermes_cli.main``), which
-    the app's host never runs: at once into a home that has none, so the first session sees them,
-    else in the background to pick up an updated payload's changes."""
-    from agent.memory_provider import spawn_context_thread
-    from hermes_constants import get_hermes_home
-    from tools.skills_sync import sync_skills
-
-    skills = get_hermes_home() / "skills"
-    if skills.is_dir() and next(skills.rglob("SKILL.md"), None) is not None:
-        spawn_context_thread(sync_skills, name="bundled-skills-sync", kwargs={"quiet": True}).start()
-        return
-    sync_skills(quiet=True)
-    from hermes_cli import banner
-
-    banner._available_skills_cache = None  # computed before the seed: empty
 
 
 def submit(frame: str) -> None:
@@ -183,13 +165,10 @@ def runtime_facts(_arg: str) -> str:
 
 
 def secrets_changed(_arg: str) -> str:
-    """Re-pull the keystore's secrets after the app changed one; variables it no longer holds are revoked.
-    Agents already built keep the credentials they started with; new sessions see the change."""
-    from hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
+    """Re-pull the keystore's secrets after the app changed one; variables it no longer holds are revoked."""
+    from tui_gateway.embedded import reload_secrets
 
-    home = os.environ["HERMES_HOME"]
-    reset_secret_source_cache(home)
-    load_hermes_dotenv(hermes_home=home)
+    reload_secrets(os.environ["HERMES_HOME"])
     return "{}"
 
 
