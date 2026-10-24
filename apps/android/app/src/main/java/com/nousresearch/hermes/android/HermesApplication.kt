@@ -21,6 +21,8 @@ import com.nousresearch.hermes.bridge.HermesPaths
 import com.nousresearch.hermes.bridge.KeystoreSecretStore
 import com.nousresearch.hermes.bridge.RuntimeInstaller
 import com.nousresearch.hermes.bridge.SecretStore
+import com.nousresearch.hermes.bridge.ask
+import com.nousresearch.hermes.bridge.contract.BridgeCalls
 import java.io.File
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -32,7 +34,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 
 /** Where the process's core is: starting, ready with its chat, or failed to start. */
 sealed interface CoreState {
@@ -125,9 +126,9 @@ class HermesApplication : Application() {
         val history = SessionHistory(list = chat::pastSessions, resume = chat::resume)
         // Undispatched: setup is showing before the core is Ready, so the chat never flashes first.
         if (setup.needed()) scope.launch(start = CoroutineStart.UNDISPATCHED) { setup.open() }
-        val facts = JSONObject(bridge.call("runtime_facts", ""))
-        val fts = if (facts.getBoolean("fts5")) "with FTS5" else "without FTS5"
-        return CoreState.Ready(gateway, chat, setup, ssh, telegram, history, "Python ${facts.getString("python")} · SQLite ${facts.getString("sqlite")} $fts · " +
+        val facts = bridge.ask(BridgeCalls.RUNTIME_FACTS)
+        val fts = if (facts.fts5) "with FTS5" else "without FTS5"
+        return CoreState.Ready(gateway, chat, setup, ssh, telegram, history, "Python ${facts.python} · SQLite ${facts.sqlite} $fts · " +
             "ready in ${SystemClock.elapsedRealtime() - began} ms")
     }
 }

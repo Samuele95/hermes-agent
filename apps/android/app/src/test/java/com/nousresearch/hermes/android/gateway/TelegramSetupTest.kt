@@ -22,19 +22,19 @@ class TelegramSetupTest {
     private var secretsChanged = 0
     private val calls = mutableListOf<Pair<String, String>>()
     private val answers = mutableMapOf(
-        "telegram_status" to """{"token":false,"allowed_user":null}""",
+        "telegram_status" to """{"token":false,"allowed_user":null,"sdk":true}""",
         "telegram_configure" to """{"allowed_user":"42"}""",
         "telegram_check" to """{"bot":"@phone_hermes_bot"}""",
     )
     private val telegram = TelegramSetup(secrets) { function, arg ->
-        if (function == "secrets_changed") { secretsChanged++; return@TelegramSetup "" }
+        if (function == "secrets_changed") { secretsChanged++; return@TelegramSetup "{}" }
         calls += function to arg
         answers.getValue(function)
     }
 
     @Test
     fun openingShowsWhatIsSetUp() = runTest {
-        answers["telegram_status"] = """{"token":true,"allowed_user":"42"}"""
+        answers["telegram_status"] = """{"token":true,"allowed_user":"42","sdk":true}"""
 
         telegram.open()
 
@@ -106,7 +106,7 @@ class TelegramSetupTest {
     @Test
     fun savingWithoutANewTokenKeepsTheOneHeld() = runTest {
         held["TELEGRAM_BOT_TOKEN"] = "123:abc".toByteArray()
-        answers["telegram_status"] = """{"token":true,"allowed_user":"7"}"""
+        answers["telegram_status"] = """{"token":true,"allowed_user":"7","sdk":true}"""
         telegram.open()
 
         telegram.save(null, "42")

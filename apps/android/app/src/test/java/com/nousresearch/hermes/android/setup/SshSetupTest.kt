@@ -32,7 +32,7 @@ class SshSetupTest {
         "ssh_check_login" to """{"ok":true}""",
     )
     private val ssh = SshSetup(secrets) { function, arg ->
-        if (function == "secrets_changed") { secretsChanged++; return@SshSetup "" }
+        if (function == "secrets_changed") { secretsChanged++; return@SshSetup "{}" }
         calls += function to arg
         if (function == "ssh_host_key") """{"key":"ssh-ed25519 AAAAHOST","fingerprint":"SHA256:abc","pinned":"$pinned"}"""
         else answers.getValue(function)

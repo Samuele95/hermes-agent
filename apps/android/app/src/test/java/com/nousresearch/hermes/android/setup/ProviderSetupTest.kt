@@ -53,7 +53,7 @@ class ProviderSetupTest {
     private var secretsChanged: () -> Unit = { log += "secrets_changed" }
     private val bridge = AppBridge { function, request ->
         when (function) {
-            "secrets_changed" -> { secretsChanged(); "" }
+            "secrets_changed" -> { secretsChanged(); "{}" }
             "save_custom_endpoint" -> { log += "save_endpoint"; endpointSaved(Json.parseToJsonElement(request).jsonObject) }
             else -> error("unexpected bridge call $function")
         }

@@ -138,6 +138,10 @@ CASES = {
         ["apps/android/bridge/src/main/java/com/nousresearch/hermes/bridge/protocol/Protocol.kt"],
         _lanes(python=True, frontend=True),
     ),
+    "generated Android bridge contract → python + frontend": (
+        ["apps/android/bridge/src/main/java/com/nousresearch/hermes/bridge/contract/BridgeContract.kt"],
+        _lanes(python=True, frontend=True),
+    ),
     "desktop slash-registry JSON → python + frontend": (
         ["apps/desktop/src/lib/desktop-slash-registry.json"],
         _lanes(python=True, frontend=True),

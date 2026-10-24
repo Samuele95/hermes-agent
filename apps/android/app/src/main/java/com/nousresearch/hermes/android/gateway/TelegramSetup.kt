@@ -9,9 +9,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import com.nousresearch.hermes.bridge.CoreError
 import com.nousresearch.hermes.bridge.ask
-import com.nousresearch.hermes.bridge.request
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
+import com.nousresearch.hermes.bridge.contract.BridgeCalls
+import com.nousresearch.hermes.bridge.contract.TelegramConfigureParams
 
 /**
  * The phone's Telegram bot as the gateway screen shows it; [bot] is known once Telegram confirmed the token.
@@ -20,21 +19,11 @@ import kotlinx.serialization.Serializable
 data class TelegramState(val tokenHeld: Boolean = false, val allowedUser: String? = null, val bot: String? = null,
                          val busy: Boolean = false, val error: String? = null, val sdk: Boolean = true)
 
-@Serializable
-private data class TelegramStatus(val token: Boolean, @SerialName("allowed_user") val allowedUser: String? = null,
-                                  val sdk: Boolean = true)
-
-@Serializable
-private data class Allowed(@SerialName("allowed_user") val allowedUser: String)
-
-@Serializable
-private data class Checked(val bot: String)
-
 /**
  * The phone's own Telegram bot for the always-on gateway (D11, D24). The token goes to the keystore as
  * `TELEGRAM_BOT_TOKEN` (the core reads it through its secret source, re-read through [bridge]); one numeric user id may
  * talk to the bot. The id is set first, so a wrong one stores nothing, and a token Telegram refuses is deleted
- * again. [bridge] calls the app's Python side (`hermes_android.telegram_*`, JSON in and out). [state] is null
+ * again. [bridge] calls the app's Python side (the `telegram_*` calls of the bridge contract). [state] is null
  * while closed. A running gateway reads the keystore when it starts, so a change applies at its next start.
  */
 class TelegramSetup(
@@ -50,7 +39,7 @@ class TelegramSetup(
 
     suspend fun open() {
         setup.value = try {
-            val status = bridge.ask<TelegramStatus>("telegram_status")
+            val status = bridge.ask(BridgeCalls.TELEGRAM_STATUS)
             TelegramState(tokenHeld = status.token, allowedUser = status.allowedUser, sdk = status.sdk)
         } catch (failed: Exception) {
             TelegramState(error = forUser(failed))
@@ -65,13 +54,13 @@ class TelegramSetup(
     suspend fun save(token: ByteArray?, user: String) {
         setup.update { it?.copy(busy = true, error = null) }
         try {
-            val allowed = bridge.ask<Allowed>("telegram_configure", request("allowed_user" to user)).allowedUser
+            val allowed = bridge.ask(BridgeCalls.TELEGRAM_CONFIGURE, TelegramConfigureParams(user)).allowedUser
             if (token != null) {
                 secrets.put(TOKEN, token)
                 bridge.secretsChanged()
             }
             val bot = try {
-                bridge.ask<Checked>("telegram_check").bot
+                bridge.ask(BridgeCalls.TELEGRAM_CHECK).bot
             } catch (refused: CoreError) {
                 if (token != null) {
                     secrets.delete(TOKEN)

@@ -20,6 +20,7 @@ import com.nousresearch.hermes.android.HermesApplication
 import com.nousresearch.hermes.android.MainActivity
 import com.nousresearch.hermes.android.R
 import com.nousresearch.hermes.bridge.EmbeddedPython
+import com.nousresearch.hermes.bridge.contract.BridgeCalls
 import com.nousresearch.hermes.bridge.HermesPaths
 import com.nousresearch.hermes.bridge.RuntimeInstaller
 import java.io.File
@@ -52,7 +53,7 @@ class GatewayService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
-            if (booted) worker.execute { EmbeddedPython.call("gateway_stop", "") } else end()
+            if (booted) worker.execute { EmbeddedPython.call(BridgeCalls.GATEWAY_STOP.name, "") } else end()
             return START_STICKY
         }
         // A sticky restart comes back with no intent: it starts the gateway again like the first start.
@@ -72,7 +73,7 @@ class GatewayService : Service() {
             val runtime = RuntimeInstaller(File(noBackupFilesDir, "runtime")).install(AssetPayload(assets))
             val paths = HermesPaths(runtime, filesDir, File(filesDir, ".hermes"), cacheDir)
             EmbeddedPython.startGateway(paths, (application as HermesApplication).secrets) { line -> main.post { onEvent(line) } }
-            EmbeddedPython.call("gateway_start", "")
+            EmbeddedPython.call(BridgeCalls.GATEWAY_START.name, "")
         } catch (e: Exception) {
             main.post { failed(e.toString()) }
         }

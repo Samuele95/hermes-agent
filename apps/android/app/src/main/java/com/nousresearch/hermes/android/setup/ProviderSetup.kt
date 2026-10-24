@@ -5,6 +5,9 @@ import com.nousresearch.hermes.bridge.AppBridge
 import com.nousresearch.hermes.bridge.CoreError
 import com.nousresearch.hermes.bridge.CoreGateway
 import com.nousresearch.hermes.bridge.SecretStore
+import com.nousresearch.hermes.bridge.ask
+import com.nousresearch.hermes.bridge.contract.BridgeCalls
+import com.nousresearch.hermes.bridge.contract.SaveCustomEndpointParams
 import com.nousresearch.hermes.bridge.protocol.ConfigSetParams
 import com.nousresearch.hermes.bridge.protocol.Methods
 import com.nousresearch.hermes.bridge.protocol.ModelDisconnectParams
@@ -19,11 +22,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * A provider the app can set up: one that takes a pasted key ([keyEnv]), one signed in through the
@@ -187,21 +186,21 @@ class ProviderSetup(
         if (setup.value?.step != SetupStep.Endpoint) return
         val hasKey = key != null && key.isNotEmpty()
         step {
-            val request = JsonObject(mapOf("name" to JsonPrimitive(name), "base_url" to JsonPrimitive(baseUrl),
-                                           "model" to JsonPrimitive(model), "has_key" to JsonPrimitive(hasKey)))
             val saved = try {
-                Json.parseToJsonElement(bridge.call("save_custom_endpoint", request.toString())).jsonObject
+                bridge.ask(BridgeCalls.SAVE_CUSTOM_ENDPOINT, SaveCustomEndpointParams(name, baseUrl, model, hasKey))
+            } catch (refused: CoreError) {
+                key?.fill(0)
+                throw refused
             } catch (failed: RuntimeException) {  // a bridge failure carries a traceback, not words for the user
                 key?.fill(0)
                 throw CoreError(0, "Could not save the endpoint (${failed.javaClass.simpleName}).")
             }
-            saved["error"]?.let { key?.fill(0); throw CoreError(0, it.jsonPrimitive.content) }
-            val keyEnv = saved.getValue("key_env").jsonPrimitive.content
+            val keyEnv = saved.keyEnv
             if (hasKey) {
                 store(keyEnv, key!!)
                 bridge.secretsChanged()
             }
-            SetupStep.Models(ProviderChoice(saved.getValue("id").jsonPrimitive.content, name, keyEnv.ifEmpty { null }, true, listOf(model)))
+            SetupStep.Models(ProviderChoice(saved.id, name, keyEnv.ifEmpty { null }, true, listOf(model)))
         }
         if (setup.value?.error == null) choose(model)
     }
