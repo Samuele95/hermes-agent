@@ -81,7 +81,7 @@ class SshSetup(
     }
 
     private suspend fun ensureIdentity() {
-        if (secrets.get(IDENTITY) != null) return
+        if (secrets.contains(IDENTITY)) return
         val pair = call("ssh_new_key")
         secrets.put(IDENTITY, pair.text("private")!!.toByteArray())
         secretsChanged()

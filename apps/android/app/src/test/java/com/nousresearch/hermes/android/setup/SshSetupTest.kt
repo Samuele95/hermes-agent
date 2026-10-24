@@ -14,9 +14,10 @@ import org.junit.Test
 /** The SSH host setup (D22): an identity kept in the keystore, a host trusted only after its fingerprint is seen. */
 class SshSetupTest {
     private val held = mutableMapOf<String, ByteArray>()
+    private val handedOut = mutableListOf<ByteArray>()  // every plaintext the store gave out
     private val secrets = object : SecretStore {
         override fun put(name: String, value: ByteArray) { held[name] = value.copyOf() }
-        override fun get(name: String) = held[name]
+        override fun get(name: String) = held[name]?.copyOf()?.also { handedOut += it }  // a fresh copy, as the keystore's
         override fun delete(name: String) { held.remove(name) }
         override fun all(): Map<String, ByteArray> = held.toMap()
     }
@@ -73,6 +74,7 @@ class SshSetupTest {
 
         assertEquals("existing", held["TERMINAL_SSH_PRIVATE_KEY"]?.decodeToString())
         assertTrue(calls.none { it.first == "ssh_new_key" })
+        assertTrue("checking for the identity leaves no plaintext copy", handedOut.all { copy -> copy.all { it == 0.toByte() } })
     }
 
     @Test

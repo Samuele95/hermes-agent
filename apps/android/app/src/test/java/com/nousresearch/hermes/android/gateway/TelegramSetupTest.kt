@@ -12,9 +12,10 @@ import org.junit.Test
 /** The phone's Telegram bot (D11, D24): token in the keystore, one allowed user, checked with Telegram. */
 class TelegramSetupTest {
     private val held = mutableMapOf<String, ByteArray>()
+    private val handedOut = mutableListOf<ByteArray>()  // every plaintext the store gave out
     private val secrets = object : SecretStore {
         override fun put(name: String, value: ByteArray) { held[name] = value.copyOf() }
-        override fun get(name: String) = held[name]
+        override fun get(name: String) = held[name]?.copyOf()?.also { handedOut += it }  // a fresh copy, as the keystore's
         override fun delete(name: String) { held.remove(name) }
         override fun all(): Map<String, ByteArray> = held.toMap()
     }
@@ -85,6 +86,20 @@ class TelegramSetupTest {
         assertEquals(2, secretsChanged)  // once to try it, once to forget it
         assertEquals("Telegram refused the token (401)", telegram.state.value?.error)
         assertEquals(false, telegram.state.value?.tokenHeld)
+        assertTrue("no plaintext copy left behind", handedOut.all { copy -> copy.all { it == 0.toByte() } })
+    }
+
+    @Test
+    fun aCheckFailingOnTheTokenAlreadyHeldKeepsItAndLeavesNoPlaintextCopy() = runTest {
+        held["TELEGRAM_BOT_TOKEN"] = "123:abc".toByteArray()
+        answers["telegram_check"] = """{"error":"Telegram could not be reached"}"""
+        telegram.open()
+
+        telegram.save(null, "42")
+
+        assertEquals(true, telegram.state.value?.tokenHeld)
+        assertArrayEquals("123:abc".toByteArray(), held["TELEGRAM_BOT_TOKEN"])
+        assertTrue(handedOut.isNotEmpty() && handedOut.all { copy -> copy.all { it == 0.toByte() } })
     }
 
     @Test

@@ -16,6 +16,9 @@ interface SecretStore {
 
     fun get(name: String): ByteArray?
 
+    /** Whether [name] is held; the plaintext read to find out is wiped at once. */
+    fun contains(name: String): Boolean = get(name)?.also { it.fill(0) } != null
+
     fun delete(name: String)
 
     fun all(): Map<String, ByteArray>

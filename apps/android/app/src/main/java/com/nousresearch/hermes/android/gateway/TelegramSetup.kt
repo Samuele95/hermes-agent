@@ -67,7 +67,7 @@ class TelegramSetup(
                     secrets.delete(TOKEN)
                     secretsChanged()
                 }
-                setup.update { it?.copy(tokenHeld = secrets.get(TOKEN) != null, allowedUser = allowed.text("allowed_user")) }
+                setup.update { it?.copy(tokenHeld = secrets.contains(TOKEN), allowedUser = allowed.text("allowed_user")) }
                 return fail(refused)
             }
             setup.update { it?.copy(tokenHeld = true, allowedUser = allowed.text("allowed_user"), bot = checked.text("bot"), busy = false) }
