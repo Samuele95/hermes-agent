@@ -15,16 +15,16 @@ import android.os.Looper
 import android.os.Process
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
-import com.nousresearch.hermes.android.AssetPayload
 import com.nousresearch.hermes.android.HermesApplication
 import com.nousresearch.hermes.android.MainActivity
 import com.nousresearch.hermes.android.R
+import com.nousresearch.hermes.android.installRuntime
+import com.nousresearch.hermes.bridge.CoreRuntime
 import com.nousresearch.hermes.bridge.EmbeddedPython
+import com.nousresearch.hermes.bridge.ask
 import com.nousresearch.hermes.bridge.contract.BridgeCalls
-import com.nousresearch.hermes.bridge.HermesPaths
-import com.nousresearch.hermes.bridge.RuntimeInstaller
-import java.io.File
 import java.util.concurrent.Executors
+import kotlinx.coroutines.runBlocking
 
 /**
  * The optional always-on messaging gateway (D12, D23), in its own `:gateway` process: its own interpreter
@@ -47,13 +47,16 @@ class GatewayService : Service() {
 
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor { Thread(it, "gateway-control") }
+
+    /** The core this process embeds, as the gateway host; the one adapter is [EmbeddedPython]. */
+    private val runtime: CoreRuntime = EmbeddedPython
     private var booted = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
-            if (booted) worker.execute { EmbeddedPython.call(BridgeCalls.GATEWAY_STOP.name, "") } else end()
+            if (booted) worker.execute { runBlocking { runtime.bridge.ask(BridgeCalls.GATEWAY_STOP) } } else end()
             return START_STICKY
         }
         // A sticky restart comes back with no intent: it starts the gateway again like the first start.
@@ -70,10 +73,8 @@ class GatewayService : Service() {
 
     private fun boot() {
         try {
-            val runtime = RuntimeInstaller(File(noBackupFilesDir, "runtime")).install(AssetPayload(assets))
-            val paths = HermesPaths(runtime, filesDir, File(filesDir, ".hermes"), cacheDir)
-            EmbeddedPython.startGateway(paths, (application as HermesApplication).secrets) { line -> main.post { onEvent(line) } }
-            EmbeddedPython.call(BridgeCalls.GATEWAY_START.name, "")
+            runtime.startGateway(installRuntime(this), (application as HermesApplication).secrets) { line -> main.post { onEvent(line) } }
+            runBlocking { runtime.bridge.ask(BridgeCalls.GATEWAY_START) }
         } catch (e: Exception) {
             main.post { failed(e.toString()) }
         }

@@ -23,8 +23,8 @@ fun interface FrameSink {
  * Python is entered from one bridge thread only, which is also its main thread: [start], [submit] and
  * [call] run there in order, and the UI thread never enters Python.
  */
-object EmbeddedPython {
-    private val bridge = Executors.newSingleThreadExecutor { Thread(it, "hermes-python") }
+object EmbeddedPython : CoreRuntime {
+    private val pythonThread = Executors.newSingleThreadExecutor { Thread(it, "hermes-python") }
 
     @Volatile
     private var sink: FrameSink? = null
@@ -50,7 +50,7 @@ object EmbeddedPython {
      * Starts the core and returns its gateway, having told the core that this app answers in-turn prompts.
      * The core reads [secrets] as environment variables, through its `android_keystore` secret source.
      */
-    suspend fun connect(paths: HermesPaths, secrets: SecretStore): CoreGateway {
+    override suspend fun connect(paths: HermesPaths, secrets: SecretStore): CoreGateway {
         this.secrets = secrets
         val gateway = FrameCoreGateway(::submit)
         withContext(Dispatchers.IO) { start(paths, gateway) }
@@ -62,14 +62,16 @@ object EmbeddedPython {
      * Starts the interpreter as this process's gateway host (`hermes_android.gateway_host`), reading [secrets]
      * like the chat's; its state changes reach [events] as JSON lines. [call] `gateway_start` to run it.
      */
-    fun startGateway(paths: HermesPaths, secrets: SecretStore, events: FrameSink) {
+    override fun startGateway(paths: HermesPaths, secrets: SecretStore, events: FrameSink) {
         this.secrets = secrets
         start(paths, events, role = "gateway")
     }
 
+    override val bridge: AppBridge get() = EmbeddedBridge
+
     /** Sends one JSON-RPC frame to the core; the answer arrives as a frame. */
     fun submit(frame: String) {
-        bridge.execute { nativeSubmit(frame.toByteArray(Charsets.UTF_8)) }
+        pythonThread.execute { nativeSubmit(frame.toByteArray(Charsets.UTF_8)) }
     }
 
     /** Makes the bridge call [function] (declared in `hermes_android/bridge_contract.json`, D26) and returns its reply. */
@@ -78,7 +80,7 @@ object EmbeddedPython {
 
     private fun <T> onBridge(block: () -> T): T =
         try {
-            bridge.submit(Callable(block)).get()
+            pythonThread.submit(Callable(block)).get()
         } catch (e: ExecutionException) {
             throw e.cause ?: e
         }

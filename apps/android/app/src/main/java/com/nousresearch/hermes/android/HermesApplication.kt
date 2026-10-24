@@ -19,18 +19,13 @@ import com.nousresearch.hermes.android.setup.ProviderSetup
 import com.nousresearch.hermes.android.setup.SshSetup
 import com.nousresearch.hermes.android.turn.ForegroundTurnHost
 import com.nousresearch.hermes.bridge.CoreGateway
-import com.nousresearch.hermes.bridge.EmbeddedBridge
+import com.nousresearch.hermes.bridge.CoreRuntime
 import com.nousresearch.hermes.bridge.EmbeddedPython
-import com.nousresearch.hermes.bridge.HermesPaths
 import com.nousresearch.hermes.bridge.KeystoreSecretStore
-import com.nousresearch.hermes.bridge.RuntimeInstaller
 import com.nousresearch.hermes.bridge.SecretStore
-import com.nousresearch.hermes.bridge.ask
-import com.nousresearch.hermes.bridge.contract.BridgeCalls
 import java.io.File
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -136,25 +131,13 @@ class HermesApplication : Application() {
         scope.launch { (state.value as? CoreState.Ready)?.telegram?.action() }
     }
 
+    /** The core this process embeds; the one adapter is [EmbeddedPython]. */
+    private val runtime: CoreRuntime = EmbeddedPython
+
     private suspend fun start(): CoreState.Ready {
         val began = SystemClock.elapsedRealtime()
-        val runtime = withContext(Dispatchers.IO) { RuntimeInstaller(File(noBackupFilesDir, "runtime")).install(AssetPayload(assets)) }
-        val gateway = EmbeddedPython.connect(HermesPaths(runtime, filesDir, File(filesDir, ".hermes"), cacheDir), secrets)
-        val bridge = EmbeddedBridge
-        val keepSecret: suspend (String, ByteArray) -> Unit = { name, value ->
-            secrets.put(name, value)
-            bridge.secretsChanged()
-        }
-        val chat = ChatSession(gateway, ForegroundTurnHost(this), scope, keepSecret, notifier).apply { open() }
-        val setup = ProviderSetup(gateway, secrets, bridge, session = { chat.sessionId }, reopenChat = chat::open)
-        val ssh = SshSetup(secrets, bridge)
-        val telegram = TelegramSetup(secrets, bridge)
-        val history = SessionHistory(list = chat::pastSessions, resume = chat::resume)
-        // Undispatched: setup is showing before the core is Ready, so the chat never flashes first.
-        if (setup.needed()) scope.launch(start = CoroutineStart.UNDISPATCHED) { setup.open() }
-        val facts = bridge.ask(BridgeCalls.RUNTIME_FACTS)
-        val fts = if (facts.fts5) "with FTS5" else "without FTS5"
-        return CoreState.Ready(gateway, chat, setup, ssh, telegram, history, "Python ${facts.python} · SQLite ${facts.sqlite} $fts · " +
-            "ready in ${SystemClock.elapsedRealtime() - began} ms")
+        val paths = withContext(Dispatchers.IO) { installRuntime(this@HermesApplication) }
+        val ready = composeCore(runtime, paths, secrets, ForegroundTurnHost(this), notifier, scope)
+        return ready.copy(about = "${ready.about} · ready in ${SystemClock.elapsedRealtime() - began} ms")
     }
 }
