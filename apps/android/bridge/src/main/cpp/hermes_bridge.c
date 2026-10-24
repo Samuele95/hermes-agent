@@ -200,7 +200,8 @@ JNIEXPORT jbyteArray JNICALL Java_com_nousresearch_hermes_bridge_EmbeddedPython_
     PyGILState_STATE gil = PyGILState_Ensure();
     const char *name = (*env)->GetStringUTFChars(env, function, NULL);
     PyObject *text = decode(env, arg);
-    PyObject *result = text ? PyObject_CallMethod(bootstrap, name, "O", text) : NULL;
+    // Only the calls bridge_contract.json declares: hermes_android.call refuses any other name (D26).
+    PyObject *result = text ? PyObject_CallMethod(bootstrap, "call", "sO", name, text) : NULL;
     Py_ssize_t size;
     const char *utf8 = result ? PyUnicode_AsUTF8AndSize(result, &size) : NULL;
     jbyteArray out = NULL;

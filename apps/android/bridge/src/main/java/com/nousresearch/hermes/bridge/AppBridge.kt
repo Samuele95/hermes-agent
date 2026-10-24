@@ -8,7 +8,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonObject
 
-/** The app's calls into its own Python half: `hermes_android.<function>(arg)`, JSON strings in and out. */
+/** The app's calls into its own Python half, as `hermes_android/bridge_contract.json` declares them (D26): JSON in and out. */
 fun interface AppBridge {
     suspend fun call(function: String, arg: String): String
 

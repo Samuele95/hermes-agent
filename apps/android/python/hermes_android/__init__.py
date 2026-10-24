@@ -8,10 +8,14 @@ The app's optional ``:gateway`` process (D12) starts its own interpreter with th
 same directories and keystore secrets, no chat transport, and a :class:`~hermes_android.gateway_host.GatewayHost`
 the app drives with :func:`gateway_start` / :func:`gateway_stop`, whose state changes leave through
 ``native.emit``.
+
+Every other call from the app goes through :func:`call`, which admits only the calls declared in
+``bridge_contract.json`` (D26) and holds their requests and replies to it.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import site
 import sys
@@ -104,6 +108,49 @@ def stop() -> None:
         _gateway = None
 
 
+_CONTRACT = json.loads(Path(__file__).with_name("bridge_contract.json").read_text(encoding="utf-8"))
+
+
+def _conforms(kind: str, value: object) -> bool:
+    if kind in _CONTRACT["enums"]:
+        return value in _CONTRACT["enums"][kind]
+    if kind == "string?":
+        return value is None or isinstance(value, str)
+    if kind == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    return isinstance(value, {"string": str, "boolean": bool}[kind])
+
+
+def _mismatch(declared: dict[str, str], given: object) -> str | None:
+    """Why ``given`` is not an object with exactly the ``declared`` fields, or None when it is."""
+    if not isinstance(given, dict):
+        return "not a JSON object"
+    if set(given) != set(declared):
+        return f"fields {sorted(given)}, declared {sorted(declared)}"
+    wrong = [name for name, kind in declared.items() if not _conforms(kind, given[name])]
+    return f"{wrong} not of the declared type" if wrong else None
+
+
+def call(function: str, arg: str) -> str:
+    """The app's way into this module: ``function`` must be a call ``bridge_contract.json`` declares, ``arg`` its
+    request (an empty string is an empty request). The answer is the call's declared reply, or ``{error}``
+    in words for the user. Anything else is a bug on one side of the bridge and raises, so it never reaches
+    the app as a reply it would misread."""
+    declared = _CONTRACT["calls"].get(function)
+    if declared is None:
+        raise LookupError(f"{function!r} is not a bridge call")
+    why = _mismatch(declared["params"], json.loads(arg) if arg else {})
+    if why:
+        raise ValueError(f"request for {function}: {why}")
+    answer = globals()[function](arg)
+    reply = json.loads(answer)
+    if not (isinstance(reply, dict) and set(reply) == {"error"} and isinstance(reply["error"], str)):
+        why = _mismatch(declared["reply"], reply)
+        if why:
+            raise TypeError(f"reply of {function}: {why}")
+    return answer
+
+
 def gateway_start(_arg: str) -> str:
     """Starts the gateway in this (``:gateway``) process; its state changes arrive through ``native.emit``."""
     if _gateway is not None:
@@ -119,14 +166,11 @@ def gateway_stop(_arg: str) -> str:
 
 
 def gateway_state(_arg: str) -> str:
-    import json
-
     return json.dumps({"gateway": _gateway.state() if _gateway is not None else "stopped"})
 
 
 def runtime_facts(_arg: str) -> str:
     """The interpreter facts the app shows, as JSON (FTS5 backs session search; python.org's SQLite lacks it)."""
-    import json
     import sqlite3
 
     try:
@@ -146,7 +190,7 @@ def secrets_changed(_arg: str) -> str:
     home = os.environ["HERMES_HOME"]
     reset_secret_source_cache(home)
     load_hermes_dotenv(hermes_home=home)
-    return ""
+    return "{}"
 
 
 def save_custom_endpoint(arg: str) -> str:

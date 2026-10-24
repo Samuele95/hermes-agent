@@ -63,4 +63,14 @@ class EmbeddedPythonTest {
         assertTrue("sqlite ${facts.getString("sqlite")} lacks FTS5", facts.getBoolean("fts5"))
         assertEquals("", facts.getString("executable"))
     }
+
+    @Test
+    fun onlyTheDeclaredBridgeCallsReachThePythonHalf() {
+        core
+        // `stop` is a function of hermes_android, but no bridge call: calling it would close the app's core.
+        val refused = assertThrows(RuntimeException::class.java) { EmbeddedPython.call("stop", "") }
+
+        assertTrue(refused.message, refused.message!!.contains("not a bridge call"))
+        assertEquals(PingResult(pong = true), runBlocking { core.call(Methods.PING, PingParams) })
+    }
 }

@@ -72,7 +72,7 @@ object EmbeddedPython {
         bridge.execute { nativeSubmit(frame.toByteArray(Charsets.UTF_8)) }
     }
 
-    /** Calls `hermes_android.<function>(arg)` and returns its string result. */
+    /** Makes the bridge call [function] (declared in `hermes_android/bridge_contract.json`, D26) and returns its reply. */
     fun call(function: String, arg: String): String =
         onBridge { String(nativeCall(function, arg.toByteArray(Charsets.UTF_8)), Charsets.UTF_8) }
 
