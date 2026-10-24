@@ -8,6 +8,13 @@
     <string name="chat_gateway">Gateway</string>
     <string name="chat_reasoning_show">Show reasoning</string>
     <string name="chat_stop">Stop</string>
+    <string name="chat_history">History</string>
+    <string name="history_title">Past conversations</string>
+    <string name="history_empty">No past conversations yet.</string>
+    <plurals name="history_messages">
+        <item quantity="one">%d message</item>
+        <item quantity="other">%d messages</item>
+    </plurals>
     <string name="chat_reasoning_hide">Hide reasoning</string>
     <string name="ssh_title">Remote terminal (SSH)</string>
     <string name="ssh_done">Done</string>

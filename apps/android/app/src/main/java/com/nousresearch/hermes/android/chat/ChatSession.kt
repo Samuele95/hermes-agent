@@ -15,6 +15,9 @@ import com.nousresearch.hermes.bridge.protocol.Methods
 import com.nousresearch.hermes.bridge.protocol.PromptSubmitParams
 import com.nousresearch.hermes.bridge.protocol.Requests
 import com.nousresearch.hermes.bridge.protocol.SessionCreateParams
+import com.nousresearch.hermes.bridge.protocol.SessionResumeParams
+import com.nousresearch.hermes.bridge.protocol.SessionListRow
+import com.nousresearch.hermes.bridge.protocol.SessionListParams
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.JsonElement
 import com.nousresearch.hermes.bridge.protocol.BackendContract
@@ -77,13 +80,28 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, sc
 
     /** Opens a new core session; reopening leaves the previous one, and its transcript, behind. */
     suspend fun open() {
-        val previous = id
         val created = core.call(Methods.SESSION_CREATE, SessionCreateParams(source = SOURCE))
+        switchTo(created.sessionId, Chat(), created.info.desktopContract)
+    }
+
+    /** Past conversations with something in them, as the core lists them (newest first). */
+    suspend fun pastSessions(): List<SessionListRow> =
+        core.call(Methods.SESSION_LIST, SessionListParams(limit = 100)).sessions.filter { it.messageCount > 0 }
+
+    /** Continues stored session [sessionId]: the chat shows its transcript and sends to it from now on. */
+    suspend fun resume(sessionId: String) {
+        val resumed = core.call(Methods.SESSION_RESUME, SessionResumeParams(sessionId = sessionId, source = SOURCE))
+        switchTo(resumed.sessionId, Chat(entries = transcriptOf(resumed.messages)), resumed.info.desktopContract)
+    }
+
+    /** Makes [live] the chat's session, showing [shown]; the previous session's turn and questions are let go. */
+    private fun switchTo(live: String, shown: Chat, reportedContract: JsonElement?) {
+        val previous = id
         // The previous session's turn would end in events this chat no longer follows: it ends here for the app.
         if (previous != null && chat.value.running) turns.end(previous)
-        id = created.sessionId
-        chat.value = Chat()
-        contractNotice(created.info.desktopContract)?.let { notice -> chat.update { it.notice(notice) } }
+        id = live
+        chat.value = shown
+        contractNotice(reportedContract)?.let { notice -> chat.update { it.notice(notice) } }
         // The previous session's questions lose their card: settle them rather than leave its turn waiting.
         waiting.values.forEach { core.decline(it, "the chat moved to a new session") }
         waiting.clear()

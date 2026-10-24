@@ -5,6 +5,7 @@ import org.junit.Assert.assertArrayEquals
 import com.nousresearch.hermes.bridge.protocol.ApprovalChoice
 import com.nousresearch.hermes.android.turn.TurnHost
 import com.nousresearch.hermes.bridge.protocol.BackendContract
+import com.nousresearch.hermes.bridge.protocol.TurnStatus
 import com.nousresearch.hermes.bridge.CoreError
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
@@ -33,6 +34,11 @@ class ChatSessionTest {
             "session.create" -> """{"session_id":"s${++sessions}","stored_session_id":"db1","message_count":0,"messages":[],"info":{$contract}}"""
             "prompt.submit" -> submit()
             "session.interrupt" -> """{"status":"interrupted"}"""
+            "session.list" -> """{"sessions":[{"id":"db-old","title":"Calendar","message_count":3,"started_at":1.0},
+                                                 {"id":"db-empty","message_count":0,"started_at":2.0}]}"""
+            "session.resume" -> """{"session_id":"s-resumed","message_count":2,"stored_session_id":"db-old",
+                                   "messages":[{"role":"user","text":"what's on my calendar?"},{"role":"assistant","text":"Two meetings."}],
+                                   "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}}}"""
             else -> error("unexpected $method")
         }
     }
@@ -125,6 +131,39 @@ class ChatSessionTest {
         chat.cancel()
 
         assertTrue(core.calls.none { it.first == "session.interrupt" })
+    }
+
+    @Test
+    fun pastSessionsAreTheOnesWithMessages() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+
+        assertEquals(listOf("db-old"), chat.pastSessions().map { it.id })
+    }
+
+    @Test
+    fun resumingASessionBringsItsTranscriptBackAndSendsToIt() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+
+        chat.resume("db-old")
+        chat.send("and tomorrow?")
+
+        assertEquals(listOf(Entry.User("what's on my calendar?"), Entry.Reply("Two meetings.", TurnStatus.COMPLETE),
+                            Entry.User("and tomorrow?")), chat.state.value.entries)
+        assertEquals("s-resumed", core.calls.last().second.getValue("session_id").jsonPrimitive.content)
+        val resumed = core.calls.single { it.first == "session.resume" }.second
+        assertEquals("db-old", resumed.getValue("session_id").jsonPrimitive.content)
+    }
+
+    @Test
+    fun resumingMidTurnReleasesTheRunningTurn() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hello")
+        core.emit("message.start", "s1")
+
+        chat.resume("db-old")
+
+        assertEquals(listOf("begin:s1", "end:s1"), turns)
+        assertFalse(chat.state.value.running)
     }
 
     @Test

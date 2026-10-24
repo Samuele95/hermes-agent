@@ -39,7 +39,7 @@ import com.nousresearch.hermes.android.R
 @Composable
 fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifier, about: String? = null,
                onSetup: (() -> Unit)? = null, answers: PromptAnswers? = null, onTerminal: (() -> Unit)? = null,
-               onGateway: (() -> Unit)? = null, onStop: () -> Unit = {}) {
+               onGateway: (() -> Unit)? = null, onStop: () -> Unit = {}, onHistory: (() -> Unit)? = null) {
     var draft by rememberSaveable { mutableStateOf("") }
     val list = rememberLazyListState()
     val rows = chat.entries.size + (if (chat.running) 1 else 0) + (if (chat.activity != null) 1 else 0)
@@ -48,6 +48,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
     Column(modifier.fillMaxSize().safeDrawingPadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(about.orEmpty(), Modifier.weight(1f), style = MaterialTheme.typography.labelSmall)
+            onHistory?.let { TextButton(it, Modifier.testTag("open-history")) { Text(stringResource(R.string.chat_history)) } }
             onGateway?.let { TextButton(it, Modifier.testTag("open-gateway")) { Text(stringResource(R.string.chat_gateway)) } }
             onTerminal?.let { TextButton(it, Modifier.testTag("open-ssh")) { Text(stringResource(R.string.chat_terminal)) } }
             onSetup?.let { TextButton(it, Modifier.testTag("open-setup")) { Text(stringResource(R.string.chat_model)) } }

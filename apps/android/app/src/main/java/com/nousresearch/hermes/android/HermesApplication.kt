@@ -4,6 +4,7 @@ import android.app.Application
 import android.os.SystemClock
 import android.util.Log
 import com.nousresearch.hermes.android.chat.ChatSession
+import com.nousresearch.hermes.android.chat.SessionHistory
 import com.nousresearch.hermes.android.gateway.GatewayControl
 import com.nousresearch.hermes.android.gateway.PrefsGatewaySettings
 import com.nousresearch.hermes.android.gateway.ServiceGatewayLauncher
@@ -38,7 +39,7 @@ sealed interface CoreState {
     data object Starting : CoreState
 
     data class Ready(val gateway: CoreGateway, val chat: ChatSession, val setup: ProviderSetup, val ssh: SshSetup,
-                     val telegram: TelegramSetup, val about: String) : CoreState
+                     val telegram: TelegramSetup, val history: SessionHistory, val about: String) : CoreState
 
     data class Failed(val reason: String) : CoreState
 }
@@ -98,6 +99,11 @@ class HermesApplication : Application() {
         scope.launch { (state.value as? CoreState.Ready)?.ssh?.action() }
     }
 
+    /** Runs one history action on the app's scope, so it outlives the activity that asked for it. */
+    fun history(action: suspend SessionHistory.() -> Unit) {
+        scope.launch { (state.value as? CoreState.Ready)?.history?.action() }
+    }
+
     /** Runs one Telegram setup action on the app's scope, so it outlives the activity that asked for it. */
     fun telegram(action: suspend TelegramSetup.() -> Unit) {
         scope.launch { (state.value as? CoreState.Ready)?.telegram?.action() }
@@ -116,11 +122,12 @@ class HermesApplication : Application() {
         val setup = ProviderSetup(gateway, secrets, bridge, session = { chat.sessionId }, reopenChat = chat::open)
         val ssh = SshSetup(secrets, bridge)
         val telegram = TelegramSetup(secrets, bridge)
+        val history = SessionHistory(list = chat::pastSessions, resume = chat::resume)
         // Undispatched: setup is showing before the core is Ready, so the chat never flashes first.
         if (setup.needed()) scope.launch(start = CoroutineStart.UNDISPATCHED) { setup.open() }
         val facts = JSONObject(bridge.call("runtime_facts", ""))
         val fts = if (facts.getBoolean("fts5")) "with FTS5" else "without FTS5"
-        return CoreState.Ready(gateway, chat, setup, ssh, telegram, "Python ${facts.getString("python")} · SQLite ${facts.getString("sqlite")} $fts · " +
+        return CoreState.Ready(gateway, chat, setup, ssh, telegram, history, "Python ${facts.getString("python")} · SQLite ${facts.getString("sqlite")} $fts · " +
             "ready in ${SystemClock.elapsedRealtime() - began} ms")
     }
 }
