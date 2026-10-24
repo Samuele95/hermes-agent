@@ -24,7 +24,6 @@ import com.nousresearch.hermes.bridge.HermesPaths
 import com.nousresearch.hermes.bridge.RuntimeInstaller
 import java.io.File
 import java.util.concurrent.Executors
-import org.json.JSONObject
 
 /**
  * The optional always-on messaging gateway (D12, D23), in its own `:gateway` process: its own interpreter
@@ -80,12 +79,12 @@ class GatewayService : Service() {
 
     /** One state change of the gateway host: `running`, `restarting`, `stopped` or `failed`. */
     private fun onEvent(line: String) {
-        val event = runCatching { JSONObject(line) }.getOrNull() ?: return
-        when (event.optString("gateway")) {
-            "running" -> show(R.string.gateway_running)
-            "restarting" -> show(R.string.gateway_restarting)
-            "stopped" -> end()
-            "failed" -> failed(event.optString("reason"))
+        val event = GatewayEvent.parse(line) ?: return
+        when (event.gateway) {
+            GatewayEvent.State.RUNNING -> show(R.string.gateway_running)
+            GatewayEvent.State.RESTARTING -> show(R.string.gateway_restarting)
+            GatewayEvent.State.STOPPED -> end()
+            GatewayEvent.State.FAILED -> failed(event.reason.orEmpty())
         }
     }
 

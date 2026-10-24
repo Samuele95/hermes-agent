@@ -7,10 +7,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.jsonObject
+import com.nousresearch.hermes.bridge.CoreError
+import com.nousresearch.hermes.bridge.ask
+import com.nousresearch.hermes.bridge.request
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 
 /**
  * The phone's Telegram bot as the gateway screen shows it; [bot] is known once Telegram confirmed the token.
@@ -18,6 +19,16 @@ import kotlinx.serialization.json.jsonObject
  */
 data class TelegramState(val tokenHeld: Boolean = false, val allowedUser: String? = null, val bot: String? = null,
                          val busy: Boolean = false, val error: String? = null, val sdk: Boolean = true)
+
+@Serializable
+private data class TelegramStatus(val token: Boolean, @SerialName("allowed_user") val allowedUser: String? = null,
+                                  val sdk: Boolean = true)
+
+@Serializable
+private data class Allowed(@SerialName("allowed_user") val allowedUser: String)
+
+@Serializable
+private data class Checked(val bot: String)
 
 /**
  * The phone's own Telegram bot for the always-on gateway (D11, D24). The token goes to the keystore as
@@ -39,9 +50,8 @@ class TelegramSetup(
 
     suspend fun open() {
         setup.value = try {
-            val status = call("telegram_status")
-            TelegramState(tokenHeld = status["token"]?.toString() == "true", allowedUser = status.text("allowed_user"),
-                          sdk = status["sdk"]?.toString() != "false")
+            val status = bridge.ask<TelegramStatus>("telegram_status")
+            TelegramState(tokenHeld = status.token, allowedUser = status.allowedUser, sdk = status.sdk)
         } catch (failed: Exception) {
             TelegramState(error = forUser(failed))
         }
@@ -55,22 +65,22 @@ class TelegramSetup(
     suspend fun save(token: ByteArray?, user: String) {
         setup.update { it?.copy(busy = true, error = null) }
         try {
-            val allowed = call("telegram_configure", "allowed_user" to user)
-            allowed.text("error")?.let { return fail(it) }
+            val allowed = bridge.ask<Allowed>("telegram_configure", request("allowed_user" to user)).allowedUser
             if (token != null) {
                 secrets.put(TOKEN, token)
                 bridge.secretsChanged()
             }
-            val checked = call("telegram_check")
-            checked.text("error")?.let { refused ->
+            val bot = try {
+                bridge.ask<Checked>("telegram_check").bot
+            } catch (refused: CoreError) {
                 if (token != null) {
                     secrets.delete(TOKEN)
                     bridge.secretsChanged()
                 }
-                setup.update { it?.copy(tokenHeld = secrets.contains(TOKEN), allowedUser = allowed.text("allowed_user")) }
-                return fail(refused)
+                setup.update { it?.copy(tokenHeld = secrets.contains(TOKEN), allowedUser = allowed) }
+                throw refused
             }
-            setup.update { it?.copy(tokenHeld = true, allowedUser = allowed.text("allowed_user"), bot = checked.text("bot"), busy = false) }
+            setup.update { it?.copy(tokenHeld = true, allowedUser = allowed, bot = bot, busy = false) }
         } catch (failed: Exception) {
             fail(forUser(failed))
         } finally {
@@ -81,9 +91,4 @@ class TelegramSetup(
     private fun fail(reason: String) {
         setup.update { it?.copy(busy = false, error = reason) }
     }
-
-    private suspend fun call(function: String, vararg fields: Pair<String, String>): JsonObject =
-        Json.parseToJsonElement(bridge.call(function, JsonObject(fields.associate { (k, v) -> k to JsonPrimitive(v) }).toString())).jsonObject
-
-    private fun JsonObject.text(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
 }

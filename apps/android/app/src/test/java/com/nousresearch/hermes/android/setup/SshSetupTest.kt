@@ -114,6 +114,22 @@ class SshSetupTest {
     }
 
     @Test
+    fun aPinnedStateTheAppDoesNotKnowIsNeverOfferedForTrust() = runTest {
+        // Only "no" may lead to the trust step: a renamed or missing field must not read as a new host.
+        for (unknown in listOf("maybe", "CHANGED")) {
+            pinned = unknown
+            calls.clear()
+            ssh.open()
+
+            ssh.look(target)
+
+            assertEquals(SshStep.Host, ssh.state.value?.step)
+            assertNotNull(ssh.state.value?.error)
+            assertTrue(calls.none { it.first in setOf("ssh_trust_host", "ssh_configure") })
+        }
+    }
+
+    @Test
     fun theCoresWordsReachTheUserWhenAStepFails() = runTest {
         answers["ssh_check_login"] = """{"error":"host.example refused the app's key for delta"}"""
         ssh.open()
