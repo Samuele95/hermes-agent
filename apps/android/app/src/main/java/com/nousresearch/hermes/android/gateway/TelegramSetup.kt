@@ -1,6 +1,7 @@
 package com.nousresearch.hermes.android.gateway
 
 import com.nousresearch.hermes.android.forUser
+import com.nousresearch.hermes.bridge.AppBridge
 import com.nousresearch.hermes.bridge.SecretStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -20,15 +21,14 @@ data class TelegramState(val tokenHeld: Boolean = false, val allowedUser: String
 
 /**
  * The phone's own Telegram bot for the always-on gateway (D11, D24). The token goes to the keystore as
- * `TELEGRAM_BOT_TOKEN` (the core reads it through its secret source, [secretsChanged]); one numeric user id may
+ * `TELEGRAM_BOT_TOKEN` (the core reads it through its secret source, re-read through [bridge]); one numeric user id may
  * talk to the bot. The id is set first, so a wrong one stores nothing, and a token Telegram refuses is deleted
  * again. [bridge] calls the app's Python side (`hermes_android.telegram_*`, JSON in and out). [state] is null
  * while closed. A running gateway reads the keystore when it starts, so a change applies at its next start.
  */
 class TelegramSetup(
     private val secrets: SecretStore,
-    private val secretsChanged: suspend () -> Unit,
-    private val bridge: suspend (function: String, arg: String) -> String,
+    private val bridge: AppBridge,
 ) {
     private companion object {
         const val TOKEN = "TELEGRAM_BOT_TOKEN"
@@ -59,13 +59,13 @@ class TelegramSetup(
             allowed.text("error")?.let { return fail(it) }
             if (token != null) {
                 secrets.put(TOKEN, token)
-                secretsChanged()
+                bridge.secretsChanged()
             }
             val checked = call("telegram_check")
             checked.text("error")?.let { refused ->
                 if (token != null) {
                     secrets.delete(TOKEN)
-                    secretsChanged()
+                    bridge.secretsChanged()
                 }
                 setup.update { it?.copy(tokenHeld = secrets.contains(TOKEN), allowedUser = allowed.text("allowed_user")) }
                 return fail(refused)
@@ -83,7 +83,7 @@ class TelegramSetup(
     }
 
     private suspend fun call(function: String, vararg fields: Pair<String, String>): JsonObject =
-        Json.parseToJsonElement(bridge(function, JsonObject(fields.associate { (k, v) -> k to JsonPrimitive(v) }).toString())).jsonObject
+        Json.parseToJsonElement(bridge.call(function, JsonObject(fields.associate { (k, v) -> k to JsonPrimitive(v) }).toString())).jsonObject
 
     private fun JsonObject.text(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
 }

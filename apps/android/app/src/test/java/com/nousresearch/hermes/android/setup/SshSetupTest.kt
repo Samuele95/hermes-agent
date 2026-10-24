@@ -31,7 +31,8 @@ class SshSetupTest {
         "ssh_configure" to """{"backend":"ssh"}""",
         "ssh_check_login" to """{"ok":true}""",
     )
-    private val ssh = SshSetup(secrets, { secretsChanged++ }) { function, arg ->
+    private val ssh = SshSetup(secrets) { function, arg ->
+        if (function == "secrets_changed") { secretsChanged++; return@SshSetup "" }
         calls += function to arg
         if (function == "ssh_host_key") """{"key":"ssh-ed25519 AAAAHOST","fingerprint":"SHA256:abc","pinned":"$pinned"}"""
         else answers.getValue(function)
@@ -56,7 +57,7 @@ class SshSetupTest {
 
     @Test
     fun aBridgeFailureIsShownByItsKindAndTheAppGoesOn() = runTest {
-        val failing = SshSetup(secrets, { secretsChanged++ }) { _, _ -> throw RuntimeException("Traceback (most recent call last): ... sk-not-for-the-screen") }
+        val failing = SshSetup(secrets) { _, _ -> throw RuntimeException("Traceback (most recent call last): ... sk-not-for-the-screen") }
         failing.open()
 
         failing.look(target)

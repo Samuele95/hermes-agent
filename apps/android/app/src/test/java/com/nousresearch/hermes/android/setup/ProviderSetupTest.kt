@@ -2,6 +2,7 @@ package com.nousresearch.hermes.android.setup
 
 import com.nousresearch.hermes.android.chat.FakeCoreGateway
 import com.nousresearch.hermes.bridge.CoreError
+import com.nousresearch.hermes.bridge.AppBridge
 import com.nousresearch.hermes.bridge.SecretStore
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.runCurrent
@@ -50,9 +51,14 @@ class ProviderSetupTest {
     }
     private var endpointSaved: (JsonObject) -> String = { """{"id":"host-ollama","key_env":"HERMES_CUSTOM_HOST_OLLAMA_API_KEY"}""" }
     private var secretsChanged: () -> Unit = { log += "secrets_changed" }
-    private val setup = ProviderSetup(core, secrets, secretsChanged = { secretsChanged() }, session = { "s1" },
-                                      reopenChat = { log += "reopen_chat" },
-                                      saveEndpoint = { request -> log += "save_endpoint"; endpointSaved(Json.parseToJsonElement(request).jsonObject) })
+    private val bridge = AppBridge { function, request ->
+        when (function) {
+            "secrets_changed" -> { secretsChanged(); "" }
+            "save_custom_endpoint" -> { log += "save_endpoint"; endpointSaved(Json.parseToJsonElement(request).jsonObject) }
+            else -> error("unexpected bridge call $function")
+        }
+    }
+    private val setup = ProviderSetup(core, secrets, bridge, session = { "s1" }, reopenChat = { log += "reopen_chat" })
 
     private fun ProviderSetup.step() = state.value?.step
 

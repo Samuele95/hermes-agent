@@ -1,6 +1,7 @@
 package com.nousresearch.hermes.android.setup
 
 import com.nousresearch.hermes.android.forUser
+import com.nousresearch.hermes.bridge.AppBridge
 import com.nousresearch.hermes.bridge.CoreError
 import com.nousresearch.hermes.bridge.CoreGateway
 import com.nousresearch.hermes.bridge.SecretStore
@@ -55,20 +56,19 @@ data class Setup(val step: SetupStep = SetupStep.Loading, val busy: Boolean = fa
 
 /**
  * Provider setup driven by the core (D17): the core lists the providers and their models, a pasted key
- * goes to [secrets] and reaches the core only as an environment variable ([secretsChanged]), and the
+ * goes to [secrets] and reaches the core only as an environment variable (re-read through [bridge]), and the
  * chosen model becomes the default through [session], a live session (the core refuses sessionless
  * defaults). That session then gives way to a new one ([reopenChat]): a session created before the switch
  * runs its first turn on the old default model. A custom endpoint becomes a `providers.<id>` entry through
- * [saveEndpoint] (the bridge's `save_custom_endpoint`, JSON in and out) before the same steps.
+ * [saveEndpoint] ([bridge]'s `save_custom_endpoint`, JSON in and out) before the same steps.
  * [state] is null while setup is closed.
  */
 class ProviderSetup(
     private val core: CoreGateway,
     private val secrets: SecretStore,
-    private val secretsChanged: suspend () -> Unit,
+    private val bridge: AppBridge,
     private val session: suspend () -> String,
     private val reopenChat: suspend () -> Unit,
-    private val saveEndpoint: suspend (String) -> String,
 ) {
     private companion object {
         /** `model.disconnect`'s answer when the provider holds no credential. */
@@ -151,7 +151,7 @@ class ProviderSetup(
         val name = checkNotNull(provider.keyEnv)
         step {
             store(name, key)
-            secretsChanged()
+            bridge.secretsChanged()
             val signedIn = listed(refresh = true).firstOrNull { it.slug == provider.slug && it.ready }
             if (signedIn == null) {
                 forget(provider.slug, name)
@@ -190,7 +190,7 @@ class ProviderSetup(
             val request = JsonObject(mapOf("name" to JsonPrimitive(name), "base_url" to JsonPrimitive(baseUrl),
                                            "model" to JsonPrimitive(model), "has_key" to JsonPrimitive(hasKey)))
             val saved = try {
-                Json.parseToJsonElement(saveEndpoint(request.toString())).jsonObject
+                Json.parseToJsonElement(bridge.call("save_custom_endpoint", request.toString())).jsonObject
             } catch (failed: RuntimeException) {  // a bridge failure carries a traceback, not words for the user
                 key?.fill(0)
                 throw CoreError(0, "Could not save the endpoint (${failed.javaClass.simpleName}).")
@@ -199,7 +199,7 @@ class ProviderSetup(
             val keyEnv = saved.getValue("key_env").jsonPrimitive.content
             if (hasKey) {
                 store(keyEnv, key!!)
-                secretsChanged()
+                bridge.secretsChanged()
             }
             SetupStep.Models(ProviderChoice(saved.getValue("id").jsonPrimitive.content, name, keyEnv.ifEmpty { null }, true, listOf(model)))
         }
@@ -226,7 +226,7 @@ class ProviderSetup(
      */
     private suspend fun forget(slug: String, name: String) {
         secrets.delete(name)
-        secretsChanged()
+        bridge.secretsChanged()
         try {
             core.call(Methods.MODEL_DISCONNECT, ModelDisconnectParams(slug))
         } catch (nothingLeft: CoreError) {

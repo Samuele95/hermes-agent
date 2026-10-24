@@ -26,7 +26,8 @@ class TelegramSetupTest {
         "telegram_configure" to """{"allowed_user":"42"}""",
         "telegram_check" to """{"bot":"@phone_hermes_bot"}""",
     )
-    private val telegram = TelegramSetup(secrets, { secretsChanged++ }) { function, arg ->
+    private val telegram = TelegramSetup(secrets) { function, arg ->
+        if (function == "secrets_changed") { secretsChanged++; return@TelegramSetup "" }
         calls += function to arg
         answers.getValue(function)
     }
@@ -120,7 +121,7 @@ class TelegramSetupTest {
     fun aKeystoreFailureIsShownByItsKindAndTheTokenStillWiped() = runTest {
         val failing = TelegramSetup(object : SecretStore by secrets {
             override fun put(name: String, value: ByteArray) = throw java.io.IOException("disk full")
-        }, { secretsChanged++ }) { function, _ -> answers.getValue(function) }
+        }) { function, _ -> if (function == "secrets_changed") "" else answers.getValue(function) }
         failing.open()
         val token = "123:abc".toByteArray()
 
@@ -133,7 +134,7 @@ class TelegramSetupTest {
 
     @Test
     fun aBridgeFailureWhileOpeningStillOpensTheScreenWithIt() = runTest {
-        val failing = TelegramSetup(secrets, { secretsChanged++ }) { _, _ -> throw RuntimeException("Traceback ...") }
+        val failing = TelegramSetup(secrets) { _, _ -> throw RuntimeException("Traceback ...") }
 
         failing.open()
 

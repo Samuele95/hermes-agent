@@ -1,6 +1,7 @@
 package com.nousresearch.hermes.android.setup
 
 import com.nousresearch.hermes.android.forUser
+import com.nousresearch.hermes.bridge.AppBridge
 import com.nousresearch.hermes.bridge.SecretStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -30,14 +31,13 @@ data class SshState(val step: SshStep = SshStep.Host, val busy: Boolean = false,
 
 /**
  * The SSH host setup (D22). The app's Ed25519 identity is created once and kept in [secrets], which
- * the core reads as `TERMINAL_SSH_PRIVATE_KEY` ([secretsChanged]); a host is trusted only after the
+ * the core reads as `TERMINAL_SSH_PRIVATE_KEY` (re-read through [bridge]); a host is trusted only after the
  * user has seen its fingerprint, and a host pinned to another key is refused. [bridge] calls the
  * app's Python side (`hermes_android.ssh_*`, JSON in and out). [state] is null while setup is closed.
  */
 class SshSetup(
     private val secrets: SecretStore,
-    private val secretsChanged: suspend () -> Unit,
-    private val bridge: suspend (function: String, arg: String) -> String,
+    private val bridge: AppBridge,
 ) {
     private companion object {
         const val IDENTITY = "TERMINAL_SSH_PRIVATE_KEY"
@@ -84,7 +84,7 @@ class SshSetup(
         if (secrets.contains(IDENTITY)) return
         val pair = call("ssh_new_key")
         secrets.put(IDENTITY, pair.text("private")!!.toByteArray())
-        secretsChanged()
+        bridge.secretsChanged()
     }
 
     private suspend fun configured(target: SshTarget): SshStep.Ready {
@@ -112,7 +112,7 @@ class SshSetup(
         val request = JsonObject(fields.associate { (name, value) ->
             name to if (value is Number) JsonPrimitive(value) else JsonPrimitive(value.toString())
         })
-        val answer = Json.parseToJsonElement(bridge(function, request.toString())).jsonObject
+        val answer = Json.parseToJsonElement(bridge.call(function, request.toString())).jsonObject
         answer.text("error")?.let { throw StepFailed(it) }
         return answer
     }

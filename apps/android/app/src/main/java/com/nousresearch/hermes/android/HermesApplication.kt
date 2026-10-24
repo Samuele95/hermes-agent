@@ -14,6 +14,7 @@ import com.nousresearch.hermes.android.setup.ProviderSetup
 import com.nousresearch.hermes.android.setup.SshSetup
 import com.nousresearch.hermes.android.turn.ForegroundTurnHost
 import com.nousresearch.hermes.bridge.CoreGateway
+import com.nousresearch.hermes.bridge.EmbeddedBridge
 import com.nousresearch.hermes.bridge.EmbeddedPython
 import com.nousresearch.hermes.bridge.HermesPaths
 import com.nousresearch.hermes.bridge.KeystoreSecretStore
@@ -106,21 +107,18 @@ class HermesApplication : Application() {
         val began = SystemClock.elapsedRealtime()
         val runtime = withContext(Dispatchers.IO) { RuntimeInstaller(File(noBackupFilesDir, "runtime")).install(AssetPayload(assets)) }
         val gateway = EmbeddedPython.connect(HermesPaths(runtime, filesDir, File(filesDir, ".hermes"), cacheDir), secrets)
+        val bridge = EmbeddedBridge
         val keepSecret: suspend (String, ByteArray) -> Unit = { name, value ->
             secrets.put(name, value)
-            withContext(Dispatchers.IO) { EmbeddedPython.call("secrets_changed", "") }
+            bridge.secretsChanged()
         }
         val chat = ChatSession(gateway, ForegroundTurnHost(this), scope, keepSecret).apply { open() }
-        val setup = ProviderSetup(gateway, secrets, secretsChanged = { withContext(Dispatchers.IO) { EmbeddedPython.call("secrets_changed", "") } },
-                                  session = { chat.sessionId }, reopenChat = chat::open,
-                                  saveEndpoint = { request -> withContext(Dispatchers.IO) { EmbeddedPython.call("save_custom_endpoint", request) } })
-        val ssh = SshSetup(secrets, secretsChanged = { withContext(Dispatchers.IO) { EmbeddedPython.call("secrets_changed", "") } },
-                           bridge = { function, request -> withContext(Dispatchers.IO) { EmbeddedPython.call(function, request) } })
-        val telegram = TelegramSetup(secrets, secretsChanged = { withContext(Dispatchers.IO) { EmbeddedPython.call("secrets_changed", "") } },
-                                     bridge = { function, request -> withContext(Dispatchers.IO) { EmbeddedPython.call(function, request) } })
+        val setup = ProviderSetup(gateway, secrets, bridge, session = { chat.sessionId }, reopenChat = chat::open)
+        val ssh = SshSetup(secrets, bridge)
+        val telegram = TelegramSetup(secrets, bridge)
         // Undispatched: setup is showing before the core is Ready, so the chat never flashes first.
         if (setup.needed()) scope.launch(start = CoroutineStart.UNDISPATCHED) { setup.open() }
-        val facts = withContext(Dispatchers.IO) { JSONObject(EmbeddedPython.call("runtime_facts", "")) }
+        val facts = JSONObject(bridge.call("runtime_facts", ""))
         val fts = if (facts.getBoolean("fts5")) "with FTS5" else "without FTS5"
         return CoreState.Ready(gateway, chat, setup, ssh, telegram, "Python ${facts.getString("python")} · SQLite ${facts.getString("sqlite")} $fts · " +
             "ready in ${SystemClock.elapsedRealtime() - began} ms")
