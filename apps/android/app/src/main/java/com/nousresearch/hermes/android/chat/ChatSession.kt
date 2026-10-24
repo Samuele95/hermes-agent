@@ -15,6 +15,7 @@ import com.nousresearch.hermes.bridge.protocol.Methods
 import com.nousresearch.hermes.bridge.protocol.PromptSubmitParams
 import com.nousresearch.hermes.bridge.protocol.Requests
 import com.nousresearch.hermes.bridge.protocol.SessionCreateParams
+import com.nousresearch.hermes.bridge.protocol.SessionInterruptParams
 import com.nousresearch.hermes.bridge.protocol.ValueResult
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
@@ -91,6 +92,19 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, sc
             core.call(Methods.PROMPT_SUBMIT, PromptSubmitParams(sessionId = session, text = JsonPrimitive(text)))
         } catch (refused: CoreError) {
             chat.update { it.notice(refused.message ?: "The core refused the prompt (${refused.code}).") }
+        }
+    }
+
+    /**
+     * Stops the running turn, as the desktop's Stop does: the core interrupts it and ends it with an `interrupted`
+     * completion, which ends the turn here too. Nothing runs, nothing is asked.
+     */
+    suspend fun cancel() {
+        if (!chat.value.running) return
+        try {
+            core.call(Methods.SESSION_INTERRUPT, SessionInterruptParams(sessionId = sessionId))
+        } catch (failed: Exception) {
+            chat.update { it.notice(forUser(failed)) }
         }
     }
 

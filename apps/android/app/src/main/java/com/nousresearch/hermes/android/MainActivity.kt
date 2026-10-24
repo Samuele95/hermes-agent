@@ -81,7 +81,7 @@ class MainActivity : ComponentActivity() {
                                                         clarify = { p, given -> app.chat { clarify(p, given) } },
                                                         secret = { p, value -> app.chat { secret(p, value) } })
                             ChatScreen(chat, about = state.about, onSetup = { app.setup { open() } }, answers = answers,
-                                       onTerminal = state.ssh::open, onGateway = app.gateway::open, onSend = { text ->
+                                       onTerminal = state.ssh::open, onGateway = app.gateway::open, onStop = { app.chat { cancel() } }, onSend = { text ->
                                 if (Build.VERSION.SDK_INT >= 33 &&
                                     checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                                     askToNotify.launch(Manifest.permission.POST_NOTIFICATIONS)

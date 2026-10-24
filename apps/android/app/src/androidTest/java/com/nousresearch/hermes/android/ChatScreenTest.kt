@@ -72,6 +72,17 @@ class ChatScreenTest {
     }
 
     @Test
+    fun aRunningTurnCanBeStoppedAndAnIdleChatSends() {
+        var stopped = 0
+        compose.setContent { ChatScreen(Chat(streaming = "Once upon"), onSend = {}, onStop = { stopped++ }) }
+
+        compose.onNodeWithTag("send").assertDoesNotExist()
+        compose.onNodeWithTag("stop").performClick()
+
+        assertEquals(1, stopped)
+    }
+
+    @Test
     fun sendingHandsOverTheTrimmedDraftAndClearsIt() {
         val sent = mutableListOf<String>()
         compose.setContent { ChatScreen(Chat(), onSend = { sent += it }) }
@@ -84,13 +95,14 @@ class ChatScreenTest {
     }
 
     @Test
-    fun sendWaitsForADraftAndForTheRunningTurnToEnd() {
+    fun nothingIsSentWhileATurnRuns() {
+        // While a turn runs, Stop takes Send's place: a draft typed meanwhile waits for the turn to end.
         compose.setContent { ChatScreen(Chat(streaming = ""), onSend = {}) }
-        compose.onNodeWithTag("send").assertIsNotEnabled()
 
         compose.onNodeWithTag("draft").performTextInput("next")
 
-        compose.onNodeWithTag("send").assertIsNotEnabled()
+        compose.onNodeWithTag("send").assertDoesNotExist()
+        compose.onNodeWithTag("stop").assertExists()
     }
 
     @Test

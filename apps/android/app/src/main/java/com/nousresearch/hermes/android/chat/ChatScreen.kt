@@ -39,7 +39,7 @@ import com.nousresearch.hermes.android.R
 @Composable
 fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifier, about: String? = null,
                onSetup: (() -> Unit)? = null, answers: PromptAnswers? = null, onTerminal: (() -> Unit)? = null,
-               onGateway: (() -> Unit)? = null) {
+               onGateway: (() -> Unit)? = null, onStop: () -> Unit = {}) {
     var draft by rememberSaveable { mutableStateOf("") }
     val list = rememberLazyListState()
     val rows = chat.entries.size + (if (chat.running) 1 else 0) + (if (chat.activity != null) 1 else 0)
@@ -63,8 +63,12 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(draft, { draft = it }, Modifier.weight(1f).testTag("draft"),
                               placeholder = { Text(stringResource(R.string.chat_hint)) })
-            Button({ onSend(draft.trim()); draft = "" }, Modifier.padding(start = 8.dp).testTag("send"),
-                   enabled = draft.isNotBlank() && !chat.running) { Text(stringResource(R.string.chat_send)) }
+            if (chat.running) {
+                Button(onStop, Modifier.padding(start = 8.dp).testTag("stop")) { Text(stringResource(R.string.chat_stop)) }
+            } else {
+                Button({ onSend(draft.trim()); draft = "" }, Modifier.padding(start = 8.dp).testTag("send"),
+                       enabled = draft.isNotBlank()) { Text(stringResource(R.string.chat_send)) }
+            }
         }
     }
 }

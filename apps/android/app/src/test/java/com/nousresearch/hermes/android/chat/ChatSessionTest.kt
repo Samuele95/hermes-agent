@@ -30,6 +30,7 @@ class ChatSessionTest {
         when (method) {
             "session.create" -> """{"session_id":"s${++sessions}","stored_session_id":"db1","message_count":0,"messages":[],"info":{}}"""
             "prompt.submit" -> submit()
+            "session.interrupt" -> """{"status":"interrupted"}"""
             else -> error("unexpected $method")
         }
     }
@@ -81,6 +82,30 @@ class ChatSessionTest {
 
         assertEquals(listOf("begin:s1", "end:s1"), turns)
         assertFalse(chat.state.value.running)
+    }
+
+    @Test
+    fun stoppingInterruptsTheChatsRunningTurnAndItEndsAsInterrupted() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("write a long essay")
+        core.emit("message.start", "s1")
+
+        chat.cancel()
+        core.emit("message.complete", "s1", """{"text":"","status":"interrupted"}""")
+
+        val (method, params) = core.calls.last()
+        assertEquals("session.interrupt" to "s1", method to params.getValue("session_id").jsonPrimitive.content)
+        assertFalse(chat.state.value.running)
+        assertEquals(listOf("begin:s1", "end:s1"), turns)
+    }
+
+    @Test
+    fun stoppingWithNoTurnRunningAsksTheCoreNothing() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+
+        chat.cancel()
+
+        assertTrue(core.calls.none { it.first == "session.interrupt" })
     }
 
     @Test
