@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Smoke test on a device: a clean install, a custom endpoint set up from the app's own screen, "ping"
 # sent, a real reply back (SmokeTest), a reply being written stopped on Stop (StopSmokeTest), a past
-# conversation continued from History (HistorySmokeTest), then the logs and the app's files checked for leaks.
+# conversation continued from History (HistorySmokeTest), a question asked while the app is in the background
+# notified and answered (BackgroundQuestionSmokeTest), then the logs and the app's files checked for leaks.
 #
 # Build first:  ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest
 # Defaults reach an Ollama on this host through `adb reverse`; override with
@@ -32,14 +33,14 @@ adb logcat -c
 
 echo "smoke: $model at $base_url on device $(adb get-serialno)"
 began=$(date +%s)
-result=$(adb shell am instrument -w -r -e class com.nousresearch.hermes.android.SmokeTest,com.nousresearch.hermes.android.StopSmokeTest,com.nousresearch.hermes.android.HistorySmokeTest \
+result=$(adb shell am instrument -w -r -e class com.nousresearch.hermes.android.SmokeTest,com.nousresearch.hermes.android.StopSmokeTest,com.nousresearch.hermes.android.HistorySmokeTest,com.nousresearch.hermes.android.BackgroundQuestionSmokeTest \
     -e baseUrl "$base_url" -e model "$model" -e key "$key" "$app.test/androidx.test.runner.AndroidJUnitRunner")
 echo "instrumentation finished in $(( $(date +%s) - began )) s"
-adb logcat -d -s HermesSmoke:I | grep -E "reply after|stopped turn|resumed reply" | sed 's/^.*HermesSmoke: /  /' | cut -c1-300 || true
+adb logcat -d -s HermesSmoke:I | grep -E "reply after|stopped turn|resumed reply|notified" | sed 's/^.*HermesSmoke: /  /' | cut -c1-300 || true
 
-# OK (3 tests) also follows a test that did not really pass: -1 error, -2 failure, -3 ignored, -4 assumption.
+# OK (4 tests) also follows a test that did not really pass: -1 error, -2 failure, -3 ignored, -4 assumption.
 check "the smoke test ran and passed" \
-    sh -c 'printf "%s" "$1" | grep -q "OK (3 tests)" && ! printf "%s" "$1" | grep -q "INSTRUMENTATION_STATUS_CODE: -[1234]"' _ "$result"
+    sh -c 'printf "%s" "$1" | grep -q "OK (4 tests)" && ! printf "%s" "$1" | grep -q "INSTRUMENTATION_STATUS_CODE: -[1234]"' _ "$result"
 [ "$failed" = 0 ] || printf '%s\n' "$result" | grep -E "INSTRUMENTATION_STATUS: stack=|^\s+at |Error" | head -20
 
 log=$(adb logcat -d)

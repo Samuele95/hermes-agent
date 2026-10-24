@@ -61,6 +61,13 @@
     <string name="core_starting">Starting the core…</string>
     <string name="turn_channel">Replies in progress</string>
     <string name="turn_running">Hermes is replying…</string>
+    <string name="notify_channel_questions">Questions from Hermes</string>
+    <string name="notify_channel_replies">Finished replies</string>
+    <string name="notify_approval">Hermes asks to run a command</string>
+    <string name="notify_clarify">Hermes has a question</string>
+    <string name="notify_secret">Hermes needs a key</string>
+    <string name="notify_replied">Hermes replied</string>
+    <string name="notify_reply_failed">Hermes could not finish its reply</string>
     <string name="gateway_channel">Always-on gateway</string>
     <string name="gateway_title">Hermes gateway</string>
     <string name="gateway_starting">Starting…</string>

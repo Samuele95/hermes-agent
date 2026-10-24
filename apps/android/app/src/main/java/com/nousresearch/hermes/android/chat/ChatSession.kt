@@ -36,11 +36,12 @@ import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * One chat: a core session, the prompts sent to it, its turns, which [turns] keeps alive, and the questions
- * a turn asks. A secret the agent asks for goes to [keepSecret] (the keystore), never back to the core:
- * the core would write an answered value to `.env`.
+ * a turn asks, which [notifier] hears of along with finished turns. A secret the agent asks for goes to
+ * [keepSecret] (the keystore), never back to the core: the core would write an answered value to `.env`.
  */
 class ChatSession(private val core: CoreGateway, private val turns: TurnHost, scope: CoroutineScope,
-                  private val keepSecret: suspend (name: String, value: ByteArray) -> Unit) {
+                  private val keepSecret: suspend (name: String, value: ByteArray) -> Unit,
+                  private val notifier: Notifier = Notifier.None) {
     companion object {
         /** The session's source, which is also the agent's platform; "android" keeps the CLI toolsets. */
         const val SOURCE = "android"
@@ -73,6 +74,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, sc
                 } else {
                     waiting[asked.id] = raw
                     chat.update { it.asked(asked) }
+                    notifier.promptPending(asked)
                 }
             }
         }
@@ -104,6 +106,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, sc
         contractNotice(reportedContract)?.let { notice -> chat.update { it.notice(notice) } }
         // The previous session's questions lose their card: settle them rather than leave its turn waiting.
         waiting.values.forEach { core.decline(it, "the chat moved to a new session") }
+        if (waiting.isNotEmpty()) notifier.promptsSettled()
         waiting.clear()
     }
 
@@ -170,7 +173,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, sc
     /** Sends the one answer [prompt] gets; one the core already withdrew is gone and gets none. */
     private fun settle(prompt: Prompt, send: (InTurnPrompt) -> Unit) {
         waiting.remove(prompt.id)?.let(send)
-        chat.update { it.settled(prompt.id) }
+        if (chat.updateAndGet { it.settled(prompt.id) }.prompts.isEmpty()) notifier.promptsSettled()
     }
 
     /** The app keeps a turn alive exactly while the transcript says it runs: the reducer decides when a turn ends. */
@@ -178,7 +181,11 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, sc
         val before = chat.value.running
         val after = chat.updateAndGet { it.reduce(event) }
         if (!before && after.running) turns.begin(event.sessionId!!)
-        if (before && !after.running) turns.end(event.sessionId!!)
-        waiting.keys.retainAll(after.prompts.mapTo(HashSet()) { it.id })  // withdrawn by the core
+        if (before && !after.running) {
+            turns.end(event.sessionId!!)
+            notifier.turnFinished(after.entries.lastOrNull() as? Entry.Reply)
+        }
+        // Withdrawn by the core: the turn no longer waits for them.
+        if (waiting.keys.retainAll(after.prompts.mapTo(HashSet()) { it.id }) && after.prompts.isEmpty()) notifier.promptsSettled()
     }
 }

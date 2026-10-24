@@ -46,7 +46,15 @@ class ChatSessionTest {
     private val kept = mutableMapOf<String, String>()
     private var keepSecret: (String, ByteArray) -> Unit = { name, value -> kept[name] = String(value) }
 
-    private fun TestScope.openChat() = ChatSession(core, host, backgroundScope, keepSecret = { name, value -> keepSecret(name, value) })
+    private val notices = mutableListOf<String>()
+    private val notifier = object : Notifier {
+        override fun promptPending(prompt: Prompt) { notices += "pending:${prompt.id}" }
+        override fun promptsSettled() { notices += "settled" }
+        override fun turnFinished(reply: Entry.Reply?) { notices += "finished:${reply?.text}" }
+    }
+
+    private fun TestScope.openChat() =
+        ChatSession(core, host, backgroundScope, keepSecret = { name, value -> keepSecret(name, value) }, notifier = notifier)
 
     @Test
     fun aChatOpensACoreSessionAsTheAndroidApp() = runTest(UnconfinedTestDispatcher()) {
@@ -323,5 +331,61 @@ class ChatSessionTest {
 
         assertEquals(listOf("srq-2"), fresh.settled.map { it.first })
         assertTrue(fresh.settled.single().second.startsWith("declined"))
+    }
+
+    @Test
+    fun aQuestionThatWaitsIsNotifiedUntilItIsAnswered() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+
+        core.ask("srq-1", "approval", """{"session_id":"s1","request_id":"r1","command":"rm -rf build"}""")
+        core.ask("srq-2", "clarify", """{"session_id":"s1","questions":[{"qid":"q1","question":"Which branch?"}]}""")
+        chat.approve(chat.state.value.prompts.first() as Prompt.Approval, ApprovalChoice.ONCE)
+        assertEquals(listOf("pending:srq-1", "pending:srq-2"), notices)  // one still waits
+
+        chat.clarify(chat.state.value.prompts.single() as Prompt.Clarify, mapOf("q1" to "main"))
+
+        assertEquals(listOf("pending:srq-1", "pending:srq-2", "settled"), notices)
+    }
+
+    @Test
+    fun aQuestionTheCoreWithdrawsNoLongerWaits() = runTest(UnconfinedTestDispatcher()) {
+        openChat().open()
+        core.ask("srq-1", "approval", """{"session_id":"s1","request_id":"r1","command":"ls"}""")
+
+        core.emit("request.cancel", "s1", """{"id":"srq-1","method":"approval","reason":"timeout"}""")
+
+        assertEquals(listOf("pending:srq-1", "settled"), notices)
+    }
+
+    @Test
+    fun anotherSessionsQuestionNotifiesNothing() = runTest(UnconfinedTestDispatcher()) {
+        openChat().open()
+
+        core.ask("srq-6", "approval", """{"session_id":"other","request_id":"r9","command":"ls"}""")
+
+        assertEquals(emptyList<String>(), notices)
+    }
+
+    @Test
+    fun aFinishedTurnIsNotifiedWithItsReply() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("summarize")
+
+        core.emit("message.start", "s1")
+        core.emit("message.delta", "s1", """{"text":"Three"}""")
+        assertEquals(emptyList<String>(), notices)  // nothing while it runs
+        core.emit("message.complete", "s1", """{"text":"Three meetings today."}""")
+
+        assertEquals(listOf("finished:Three meetings today."), notices)
+    }
+
+    @Test
+    fun movingToAnotherSessionSettlesItsQuestions() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        core.ask("srq-1", "approval", """{"session_id":"s1","request_id":"r1","command":"ls"}""")
+
+        chat.open()
+
+        assertEquals(listOf("pending:srq-1", "settled"), notices)
     }
 }

@@ -1,5 +1,9 @@
 package com.nousresearch.hermes.android
 
+import android.app.Activity
+import android.os.Bundle
+import java.util.concurrent.atomic.AtomicInteger
+import com.nousresearch.hermes.android.turn.SystemNotifier
 import android.app.Application
 import android.os.SystemClock
 import android.util.Log
@@ -60,6 +64,28 @@ class HermesApplication : Application() {
     private val state = MutableStateFlow<CoreState>(CoreState.Starting)
     private var started = false
 
+    /** Activities of the app on screen (started, not yet stopped): while there is one, the chat shows what it has to say. */
+    private val onScreen = AtomicInteger()
+
+    /** Tells the user of a waiting question or a finished reply while the app is not on screen. */
+    val notifier: SystemNotifier by lazy { SystemNotifier(this) { onScreen.get() > 0 } }
+
+    override fun onCreate() {
+        super.onCreate()
+        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+            override fun onActivityStarted(activity: Activity) {
+                onScreen.incrementAndGet()
+                notifier.shown()
+            }
+            override fun onActivityStopped(activity: Activity) { onScreen.decrementAndGet() }
+            override fun onActivityCreated(activity: Activity, saved: Bundle?) {}
+            override fun onActivityResumed(activity: Activity) {}
+            override fun onActivityPaused(activity: Activity) {}
+            override fun onActivitySaveInstanceState(activity: Activity, out: Bundle) {}
+            override fun onActivityDestroyed(activity: Activity) {}
+        })
+    }
+
     /** Provider keys, wrapped by the app's AndroidKeyStore key; the core reads them as environment variables. */
     val secrets: SecretStore by lazy { KeystoreSecretStore(File(noBackupFilesDir, "secrets")) { KeystoreSecretStore.androidKey() } }
 
@@ -119,7 +145,7 @@ class HermesApplication : Application() {
             secrets.put(name, value)
             bridge.secretsChanged()
         }
-        val chat = ChatSession(gateway, ForegroundTurnHost(this), scope, keepSecret).apply { open() }
+        val chat = ChatSession(gateway, ForegroundTurnHost(this), scope, keepSecret, notifier).apply { open() }
         val setup = ProviderSetup(gateway, secrets, bridge, session = { chat.sessionId }, reopenChat = chat::open)
         val ssh = SshSetup(secrets, bridge)
         val telegram = TelegramSetup(secrets, bridge)
