@@ -4,12 +4,16 @@ frames leave through a host callback and requests arrive as JSON lines, with no 
 The host calls :meth:`EmbeddedTransport.submit` from one thread, in arrival order — the same
 one-at-a-time contract as the WebSocket reader. Long handlers still run on the dispatch pool and
 answer through :meth:`EmbeddedTransport.write`, so ``emit`` is called from several threads. ``emit``
-must only hand the frame off: calling ``submit`` from inside it would re-enter the write lock."""
+must only hand the frame off: calling ``submit`` from inside it would re-enter the write lock.
+
+Such a host never runs ``hermes_cli.main``, so it also calls :func:`seed_bundled_skills` once before the
+first session, and :func:`reload_secrets` after it changed a secret its secret source serves."""
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from typing import Callable
 
@@ -83,3 +87,33 @@ class EmbeddedTransport:
             resp = {"jsonrpc": "2.0", "error": {"code": -32603, "message": "internal error"}, "id": rid}
         if resp is not None:
             self.write(resp)
+
+
+def seed_bundled_skills() -> None:
+    """Copy the bundled skills into the home, as the CLI does at its startup: at once into a home that has
+    none, so the first session (and the banner's skills index, cached empty until then) sees them, else
+    in the background to pick up a newer bundle's changes."""
+    from agent.memory_provider import spawn_context_thread
+    from hermes_constants import get_hermes_home
+    from tools.skills_sync import sync_skills
+
+    skills = get_hermes_home() / "skills"
+    if skills.is_dir() and next(skills.rglob("SKILL.md"), None) is not None:
+        spawn_context_thread(sync_skills, name="bundled-skills-sync", kwargs={"quiet": True}).start()
+        return
+    sync_skills(quiet=True)
+    from hermes_cli import banner
+
+    banner._available_skills_cache = None  # computed before the seed: empty
+
+
+def reload_secrets(hermes_home: str | os.PathLike | None = None) -> None:
+    """Re-pull the secret sources of ``hermes_home`` (default: the current home) after the host changed a
+    secret they serve; variables a source no longer serves are revoked. Agents already built keep the
+    credentials they started with; new sessions see the change."""
+    from hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
+    from hermes_constants import get_hermes_home
+
+    home = hermes_home if hermes_home is not None else get_hermes_home()
+    reset_secret_source_cache(home)
+    load_hermes_dotenv(hermes_home=home)
