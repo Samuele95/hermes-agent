@@ -2,6 +2,7 @@ package com.nousresearch.hermes.android
 
 import android.app.Application
 import android.os.SystemClock
+import android.util.Log
 import com.nousresearch.hermes.android.chat.ChatSession
 import com.nousresearch.hermes.android.gateway.GatewayControl
 import com.nousresearch.hermes.android.gateway.PrefsGatewaySettings
@@ -19,6 +20,7 @@ import com.nousresearch.hermes.bridge.KeystoreSecretStore
 import com.nousresearch.hermes.bridge.RuntimeInstaller
 import com.nousresearch.hermes.bridge.SecretStore
 import java.io.File
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -45,7 +47,13 @@ sealed interface CoreState {
  * reopened), but the interpreter starts once per process, so the core and its chat live here.
  */
 class HermesApplication : Application() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private companion object {
+        const val TAG = "Hermes"
+    }
+
+    // The flows turn their own failures into words on the screen; this only keeps a missed one from ending the app.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default +
+                                       CoroutineExceptionHandler { _, failed -> Log.w(TAG, "uncaught ${failed.javaClass.name}") })
     private val state = MutableStateFlow<CoreState>(CoreState.Starting)
     private var started = false
 

@@ -1,5 +1,6 @@
 package com.nousresearch.hermes.android.gateway
 
+import com.nousresearch.hermes.android.forUser
 import com.nousresearch.hermes.bridge.SecretStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -37,9 +38,13 @@ class TelegramSetup(
     val state: StateFlow<TelegramState?> = setup.asStateFlow()
 
     suspend fun open() {
-        val status = call("telegram_status")
-        setup.value = TelegramState(tokenHeld = status["token"]?.toString() == "true", allowedUser = status.text("allowed_user"),
-                                    sdk = status["sdk"]?.toString() != "false")
+        setup.value = try {
+            val status = call("telegram_status")
+            TelegramState(tokenHeld = status["token"]?.toString() == "true", allowedUser = status.text("allowed_user"),
+                          sdk = status["sdk"]?.toString() != "false")
+        } catch (failed: Exception) {
+            TelegramState(error = forUser(failed))
+        }
     }
 
     fun close() {
@@ -66,6 +71,8 @@ class TelegramSetup(
                 return fail(refused)
             }
             setup.update { it?.copy(tokenHeld = true, allowedUser = allowed.text("allowed_user"), bot = checked.text("bot"), busy = false) }
+        } catch (failed: Exception) {
+            fail(forUser(failed))
         } finally {
             token?.fill(0)
         }

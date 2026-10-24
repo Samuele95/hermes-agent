@@ -102,6 +102,30 @@ class TelegramSetupTest {
     }
 
     @Test
+    fun aKeystoreFailureIsShownByItsKindAndTheTokenStillWiped() = runTest {
+        val failing = TelegramSetup(object : SecretStore by secrets {
+            override fun put(name: String, value: ByteArray) = throw java.io.IOException("disk full")
+        }, { secretsChanged++ }) { function, _ -> answers.getValue(function) }
+        failing.open()
+        val token = "123:abc".toByteArray()
+
+        failing.save(token, "42")
+
+        assertEquals(false, failing.state.value?.busy)
+        assertEquals("Something went wrong (IOException).", failing.state.value?.error)
+        assertTrue(token.all { it == 0.toByte() })
+    }
+
+    @Test
+    fun aBridgeFailureWhileOpeningStillOpensTheScreenWithIt() = runTest {
+        val failing = TelegramSetup(secrets, { secretsChanged++ }) { _, _ -> throw RuntimeException("Traceback ...") }
+
+        failing.open()
+
+        assertEquals("Something went wrong (RuntimeException).", failing.state.value?.error)
+    }
+
+    @Test
     fun aClosedSetupHasNoState() = runTest {
         telegram.open()
         telegram.close()

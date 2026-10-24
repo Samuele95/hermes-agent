@@ -200,6 +200,18 @@ class ChatSessionTest {
     }
 
     @Test
+    fun aKeystoreFailureOnASecretIsSaidByItsKindAndTheRequestDeclined() = runTest(UnconfinedTestDispatcher()) {
+        keepSecret = { _, _ -> throw IllegalStateException("Keystore operation failed: sk-not-for-the-screen") }
+        val chat = openChat().apply { open() }
+        core.ask("srq-5", "secret", """{"session_id":"s1","env_var":"GOOD_NAME","prompt":"key"}""")
+
+        chat.secret(chat.state.value.prompts.single() as Prompt.Secret, "x".toByteArray())
+
+        assertTrue(core.settled.single().second.startsWith("declined"))
+        assertEquals(Entry.Notice("Something went wrong (IllegalStateException)."), chat.state.value.entries.last())
+    }
+
+    @Test
     fun requestsTheAppCannotShowAreDeclinedAtOnce() = runTest(UnconfinedTestDispatcher()) {
         openChat().open()
 

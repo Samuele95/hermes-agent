@@ -1,5 +1,6 @@
 package com.nousresearch.hermes.android.setup
 
+import com.nousresearch.hermes.android.forUser
 import com.nousresearch.hermes.bridge.CoreError
 import com.nousresearch.hermes.bridge.CoreGateway
 import com.nousresearch.hermes.bridge.SecretStore
@@ -242,8 +243,8 @@ class ProviderSetup(
         try {
             val next = exchange()
             setup.update { it?.copy(step = next, busy = false) }
-        } catch (refused: CoreError) {
-            setup.update { it?.copy(busy = false, error = refused.message) }
+        } catch (failed: Exception) {
+            setup.update { it?.copy(busy = false, error = forUser(failed)) }
         }
     }
 }

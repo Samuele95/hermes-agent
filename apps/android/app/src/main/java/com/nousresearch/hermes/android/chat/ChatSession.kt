@@ -1,5 +1,6 @@
 package com.nousresearch.hermes.android.chat
 
+import com.nousresearch.hermes.android.forUser
 import com.nousresearch.hermes.android.turn.TurnHost
 import com.nousresearch.hermes.bridge.CoreError
 import com.nousresearch.hermes.bridge.CoreEvent
@@ -104,8 +105,12 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, sc
     suspend fun secret(prompt: Prompt.Secret, value: ByteArray?) {
         try {
             value?.let { keepSecret(prompt.envVar, it) }
-        } catch (refused: IllegalArgumentException) {
+        } catch (refused: IllegalArgumentException) {  // the store's own words: a name that is no variable name
             chat.update { it.notice(refused.message ?: "The key could not be kept.") }
+            settle(prompt) { core.decline(it, "the app could not keep the key") }
+            return
+        } catch (failed: Exception) {
+            chat.update { it.notice(forUser(failed)) }
             settle(prompt) { core.decline(it, "the app could not keep the key") }
             return
         } finally {

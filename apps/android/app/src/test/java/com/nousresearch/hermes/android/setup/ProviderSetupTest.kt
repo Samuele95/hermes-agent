@@ -49,11 +49,25 @@ class ProviderSetupTest {
         }
     }
     private var endpointSaved: (JsonObject) -> String = { """{"id":"host-ollama","key_env":"HERMES_CUSTOM_HOST_OLLAMA_API_KEY"}""" }
-    private val setup = ProviderSetup(core, secrets, secretsChanged = { log += "secrets_changed" }, session = { "s1" },
+    private var secretsChanged: () -> Unit = { log += "secrets_changed" }
+    private val setup = ProviderSetup(core, secrets, secretsChanged = { secretsChanged() }, session = { "s1" },
                                       reopenChat = { log += "reopen_chat" },
                                       saveEndpoint = { request -> log += "save_endpoint"; endpointSaved(Json.parseToJsonElement(request).jsonObject) })
 
     private fun ProviderSetup.step() = state.value?.step
+
+    @Test
+    fun aBridgeFailureMidStepIsShownByItsKindAndTheAppGoesOn() = runTest {
+        // EmbeddedPython.call throws RuntimeException carrying the Python traceback: never words for the screen.
+        secretsChanged = { throw RuntimeException("Traceback (most recent call last): ... sk-not-for-the-screen") }
+        setup.open()
+        setup.pick("deepseek")
+
+        setup.submitKey("sk-test".toByteArray())
+
+        assertEquals(false, setup.state.value?.busy)
+        assertEquals("Something went wrong (RuntimeException).", setup.state.value?.error)
+    }
 
     @Test
     fun aFreshCoreNeedsSetup() = runTest {

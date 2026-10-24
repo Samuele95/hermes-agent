@@ -1,5 +1,6 @@
 package com.nousresearch.hermes.android.setup
 
+import com.nousresearch.hermes.android.forUser
 import com.nousresearch.hermes.bridge.SecretStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -101,6 +102,8 @@ class SshSetup(
             setup.update { it?.copy(step = next ?: it.step, busy = false) }
         } catch (failed: StepFailed) {
             setup.update { it?.copy(busy = false, error = failed.message) }
+        } catch (failed: Exception) {
+            setup.update { it?.copy(busy = false, error = forUser(failed)) }
         }
     }
 

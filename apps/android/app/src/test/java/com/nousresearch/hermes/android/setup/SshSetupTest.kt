@@ -54,6 +54,17 @@ class SshSetupTest {
     }
 
     @Test
+    fun aBridgeFailureIsShownByItsKindAndTheAppGoesOn() = runTest {
+        val failing = SshSetup(secrets, { secretsChanged++ }) { _, _ -> throw RuntimeException("Traceback (most recent call last): ... sk-not-for-the-screen") }
+        failing.open()
+
+        failing.look(target)
+
+        assertEquals(false, failing.state.value?.busy)
+        assertEquals("Something went wrong (RuntimeException).", failing.state.value?.error)
+    }
+
+    @Test
     fun anExistingIdentityIsKept() = runTest {
         held["TERMINAL_SSH_PRIVATE_KEY"] = "existing".toByteArray()
         ssh.open()
