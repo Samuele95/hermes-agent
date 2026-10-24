@@ -87,3 +87,36 @@ def test_cache_cli_keeps_commit_and_tag_provenance_distinct(tmp_path):
     assert tagged.returncode == 0, tagged.stdout + tagged.stderr
     manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
     assert manifest['tag'] == 'v1.2.3' and 'commit' not in manifest
+
+
+def test_a_wheelhouse_is_reused_only_for_the_same_closure_extras(tmp_path):
+    # The Termux package builds core + acp; the Android app adds asyncssh and telegram. A cached
+    # acp-only wheelhouse must never stand in for the app's, which would lack those wheels.
+    payload, _ = cache_tree(tmp_path)
+    repo = Path(__file__).resolve().parents[2]
+    base = [sys.executable, str(repo / 'scripts/termux/wheelhouse_cache.py')]
+    common = ['--payload', str(payload), '--repo', str(repo), '--builder', 'fixture-image',
+              '--platform-tag', 'android_24_arm64_v8a', '--python-abi', 'cp314', '--commit', 'a' * 40]
+
+    def run(action, *extras):
+        flags = [arg for extra in extras for arg in ('--extra', extra)]
+        return subprocess.run([*base, action, *common, *flags], cwd=tmp_path, capture_output=True,
+                              text=True, encoding='utf-8', timeout=30, check=False).returncode
+
+    assert run('write') == 0
+    assert run('check') == 0
+    assert run('check', 'asyncssh', 'telegram') != 0
+
+    assert run('write', 'telegram', 'asyncssh') == 0
+    assert run('check', 'asyncssh', 'telegram') == 0  # order does not matter
+    assert run('check', 'asyncssh', 'telegram', 'asyncssh') == 0  # nor repetition
+    assert run('check') != 0
+
+
+def test_the_identity_names_the_closure_extras():
+    repo = Path(__file__).resolve().parents[2]
+
+    identity = wheelhouse_cache.build_identity(repo, 'image', 'android_24_arm64_v8a', 'cp314', extras=('telegram', 'acp'))
+
+    assert identity['extras'] == 'acp,telegram'
+    assert wheelhouse_cache.build_identity(repo, 'image', 'android_24_arm64_v8a', 'cp314')['extras'] == 'acp'
