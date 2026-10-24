@@ -44,15 +44,17 @@ fun GatewayScreen(state: GatewayUi, samsung: Boolean, onOn: () -> Unit, onOff: (
             TextButton(onClose, Modifier.testTag("gateway-close")) { Text(stringResource(R.string.ssh_done)) }
         }
         Text(stringResource(R.string.gateway_explain))
-        val on = state.status != GatewayStatus.STOPPED
+        val on = state.status in setOf(GatewayStatus.STARTING, GatewayStatus.RUNNING, GatewayStatus.RESTARTING)
         Setting(stringResource(R.string.gateway_switch), on, "gateway-switch") { if (it) onOn() else onOff() }
         val status = when (state.status) {
             GatewayStatus.STOPPED -> R.string.gateway_status_stopped
             GatewayStatus.STARTING -> R.string.gateway_status_starting
             GatewayStatus.RUNNING -> R.string.gateway_status_running
+            GatewayStatus.RESTARTING -> R.string.gateway_status_restarting
+            GatewayStatus.FAILED -> R.string.gateway_status_failed
         }
-        Text(stringResource(status), Modifier.testTag("gateway-status-${state.status.name.lowercase()}"),
-             style = MaterialTheme.typography.bodySmall)
+        Text(listOfNotNull(stringResource(status), state.reason).joinToString(" "),
+             Modifier.testTag("gateway-status-${state.status.name.lowercase()}"), style = MaterialTheme.typography.bodySmall)
         Setting(stringResource(R.string.gateway_boot), state.startAtBoot, "gateway-boot", onStartAtBoot)
         Text(stringResource(R.string.gateway_battery_hint), style = MaterialTheme.typography.bodySmall)
         if (samsung) {

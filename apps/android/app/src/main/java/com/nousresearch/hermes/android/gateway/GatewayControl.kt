@@ -8,8 +8,40 @@ import kotlinx.coroutines.flow.update
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-/** What the gateway is doing, as seen from the app: no `:gateway` process, one coming up, or one serving. */
-enum class GatewayStatus { STOPPED, STARTING, RUNNING }
+/** What the gateway is doing, as seen from the app. */
+enum class GatewayStatus { STOPPED, STARTING, RUNNING, RESTARTING, FAILED }
+
+/**
+ * The gateway's own account of itself, written by its service in the `:gateway` process on every change and
+ * read by the app's controls (the core's `gateway_state.json` is the core's business, not the app's).
+ */
+@Serializable
+data class GatewayRecord(val state: State, val pid: Int, val reason: String? = null) {
+    @Serializable
+    enum class State { STARTING, RUNNING, RESTARTING, STOPPED, FAILED }
+
+    fun json(): String = bridgeJson.encodeToString(serializer(), this)
+
+    companion object {
+        fun parse(text: String): GatewayRecord? = runCatching { bridgeJson.decodeFromString(serializer(), text) }.getOrNull()
+    }
+}
+
+/**
+ * The status (and, after a failure, its reason) from the gateway's [record] and the pid of the `:gateway` process
+ * alive now: a record whose writer is gone says nothing about now (the process was killed; Android starts it
+ * again, and the new one writes its own record), except a failure, which stays until the next start.
+ */
+fun statusOf(record: GatewayRecord?, alivePid: Int?): Pair<GatewayStatus, String?> = when {
+    record?.state == GatewayRecord.State.FAILED -> GatewayStatus.FAILED to record.reason
+    record == null || record.pid != alivePid -> (if (alivePid != null) GatewayStatus.STARTING else GatewayStatus.STOPPED) to null
+    else -> when (record.state) {
+        GatewayRecord.State.STARTING -> GatewayStatus.STARTING
+        GatewayRecord.State.RUNNING -> GatewayStatus.RUNNING
+        GatewayRecord.State.RESTARTING -> GatewayStatus.RESTARTING
+        GatewayRecord.State.STOPPED, GatewayRecord.State.FAILED -> GatewayStatus.STOPPED
+    } to null
+}
 
 /** Starts and stops the `:gateway` process's service. */
 interface GatewayLauncher {
@@ -24,7 +56,8 @@ interface GatewaySettings {
 }
 
 /** The gateway screen: what runs, the boot setting, and whether to ask for the battery exemption now. */
-data class GatewayUi(val status: GatewayStatus, val startAtBoot: Boolean, val askBatteryExemption: Boolean = false)
+data class GatewayUi(val status: GatewayStatus, val startAtBoot: Boolean, val askBatteryExemption: Boolean = false,
+                     val reason: String? = null)
 
 /**
  * The always-on gateway's controls (D23). Its switch shows what is observed, not a stored wish: the gateway
@@ -35,14 +68,15 @@ data class GatewayUi(val status: GatewayStatus, val startAtBoot: Boolean, val as
 class GatewayControl(
     private val settings: GatewaySettings,
     private val launcher: GatewayLauncher,
-    private val observe: () -> GatewayStatus,
+    private val observe: () -> Pair<GatewayStatus, String?>,
     private val batteryExempt: () -> Boolean,
 ) {
     private val screen = MutableStateFlow<GatewayUi?>(null)
     val state: StateFlow<GatewayUi?> = screen.asStateFlow()
 
     fun open() {
-        screen.value = GatewayUi(observe(), settings.startAtBoot)
+        val (status, reason) = observe()
+        screen.value = GatewayUi(status, settings.startAtBoot, reason = reason)
     }
 
     fun close() {
@@ -51,7 +85,8 @@ class GatewayControl(
 
     /** Re-reads what runs, for a screen that is showing. */
     fun refresh() {
-        screen.update { it?.copy(status = observe()) }
+        val (status, reason) = observe()
+        screen.update { it?.copy(status = status, reason = reason) }
     }
 
     fun turnOn() {

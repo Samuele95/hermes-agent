@@ -17,7 +17,7 @@ class GatewayControlTest {
     private val control = GatewayControl(settings, object : GatewayLauncher {
         override fun start() { launched += "start" }
         override fun stop() { launched += "stop" }
-    }, observe = { running }, batteryExempt = { exempt })
+    }, observe = { running to null }, batteryExempt = { exempt })
 
     @Test
     fun theScreenShowsWhatRunsNotAStoredWish() {

@@ -61,6 +61,7 @@ class GatewayService : Service() {
         ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(R.string.gateway_starting), type)
         if (!booted) {
             booted = true
+            record(GatewayRecord.State.STARTING)
             worker.execute(::boot)
         }
         return START_STICKY
@@ -81,14 +82,15 @@ class GatewayService : Service() {
     private fun onEvent(line: String) {
         val event = GatewayEvent.parse(line) ?: return
         when (event.gateway) {
-            GatewayEvent.State.RUNNING -> show(R.string.gateway_running)
-            GatewayEvent.State.RESTARTING -> show(R.string.gateway_restarting)
+            GatewayEvent.State.RUNNING -> show(R.string.gateway_running).also { record(GatewayRecord.State.RUNNING) }
+            GatewayEvent.State.RESTARTING -> show(R.string.gateway_restarting).also { record(GatewayRecord.State.RESTARTING) }
             GatewayEvent.State.STOPPED -> end()
             GatewayEvent.State.FAILED -> failed(event.reason.orEmpty())
         }
     }
 
     private fun failed(reason: String) {
+        record(GatewayRecord.State.FAILED, reason)
         getSystemService(NotificationManager::class.java).notify(FAILURE_ID, NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_notify_error)
             .setContentTitle(getString(R.string.gateway_failed))
@@ -99,8 +101,16 @@ class GatewayService : Service() {
         end()
     }
 
+    private fun record(state: GatewayRecord.State, reason: String? = null) {
+        runCatching { writeGatewayRecord(this, GatewayRecord(state, Process.myPid(), reason)) }
+    }
+
     /** Stops the service, then the process: its interpreter cannot be started twice. */
     private fun end() {
+        // A failure's record keeps its reason; any other end is a stop.
+        if (runCatching { GatewayRecord.parse(gatewayRecordFile(this).readText())?.state }.getOrNull() != GatewayRecord.State.FAILED) {
+            record(GatewayRecord.State.STOPPED)
+        }
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
         Process.killProcess(Process.myPid())

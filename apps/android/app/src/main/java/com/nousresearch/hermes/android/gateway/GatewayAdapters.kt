@@ -9,7 +9,6 @@ import android.os.PowerManager
 import androidx.core.content.ContextCompat
 import com.nousresearch.hermes.android.HermesApplication
 import java.io.File
-import org.json.JSONObject
 
 /** Starts and stops [GatewayService]; a stop is sent only to a running gateway (it would start the process to end it). */
 class ServiceGatewayLauncher(private val context: Context) : GatewayLauncher {
@@ -32,12 +31,21 @@ private fun gatewayPid(context: Context): Int? =
     context.getSystemService(ActivityManager::class.java).runningAppProcesses
         ?.firstOrNull { it.processName == "${context.packageName}:gateway" }?.pid
 
-/** What runs: the `:gateway` process, and whether the gateway's own record says it serves from it. */
-fun observeGateway(context: Context): GatewayStatus {
-    val pid = gatewayPid(context) ?: return GatewayStatus.STOPPED
-    val record = runCatching { JSONObject(File(context.filesDir, ".hermes/gateway_state.json").readText()) }.getOrNull()
-    val serving = record?.optString("gateway_state") == "running" && record.optInt("pid") == pid
-    return if (serving) GatewayStatus.RUNNING else GatewayStatus.STARTING
+/** Where `GatewayService` keeps its own record of the gateway's state (app-private, not backed up). */
+fun gatewayRecordFile(context: Context): File = File(context.noBackupFilesDir, "gateway_runtime.json")
+
+/** What runs, from the gateway service's own record and the `:gateway` process alive now. */
+fun observeGateway(context: Context): Pair<GatewayStatus, String?> {
+    val record = runCatching { GatewayRecord.parse(gatewayRecordFile(context).readText()) }.getOrNull()
+    return statusOf(record, gatewayPid(context))
+}
+
+/** Replaces the record in one rename, so a reader never sees half of one. */
+fun writeGatewayRecord(context: Context, record: GatewayRecord) {
+    val file = gatewayRecordFile(context)
+    val next = File(file.parentFile, "${file.name}.tmp")
+    next.writeText(record.json())
+    next.renameTo(file)
 }
 
 fun batteryExempt(context: Context): Boolean =
