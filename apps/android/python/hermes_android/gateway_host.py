@@ -97,7 +97,11 @@ class GatewayHost:
                 self._report("stopped")
                 return
             if ended != "restart":
-                self._report("failed", reason=ended)
+                # The reason reaches the app's record, screen and a notification; the platform's error text may
+                # carry a token (a bot API URL), so it is redacted as the core's adapters redact their own.
+                from agent.redact import redact_sensitive_text
+
+                self._report("failed", reason=redact_sensitive_text(ended, force=True, redact_url_credentials=True))
                 return
             self._report("restarting")
             if time.monotonic() - began < self._quick_run_s:

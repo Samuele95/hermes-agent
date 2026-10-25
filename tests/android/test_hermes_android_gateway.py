@@ -142,6 +142,20 @@ def test_a_crashing_gateway_is_reported_with_its_error(gateway_home):
     assert events.wait_for("failed") == {"gateway": "failed", "reason": "RuntimeError: adapter exploded"}
 
 
+def test_a_failure_reason_carrying_a_secret_is_redacted(gateway_home):
+    # The reason reaches the app's record, its screen and a notification: the platform's error text may hold a token.
+    events = Events()
+    token = "123456789:AAH-telegram-bot-token-in-an-error"
+
+    def run() -> bool:
+        raise RuntimeError(f"telegram rejected https://api.telegram.org/bot{token}/getMe")
+
+    gateway_host.GatewayHost(events.emit, run_gateway=run).start()
+
+    reason = events.wait_for("failed")["reason"]
+    assert reason.startswith("RuntimeError: telegram rejected") and token not in reason
+
+
 def test_quick_restarts_back_off_and_a_stop_ends_the_wait(gateway_home):
     # Exit 75 at once, again and again (e.g. a lock another holder keeps): no hot loop.
     events = Events()
