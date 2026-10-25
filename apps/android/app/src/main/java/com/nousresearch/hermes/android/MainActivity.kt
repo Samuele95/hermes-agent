@@ -41,6 +41,7 @@ import kotlinx.coroutines.withContext
 import com.nousresearch.hermes.android.setup.SettingsScreen
 import com.nousresearch.hermes.android.setup.SetupScreen
 import com.nousresearch.hermes.android.setup.SshScreen
+import com.nousresearch.hermes.android.ui.HermesTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -48,7 +49,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         val app = application as HermesApplication
         setContent {
-            MaterialTheme {
+            HermesTheme {
                 Surface(Modifier.fillMaxSize()) {
                     val core by app.core.collectAsState()
                     // Asked at the first message, not at launch: the notification only matters while a turn runs.

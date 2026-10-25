@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The window before Compose draws: the Nous palette's background, so the first frame does not flash. -->
+    <style name="Theme.Hermes" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/hermes_background</item>
+    </style>
+</resources>
