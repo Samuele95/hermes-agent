@@ -4,6 +4,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.background
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -66,7 +67,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), list, PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(chat.entries) { EntryRow(it) }
             chat.reasoning?.takeIf { chat.running && it.isNotBlank() }?.let { text -> item { Reasoning(text, Modifier.testTag("reasoning-streaming")) } }
-            chat.streaming?.let { text -> item { Bubble(text.ifEmpty { "…" }, mine = false) } }
+            chat.streaming?.let { text -> item { Reply(text.ifEmpty { "…" }) } }
             chat.activity?.let { text -> item { Text(text, style = MaterialTheme.typography.labelMedium) } }
         }
         // One question at a time, the oldest first: the turn waits on it.
@@ -97,7 +98,7 @@ private fun EntryRow(entry: Entry) {
                 }
                 if (shown) Reasoning(reasoning)
             }
-            if (entry.text.isNotEmpty()) Bubble(entry.text, mine = false)
+            if (entry.text.isNotEmpty()) Reply(entry.text)
             // The core often words the error into the reply itself; show it apart only when it did not.
             entry.error?.takeUnless { it in entry.text }?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         }
@@ -113,6 +114,12 @@ private fun EntryRow(entry: Entry) {
 private fun Reasoning(text: String, modifier: Modifier = Modifier) {
     Text(text, modifier.padding(horizontal = 4.dp), style = MaterialTheme.typography.bodySmall,
          color = MaterialTheme.colorScheme.onSurfaceVariant, fontStyle = FontStyle.Italic)
+}
+
+/** The agent's words: Markdown drawn flat across the column, selectable like the desktop's. */
+@Composable
+private fun Reply(text: String) {
+    SelectionContainer { MarkdownText(text, Modifier.fillMaxWidth().padding(horizontal = 4.dp)) }
 }
 
 @Composable

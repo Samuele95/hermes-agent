@@ -47,6 +47,16 @@ class ChatScreenTest {
     }
 
     @Test
+    fun aRepliesMarkdownIsDrawnNotShownAsMarkup() {
+        val reply = Entry.Reply("## Plan\n\n**Bold** and `code`\n\n- one\n- two\n\n```sh\nls -la\n```", TurnStatus.COMPLETE)
+
+        compose.setContent { ChatScreen(Chat(listOf(reply)), onSend = {}) }
+
+        listOf("Plan", "Bold and code", "one", "two", "ls -la").forEach { compose.onNodeWithText(it).assertExists() }
+        listOf("**", "## ", "- one", "```").forEach { compose.onNodeWithText(it, substring = true).assertDoesNotExist() }
+    }
+
+    @Test
     fun aStreamingReplyAndTheAgentsActivityShowWhileTheTurnRuns() {
         compose.setContent { ChatScreen(Chat(streaming = "Hel", activity = "Thinking…"), onSend = {}) }
 
