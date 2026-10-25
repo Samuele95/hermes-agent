@@ -48,6 +48,7 @@
     <string name="setup_model_name">Model name</string>
     <string name="setup_use_model">Use this model</string>
     <string name="setup_add_endpoint">Add a custom endpoint</string>
+    <string name="setup_providers">Providers</string>
     <string name="setup_add_endpoint_detail">Any OpenAI-compatible server: Ollama, llama.cpp, vLLM…</string>
     <string name="setup_endpoint_name">Name</string>
     <string name="setup_endpoint_url">Base URL (e.g. http://127.0.0.1:11434/v1)</string>
@@ -97,6 +98,7 @@
     <string name="gateway_stop">Stop</string>
     <string name="gateway_failed">Hermes gateway stopped</string>
     <string name="gateway_screen_title">Always-on gateway</string>
+    <string name="gateway_section">Gateway</string>
     <string name="telegram_title">Telegram bot</string>
     <string name="telegram_no_sdk">This build of the app does not include Telegram support.</string>
     <string name="telegram_hint">Create a bot with @BotFather and paste its token here. Only you may talk to it: enter your numeric Telegram user id (@userinfobot tells you yours).</string>

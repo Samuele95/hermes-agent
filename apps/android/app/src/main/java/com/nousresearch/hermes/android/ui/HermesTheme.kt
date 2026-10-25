@@ -2,8 +2,10 @@ package com.nousresearch.hermes.android.ui
 
 import android.graphics.Typeface
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -16,6 +18,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nousresearch.hermes.android.R
 
@@ -94,6 +97,10 @@ private fun typography(): Typography = Typography().run {
     )
 }
 
+/** Rounded like the desktop's inputs and cards (rounded-lg): text fields take extraSmall. */
+private val Shapes = Shapes(extraSmall = RoundedCornerShape(8.dp), small = RoundedCornerShape(10.dp),
+                            medium = RoundedCornerShape(12.dp), large = RoundedCornerShape(16.dp))
+
 /** The section labels of the desktop sidebar (PINNED, SESSIONS): small caps in the accent colour. */
 val SectionLabel = TextStyle(fontSize = 11.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.2.sp)
 
@@ -101,6 +108,6 @@ val SectionLabel = TextStyle(fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
 fun HermesTheme(dark: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
     val scheme: ColorScheme = if (dark) NousDark else NousLight
     CompositionLocalProvider(LocalHermesColors provides if (dark) DarkTokens else LightTokens) {
-        MaterialTheme(colorScheme = scheme, typography = typography(), content = content)
+        MaterialTheme(colorScheme = scheme, typography = typography(), shapes = Shapes, content = content)
     }
 }

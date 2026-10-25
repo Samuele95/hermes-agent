@@ -10,6 +10,7 @@ import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -47,7 +48,7 @@ class GatewayScreenTest {
         compose.onNodeWithTag("telegram-token").assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Password))
         compose.onNodeWithTag("telegram-token").performTextInput(" 123:abc ")
         compose.onNodeWithTag("telegram-user").performTextInput("42")
-        compose.onNodeWithTag("telegram-save").performClick()
+        compose.onNodeWithTag("telegram-save").performScrollTo().performClick()
 
         assertEquals(listOf("telegram 123:abc 42"), calls)
     }
@@ -58,7 +59,7 @@ class GatewayScreenTest {
 
         compose.onNodeWithText("@phone_hermes_bot", substring = true).assertExists()
         compose.onNodeWithTag("telegram-user").performTextReplacement("43")
-        compose.onNodeWithTag("telegram-save").performClick()
+        compose.onNodeWithTag("telegram-save").performScrollTo().performClick()
 
         assertEquals(listOf("telegram null 43"), calls)
     }

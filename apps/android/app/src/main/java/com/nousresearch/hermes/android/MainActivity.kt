@@ -16,6 +16,18 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.style.TextAlign
+import com.nousresearch.hermes.android.ui.Wordmark
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -40,6 +52,7 @@ import kotlinx.coroutines.withContext
 import com.nousresearch.hermes.android.setup.SettingsScreen
 import com.nousresearch.hermes.android.setup.SetupScreen
 import com.nousresearch.hermes.android.setup.SshScreen
+import com.nousresearch.hermes.android.ui.Hermes
 import com.nousresearch.hermes.android.ui.HermesTheme
 
 class MainActivity : ComponentActivity() {
@@ -54,9 +67,8 @@ class MainActivity : ComponentActivity() {
                     // Asked at the first message, not at launch: the notification only matters while a turn runs.
                     val askToNotify = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
                     when (val state = core) {
-                        CoreState.Starting -> Text(stringResource(R.string.core_starting), Modifier.safeDrawingPadding().padding(16.dp))
-                        is CoreState.Failed -> Text(state.reason, Modifier.safeDrawingPadding().padding(16.dp),
-                                                    color = MaterialTheme.colorScheme.error)
+                        CoreState.Starting -> Splash(stringResource(R.string.core_starting))
+                        is CoreState.Failed -> Splash(state.reason, failed = true)
                         is CoreState.Ready -> {
                             val chat by state.chat.state.collectAsState()
                             val setup by state.setup.state.collectAsState()
@@ -105,6 +117,21 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+        }
+    }
+
+    /** While the core starts (the first run unpacks it), or when it could not: the brand, and what is happening. */
+    @Composable
+    private fun Splash(text: String, failed: Boolean = false) {
+        Column(Modifier.fillMaxSize().safeDrawingPadding().padding(32.dp), verticalArrangement = Arrangement.Center,
+               horizontalAlignment = Alignment.CenterHorizontally) {
+            Image(painterResource(if (Hermes.colors.dark) R.drawable.brand_mark_dark else R.drawable.brand_mark), null,
+                  Modifier.size(72.dp).clip(RoundedCornerShape(16.dp)))
+            Wordmark("HERMES AGENT", if (Hermes.colors.dark) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.primary,
+                     Modifier.padding(top = 20.dp).width(220.dp))
+            if (!failed) CircularProgressIndicator(Modifier.padding(top = 24.dp).size(20.dp), strokeWidth = 2.dp)
+            Text(text, Modifier.padding(top = 12.dp), style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center,
+                 color = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 

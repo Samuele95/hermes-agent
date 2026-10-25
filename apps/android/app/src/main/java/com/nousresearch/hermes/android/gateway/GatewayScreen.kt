@@ -1,14 +1,15 @@
 package com.nousresearch.hermes.android.gateway
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -29,6 +30,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.nousresearch.hermes.android.R
+import com.nousresearch.hermes.android.ui.SectionCaption
+import com.nousresearch.hermes.android.ui.PrimaryButton
+import com.nousresearch.hermes.android.ui.Page
+import com.nousresearch.hermes.android.ui.Hint
+import com.nousresearch.hermes.android.ui.Hermes
 
 /**
  * The optional always-on gateway (D12, D23): on/off from what runs, start at boot, and on Samsung phones
@@ -39,13 +45,10 @@ fun GatewayScreen(state: GatewayUi, samsung: Boolean, onOn: () -> Unit, onOff: (
                   onStartAtBoot: (Boolean) -> Unit, onClose: () -> Unit, modifier: Modifier = Modifier,
                   telegram: TelegramState? = null, onTelegramSave: (ByteArray?, String) -> Unit = { _, _ -> },
                   onRestart: () -> Unit = {}) {
-    Column(modifier.fillMaxSize().safeDrawingPadding().padding(12.dp).testTag("gateway"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(stringResource(R.string.gateway_screen_title), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-            TextButton(onClose, Modifier.testTag("gateway-close")) { Text(stringResource(R.string.ssh_done)) }
-        }
-        Text(stringResource(R.string.gateway_explain))
+    Page(stringResource(R.string.gateway_screen_title), modifier.testTag("gateway"), onBack = onClose, backTag = "gateway-close") {
+        Hint(stringResource(R.string.gateway_explain))
         val on = state.status in setOf(GatewayStatus.STARTING, GatewayStatus.RUNNING, GatewayStatus.RESTARTING)
+        SectionCaption(stringResource(R.string.gateway_section))
         Setting(stringResource(R.string.gateway_switch), on, "gateway-switch") { if (it) onOn() else onOff() }
         val status = when (state.status) {
             GatewayStatus.STOPPED -> R.string.gateway_status_stopped
@@ -55,20 +58,26 @@ fun GatewayScreen(state: GatewayUi, samsung: Boolean, onOn: () -> Unit, onOff: (
             GatewayStatus.STOPPING -> R.string.gateway_status_stopping
             GatewayStatus.FAILED -> R.string.gateway_status_failed
         }
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        val tone = when (state.status) {
+            GatewayStatus.RUNNING -> MaterialTheme.colorScheme.primary
+            GatewayStatus.FAILED -> MaterialTheme.colorScheme.error
+            GatewayStatus.STOPPED -> Hermes.colors.textTertiary
+            else -> MaterialTheme.colorScheme.onSurfaceVariant
+        }
+        Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(8.dp).background(tone, CircleShape))
             Text(listOfNotNull(stringResource(status), state.reason).joinToString(" "),
-                 Modifier.weight(1f).testTag("gateway-status-${state.status.name.lowercase()}"), style = MaterialTheme.typography.bodySmall)
+                 Modifier.weight(1f).padding(start = 10.dp).testTag("gateway-status-${state.status.name.lowercase()}"),
+                 style = MaterialTheme.typography.bodyMedium, color = if (state.status == GatewayStatus.FAILED) tone else MaterialTheme.colorScheme.onSurface)
             // A running gateway reads its token, allowlist and settings only at its start.
             if (state.status == GatewayStatus.RUNNING) {
                 TextButton(onRestart, Modifier.testTag("gateway-restart")) { Text(stringResource(R.string.gateway_restart)) }
             }
         }
+        HorizontalDivider(color = Hermes.colors.stroke)
         Setting(stringResource(R.string.gateway_boot), state.startAtBoot, "gateway-boot", onStartAtBoot)
-        Text(stringResource(R.string.gateway_battery_hint), style = MaterialTheme.typography.bodySmall)
-        if (samsung) {
-            Text(stringResource(R.string.gateway_samsung_hint), Modifier.testTag("gateway-samsung-hint"),
-                 style = MaterialTheme.typography.bodySmall)
-        }
+        Hint(stringResource(R.string.gateway_battery_hint), Modifier.padding(top = 12.dp))
+        if (samsung) Hint(stringResource(R.string.gateway_samsung_hint), Modifier.padding(top = 8.dp).testTag("gateway-samsung-hint"))
         telegram?.let { TelegramSection(it, onTelegramSave) }
     }
 }
@@ -76,37 +85,39 @@ fun GatewayScreen(state: GatewayUi, samsung: Boolean, onOn: () -> Unit, onOff: (
 /** The phone's own bot (D11, D24): its token (masked, kept only until saved) and the one user allowed to talk to it. */
 @Composable
 private fun TelegramSection(state: TelegramState, onSave: (ByteArray?, String) -> Unit) {
-    HorizontalDivider()
-    Text(stringResource(R.string.telegram_title), style = MaterialTheme.typography.titleSmall)
+    SectionCaption(stringResource(R.string.telegram_title), Modifier.padding(top = 12.dp))
     if (!state.sdk) {
-        Text(stringResource(R.string.telegram_no_sdk), Modifier.testTag("telegram-no-sdk"), color = MaterialTheme.colorScheme.error)
+        Hint(stringResource(R.string.telegram_no_sdk), Modifier.testTag("telegram-no-sdk"), color = MaterialTheme.colorScheme.error)
         return
     }
-    if (state.bot != null) {
-        Text(stringResource(R.string.telegram_connected, state.bot, state.allowedUser.orEmpty()), Modifier.testTag("telegram-bot"))
-    } else {
-        Text(stringResource(R.string.telegram_hint), style = MaterialTheme.typography.bodySmall)
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (state.bot != null) {
+            Text(stringResource(R.string.telegram_connected, state.bot, state.allowedUser.orEmpty()), Modifier.testTag("telegram-bot"),
+                 style = MaterialTheme.typography.bodyLarge)
+        } else {
+            Hint(stringResource(R.string.telegram_hint))
+        }
+        var token by remember { mutableStateOf("") }  // never saved state: a secret
+        var user by rememberSaveable(state.allowedUser) { mutableStateOf(state.allowedUser.orEmpty()) }
+        OutlinedTextField(token, { token = it }, Modifier.fillMaxWidth().testTag("telegram-token"), singleLine = true,
+                          label = { Text(stringResource(if (state.tokenHeld) R.string.telegram_token_replace else R.string.telegram_token)) },
+                          visualTransformation = PasswordVisualTransformation(),
+                          keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false))
+        OutlinedTextField(user, { user = it.filter(Char::isDigit) }, Modifier.fillMaxWidth().testTag("telegram-user"), singleLine = true,
+                          label = { Text(stringResource(R.string.telegram_user)) },
+                          keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+        state.error?.let { Hint(it, Modifier.testTag("telegram-error"), color = MaterialTheme.colorScheme.error) }
+        val ready = !state.busy && user.isNotBlank() && (token.isNotBlank() || state.tokenHeld)
+        PrimaryButton(stringResource(R.string.telegram_save), { onSave(token.trim().takeIf { it.isNotEmpty() }?.toByteArray(), user); token = "" },
+                      Modifier.testTag("telegram-save"), enabled = ready)
+        Hint(stringResource(R.string.telegram_applies))
     }
-    var token by remember { mutableStateOf("") }  // never saved state: a secret
-    var user by rememberSaveable(state.allowedUser) { mutableStateOf(state.allowedUser.orEmpty()) }
-    OutlinedTextField(token, { token = it }, Modifier.fillMaxWidth().testTag("telegram-token"), singleLine = true,
-                      label = { Text(stringResource(if (state.tokenHeld) R.string.telegram_token_replace else R.string.telegram_token)) },
-                      visualTransformation = PasswordVisualTransformation(),
-                      keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false))
-    OutlinedTextField(user, { user = it.filter(Char::isDigit) }, Modifier.fillMaxWidth().testTag("telegram-user"), singleLine = true,
-                      label = { Text(stringResource(R.string.telegram_user)) },
-                      keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-    state.error?.let { Text(it, Modifier.testTag("telegram-error"), color = MaterialTheme.colorScheme.error) }
-    val ready = !state.busy && user.isNotBlank() && (token.isNotBlank() || state.tokenHeld)
-    Button({ onSave(token.trim().takeIf { it.isNotEmpty() }?.toByteArray(), user); token = "" }, Modifier.testTag("telegram-save"),
-           enabled = ready) { Text(stringResource(R.string.telegram_save)) }
-    Text(stringResource(R.string.telegram_applies), style = MaterialTheme.typography.bodySmall)
 }
 
 @Composable
 private fun Setting(label: String, checked: Boolean, tag: String, onChange: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, Modifier.weight(1f))
+    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
         Switch(checked, onChange, Modifier.testTag(tag))
     }
 }
