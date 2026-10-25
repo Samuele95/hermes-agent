@@ -5,10 +5,20 @@ import argparse
 import hashlib
 import json
 import re
+from collections.abc import Iterable
 from pathlib import Path
 
+#: The extras every wheelhouse closes over (the Termux package's closure); ``--extra`` adds to it.
+BASE_EXTRAS = ("acp",)
 
-def build_identity(repo: Path, builder: str, platform_tag: str, python_abi: str) -> dict[str, str]:
+
+def closure_extras(extras: Iterable[str] = ()) -> list[str]:
+    """The extras a wheelhouse closes over: the base set plus ``extras``, sorted, each once."""
+    return sorted({*BASE_EXTRAS, *extras})
+
+
+def build_identity(repo: Path, builder: str, platform_tag: str, python_abi: str,
+                   extras: Iterable[str] = ()) -> dict[str, str]:
     files = (
         "uv.lock", "pyproject.toml", "pm/lock.json", "pm/termux_runtime_libs.json",
         "scripts/termux/build_config.sh",
@@ -23,6 +33,8 @@ def build_identity(repo: Path, builder: str, platform_tag: str, python_abi: str)
         "builder": builder,
         "platformTag": platform_tag,
         "pythonAbi": python_abi,
+        # A wheelhouse for other extras holds other wheels: never reuse one across closures.
+        "extras": ",".join(closure_extras(extras)),
         **{name: _sha256(repo / name) for name in files},
     }
 
@@ -85,13 +97,15 @@ def main() -> int:
     parser.add_argument("--builder", required=True)
     parser.add_argument("--platform-tag", required=True)
     parser.add_argument("--python-abi", required=True)
+    parser.add_argument("--extra", dest="extras", action="append", default=[], metavar="NAME",
+                        help="an extra the wheelhouse also closes over (repeatable; acp is always included)")
     provenance = parser.add_mutually_exclusive_group()
     provenance.add_argument("--tag", default="")
     provenance.add_argument("--commit")
     args = parser.parse_args()
     if args.commit is not None and not re.fullmatch(r"[a-f0-9]{40}", args.commit):
         parser.error("--commit requires an exact full SHA")
-    identity = build_identity(args.repo, args.builder, args.platform_tag, args.python_abi)
+    identity = build_identity(args.repo, args.builder, args.platform_tag, args.python_abi, args.extras)
     if args.action == "check":
         return 0 if is_usable(args.payload, identity) else 1
     write_manifest(

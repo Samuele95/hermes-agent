@@ -237,3 +237,21 @@ class TestInternalDynamicSecrets:
         assert {
             "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET", "GATEWAY_RELAY_DELIVERY_KEY",
         } <= _ALWAYS_STRIP_KEYS
+
+
+class TestSshPrivateKey:
+    """TERMINAL_SSH_PRIVATE_KEY is the asyncssh transport's private key as text (a secret source
+    exports it, e.g. the Android keystore): a remote-compute secret no local child and no remote
+    shell may see, so ``env`` in a terminal cannot hand it to the model."""
+
+    _KEY = {"TERMINAL_SSH_PRIVATE_KEY": "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n"}
+
+    def test_no_child_gets_it_even_when_inheriting_credentials(self):
+        assert "TERMINAL_SSH_PRIVATE_KEY" not in _build(self._KEY, inherit_credentials=True)
+
+    def test_no_passthrough_forwards_it_to_a_remote_shell(self):
+        from tools.environments.remote_common import resolve_passthrough_env
+        with patch.dict(os.environ, self._KEY), \
+                patch("tools.env_passthrough._get_allowed", return_value={"TERMINAL_SSH_PRIVATE_KEY"}):
+            values, _ = resolve_passthrough_env(hermes_env_loader=dict)
+        assert "TERMINAL_SSH_PRIVATE_KEY" not in values

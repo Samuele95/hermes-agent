@@ -56,6 +56,9 @@ class FakePortal:
         self.honours_purpose = True
         self.token_requests: list[dict] = []
         self.create_requests: list[dict] = []
+        # Device-code sign-in (``/api/oauth/device/code`` then ``/api/oauth/token``): the token poll
+        # answers ``authorization_pending`` until the user approves in the browser (``device_approved``).
+        self.device_approved = True
 
     def creates(self) -> int:
         return [p for _, p in self.calls].count("/api/anonymous/create")
@@ -109,6 +112,17 @@ class FakePortal:
                 body["challenges"] = [{"type": "browser", "url": self.challenge_url, "state": "pending",
                                        "required": False, "expires_in": 600, "interval": 2}]
             return httpx.Response(200, json=body)
+        if path == "/api/oauth/device/code":
+            return httpx.Response(200, json={
+                "device_code": "device-1", "user_code": "NOUS-1234", "verification_uri": f"{PORTAL}/device",
+                "verification_uri_complete": f"{PORTAL}/device?user_code=NOUS-1234", "expires_in": 600, "interval": 1})
+        if path == "/api/oauth/token":
+            if not self.device_approved:
+                return httpx.Response(400, json={"error": "authorization_pending"})
+            return httpx.Response(200, json={
+                "access_token": make_jwt(sub="user:42", client_id="hermes-cli", account_tier="paid"),
+                "refresh_token": "refresh-1", "token_type": "Bearer", "expires_in": 900,
+                "scope": "inference:invoke"})
         return httpx.Response(500, json={"error": f"unexpected {path}"})
 
 

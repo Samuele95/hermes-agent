@@ -18,6 +18,7 @@ import re
 import secrets
 import shlex
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -103,7 +104,9 @@ def _spill_full_stdout(stdout_text: str) -> Optional[str]:
 
 
 def check_sandbox_requirements() -> bool:
-    """check_fn: available unless the vercel_sandbox backend fails its own checks."""
+    """check_fn: the local backend needs a launchable interpreter (CPython embedded in-process, e.g. a mobile
+    app, has none); vercel_sandbox must pass its own checks; other remote backends run the cell on the target.
+    A filesystem query only: re-evaluated on a TTL, it never probe-runs an interpreter."""
     if not SANDBOX_AVAILABLE:
         return False
     try:
@@ -113,7 +116,11 @@ def check_sandbox_requirements() -> bool:
     except Exception:
         logger.debug("Could not resolve terminal config for execute_code availability", exc_info=True)
         return False
-    return config.get("env_type") != "vercel_sandbox" or _check_vercel_sandbox_requirements(config)
+    env_type = config.get("env_type")
+    if env_type == "local":
+        from hermes_platform.resolver import locate_command
+        return bool(sys.executable) and locate_command(sys.executable).found
+    return env_type != "vercel_sandbox" or _check_vercel_sandbox_requirements(config)
 
 
 # ---- hermes_tools.py code generator ----

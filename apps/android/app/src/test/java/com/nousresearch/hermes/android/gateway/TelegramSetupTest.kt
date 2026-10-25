@@ -1,0 +1,163 @@
+package com.nousresearch.hermes.android.gateway
+
+import com.nousresearch.hermes.bridge.SecretStore
+import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/** The phone's Telegram bot (D11, D24): token in the keystore, one allowed user, checked with Telegram. */
+class TelegramSetupTest {
+    private val held = mutableMapOf<String, ByteArray>()
+    private val handedOut = mutableListOf<ByteArray>()  // every plaintext the store gave out
+    private val secrets = object : SecretStore {
+        override fun put(name: String, value: ByteArray) { held[name] = value.copyOf() }
+        override fun get(name: String) = held[name]?.copyOf()?.also { handedOut += it }  // a fresh copy, as the keystore's
+        override fun delete(name: String) { held.remove(name) }
+        override fun all(): Map<String, ByteArray> = held.toMap()
+    }
+    private var secretsChanged = 0
+    private val calls = mutableListOf<Pair<String, String>>()
+    private val answers = mutableMapOf(
+        "telegram_status" to """{"token":false,"allowed_user":null,"sdk":true}""",
+        "telegram_configure" to """{"allowed_user":"42"}""",
+        "telegram_check" to """{"check":"ok","bot":"@phone_hermes_bot","message":null}""",
+    )
+    private val telegram = TelegramSetup(secrets) { function, arg ->
+        if (function == "secrets_changed") { secretsChanged++; return@TelegramSetup "{}" }
+        calls += function to arg
+        answers.getValue(function)
+    }
+
+    @Test
+    fun openingShowsWhatIsSetUp() = runTest {
+        answers["telegram_status"] = """{"token":true,"allowed_user":"42","sdk":true}"""
+
+        telegram.open()
+
+        assertEquals(TelegramState(tokenHeld = true, allowedUser = "42"), telegram.state.value)
+    }
+
+    @Test
+    fun aBuildWithoutTheTelegramLibrarySaysSo() = runTest {
+        answers["telegram_status"] = """{"token":false,"allowed_user":null,"sdk":false}"""
+
+        telegram.open()
+
+        assertEquals(false, telegram.state.value?.sdk)
+    }
+
+    @Test
+    fun savingKeepsTheTokenInTheKeystoreAllowsTheUserAndNamesTheBot() = runTest {
+        telegram.open()
+        val token = "123:abc".toByteArray()
+
+        telegram.save(token, "42")
+
+        assertArrayEquals("123:abc".toByteArray(), held["TELEGRAM_BOT_TOKEN"])
+        assertTrue("the caller's copy is wiped", token.all { it == 0.toByte() })
+        assertEquals(1, secretsChanged)
+        assertEquals(listOf("telegram_status", "telegram_configure", "telegram_check"), calls.map { it.first })
+        assertEquals(TelegramState(tokenHeld = true, allowedUser = "42", bot = "@phone_hermes_bot"), telegram.state.value)
+    }
+
+    @Test
+    fun aWrongUserIdStoresNothing() = runTest {
+        answers["telegram_configure"] = """{"error":"Enter your numeric Telegram user id"}"""
+        telegram.open()
+
+        telegram.save("123:abc".toByteArray(), "@me")
+
+        assertNull(held["TELEGRAM_BOT_TOKEN"])
+        assertEquals(0, secretsChanged)
+        assertEquals("Enter your numeric Telegram user id", telegram.state.value?.error)
+    }
+
+    @Test
+    fun aTokenTelegramRefusesIsDeletedAgain() = runTest {
+        answers["telegram_check"] = """{"check":"refused","bot":null,"message":"Telegram refused the token (401)"}"""
+        telegram.open()
+
+        telegram.save("bad".toByteArray(), "42")
+
+        assertNull(held["TELEGRAM_BOT_TOKEN"])
+        assertEquals(2, secretsChanged)  // once to try it, once to forget it
+        assertEquals("Telegram refused the token (401)", telegram.state.value?.error)
+        assertEquals(false, telegram.state.value?.tokenHeld)
+        assertTrue("no plaintext copy left behind", handedOut.all { copy -> copy.all { it == 0.toByte() } })
+    }
+
+    @Test
+    fun aCheckFailingOnTheTokenAlreadyHeldKeepsItAndLeavesNoPlaintextCopy() = runTest {
+        held["TELEGRAM_BOT_TOKEN"] = "123:abc".toByteArray()
+        answers["telegram_check"] = """{"check":"unreachable","bot":null,"message":"Telegram could not be reached"}"""
+        telegram.open()
+
+        telegram.save(null, "42")
+
+        assertEquals(true, telegram.state.value?.tokenHeld)
+        assertArrayEquals("123:abc".toByteArray(), held["TELEGRAM_BOT_TOKEN"])
+        assertTrue(handedOut.isNotEmpty() && handedOut.all { copy -> copy.all { it == 0.toByte() } })
+    }
+
+    @Test
+    fun aNewTokenCheckedWhileTelegramIsOutOfReachIsKept() = runTest {
+        answers["telegram_check"] = """{"check":"unreachable","bot":null,"message":"Telegram could not be reached, so the token was kept unchecked"}"""
+        telegram.open()
+
+        telegram.save("123:abc".toByteArray(), "42")
+
+        assertArrayEquals("123:abc".toByteArray(), held["TELEGRAM_BOT_TOKEN"])  // a good token pasted offline stays
+        assertEquals(true, telegram.state.value?.tokenHeld)
+        assertEquals("Telegram could not be reached, so the token was kept unchecked", telegram.state.value?.error)
+    }
+
+    @Test
+    fun savingWithoutANewTokenKeepsTheOneHeld() = runTest {
+        held["TELEGRAM_BOT_TOKEN"] = "123:abc".toByteArray()
+        answers["telegram_status"] = """{"token":true,"allowed_user":"7","sdk":true}"""
+        telegram.open()
+
+        telegram.save(null, "42")
+
+        assertArrayEquals("123:abc".toByteArray(), held["TELEGRAM_BOT_TOKEN"])
+        assertEquals(0, secretsChanged)
+        assertEquals("@phone_hermes_bot", telegram.state.value?.bot)
+        assertNotNull(calls.firstOrNull { it.first == "telegram_configure" && it.second.contains("\"42\"") })
+    }
+
+    @Test
+    fun aKeystoreFailureIsShownByItsKindAndTheTokenStillWiped() = runTest {
+        val failing = TelegramSetup(object : SecretStore by secrets {
+            override fun put(name: String, value: ByteArray) = throw java.io.IOException("disk full")
+        }) { function, _ -> if (function == "secrets_changed") "" else answers.getValue(function) }
+        failing.open()
+        val token = "123:abc".toByteArray()
+
+        failing.save(token, "42")
+
+        assertEquals(false, failing.state.value?.busy)
+        assertEquals("Something went wrong (IOException).", failing.state.value?.error)
+        assertTrue(token.all { it == 0.toByte() })
+    }
+
+    @Test
+    fun aBridgeFailureWhileOpeningStillOpensTheScreenWithIt() = runTest {
+        val failing = TelegramSetup(secrets) { _, _ -> throw RuntimeException("Traceback ...") }
+
+        failing.open()
+
+        assertEquals("Something went wrong (RuntimeException).", failing.state.value?.error)
+    }
+
+    @Test
+    fun aClosedSetupHasNoState() = runTest {
+        telegram.open()
+        telegram.close()
+
+        assertNull(telegram.state.value)
+    }
+}

@@ -109,6 +109,9 @@ _PY_RELEVANT_SITE = (
     "website/docs/",
     "website/scripts/",
 )
+# Python source shipped inside an app tree: the Android app's interpreter imports
+# apps/android/python/hermes_android, and tests/android/ is its suite.
+_PY_RELEVANT_APPS = ("apps/android/python/",)
 # Cross-language contract files: data committed under a frontend tree that a
 # pytest pins against the Python side (emitter inventory, command registry).
 # Editing only the JSON in an apps/-only PR would otherwise skip the one test
@@ -117,6 +120,10 @@ _PY_RELEVANT_CONTRACT_FILES = {
     # tests/tui_gateway/contracts/test_generated.py (rendered from tui_gateway/contracts)
     "apps/shared/src/gateway-contract.generated.ts",
     "apps/shared/src/gateway-contract.openrpc.json",
+    # tests/scripts/test_android_kotlin_client.py (rendered from the OpenRPC document)
+    "apps/android/bridge/src/main/java/com/nousresearch/hermes/bridge/protocol/Protocol.kt",
+    # tests/scripts/test_android_bridge_contract.py (rendered from hermes_android/bridge_contract.json)
+    "apps/android/bridge/src/main/java/com/nousresearch/hermes/bridge/contract/BridgeContract.kt",
     # tests/hermes_cli/test_desktop_slash_registry.py
     "apps/desktop/src/lib/desktop-slash-registry.json",
     # tests/tui_gateway/test_show_reasoning_display_gate.py (card-tool names vs the gateway lifecycle set)
@@ -509,7 +516,7 @@ def _is_nix(p: str) -> bool:
 
 
 def _py_irrelevant(p: str) -> bool:
-    if p.startswith(_PY_RELEVANT_SITE) or p in _PY_RELEVANT_CONTRACT_FILES:
+    if p.startswith(_PY_RELEVANT_SITE + _PY_RELEVANT_APPS) or p in _PY_RELEVANT_CONTRACT_FILES:
         return False
     return (
         _is_docs(p)

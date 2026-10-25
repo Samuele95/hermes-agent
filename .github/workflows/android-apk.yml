@@ -1,0 +1,112 @@
+name: Android app
+
+# Builds the Android app (apps/android) the way a developer does locally
+# (website/docs/getting-started/android-app.md):
+#   1. payload (ubuntu-24.04-arm): the Termux wheel recipe, closing over the app's
+#      extras, then scripts/android/payload.py with python.org's Android CPython;
+#   2. apk (ubuntu-24.04): Gradle builds the APK around that payload and runs the
+#      app's JVM tests. Google's SDK tools are x86-64 only, so this job is not arm.
+# The APK is uploaded as an artifact; nothing is published or signed for release.
+# Triggers: the app, its payload scripts, and what decides the wheel closure (pm/, pyproject.toml,
+# uv.lock). A core-only change does not rebuild the APK; workflow_dispatch does.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/android/**'
+      - 'scripts/android/**'
+      - 'scripts/termux/**'
+      - 'scripts/bundles/**'
+      - 'pm/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/android-apk.yml'
+  pull_request:
+    paths:
+      - 'apps/android/**'
+      - 'scripts/android/**'
+      - 'scripts/termux/**'
+      - 'scripts/bundles/**'
+      - 'pm/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/android-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # python.org's Android build of the CPython the PM pins (3.14.7). The sha256 was taken
+  # from the release after its sigstore bundle verified; the assembler refuses any other file.
+  PYTHON_ANDROID_URL: https://www.python.org/ftp/python/3.14.7/python-3.14.7-aarch64-linux-android.tar.gz
+  PYTHON_ANDROID_SHA256: 6d50cc3aa66e414a439594089bcdfb5f1264358155c70c1f00471c24cfb477fb
+  # Optional features the app ships as pure-Python wheels: the SSH transport, the gateway's Telegram.
+  APP_EXTRAS: --extra asyncssh --extra telegram
+
+jobs:
+  payload:
+    name: Runtime payload
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-pm
+        with:
+          cache-python: false
+      - name: Build the wheel set (Termux recipe)
+        run: |
+          out=android-build/termux
+          bash scripts/termux/build_cpython.sh "$out"
+          python3 scripts/termux/stage_runtime_libs.py "$out"
+          bash scripts/termux/build_uv.sh "$out"
+          # shellcheck disable=SC2086  # APP_EXTRAS is a list of flags
+          bash scripts/termux/termux_build.sh --repo . --commit "$GITHUB_SHA" --out "$out" $APP_EXTRAS
+      - name: Assemble the payload
+        run: |
+          curl --fail --location --retry 3 --output python-android.tar.gz "$PYTHON_ANDROID_URL"
+          python3 -m scripts.android.payload \
+            --python-tarball python-android.tar.gz --python-sha256 "$PYTHON_ANDROID_SHA256" \
+            --wheelhouse android-build/termux/wheelhouse --runtime-libs android-build/termux/runtime-libs/lib \
+            --out apps/android/payload
+          python3 -c 'import json; m = json.load(open("apps/android/payload/assets/payload.json")); print("payload", m["build_id"])'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: android-payload
+          path: apps/android/payload
+          if-no-files-found: error
+          retention-days: 7
+
+  apk:
+    name: APK
+    needs: payload
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: android-payload
+          path: apps/android/payload
+      - name: Install the pinned NDK
+        run: |
+          ndk=$(sed -n 's/.*ndkVersion = "\([0-9.]*\)".*/\1/p' apps/android/bridge/build.gradle.kts)
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$ndk" >/dev/null
+      - name: Build the APK and run the JVM tests
+        working-directory: apps/android
+        run: ./gradlew --no-daemon :app:assembleDebug :app:testDebugUnitTest :bridge:testDebugUnitTest
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hermes-android-debug-apk
+          path: apps/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14

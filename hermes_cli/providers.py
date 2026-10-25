@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 from utils import base_url_host_matches, base_url_hostname
 
@@ -27,7 +27,9 @@ class HermesOverlay:
 
 HERMES_OVERLAYS: dict[str, HermesOverlay] = {
     "moa": HermesOverlay(auth_type="virtual", base_url_override="moa://local"),
-    "openrouter": HermesOverlay(is_aggregator=True, base_url_env_var="OPENROUTER_BASE_URL"),
+    # The key variable is models.dev's too; listed here so an offline catalog (no models.dev cache yet) names it.
+    "openrouter": HermesOverlay(is_aggregator=True, extra_env_vars=("OPENROUTER_API_KEY",),
+                                base_url_env_var="OPENROUTER_BASE_URL"),
     "nous": HermesOverlay(auth_type="oauth_device_code", base_url_override="https://inference-api.nousresearch.com/v1"),
     "openai-codex": HermesOverlay(transport="codex_responses", auth_type="oauth_external",
                                   base_url_override="https://chatgpt.com/backend-api/codex"),
@@ -245,6 +247,29 @@ def _plugin_profile_pdef(name: str) -> Optional[ProviderDef]:
                        api_key_env_vars=key_vars, base_url=(prof.base_url or "").strip(),
                        base_url_env_var=next(iter(url_vars), ""),
                        auth_type=prof.auth_type or "api_key", source="plugin-profile")
+
+
+class ApiKeyAuth(NamedTuple):
+    """How a provider takes its credentials: its auth type, display name and API-key variables."""
+
+    auth_type: str
+    name: str
+    env_vars: tuple[str, ...]
+
+
+def api_key_auth(slug: str) -> Optional[ApiKeyAuth]:
+    """The :class:`ApiKeyAuth` of a canonical provider id, or None when nothing knows
+    it: the auth registry's entry, else the provider catalog's (Hermes overlay + cached models.dev,
+    never the network) when it describes a key-pasted provider the registry does not hold, such as the
+    aggregator ``openrouter``."""
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    if (cfg := PROVIDER_REGISTRY.get(slug)) is not None:
+        return ApiKeyAuth(cfg.auth_type, cfg.name, tuple(cfg.api_key_env_vars or ()))
+    pdef = get_provider(slug, allow_network=False)
+    if pdef is not None and pdef.auth_type == "api_key" and pdef.api_key_env_vars:
+        return ApiKeyAuth(pdef.auth_type, pdef.name, tuple(pdef.api_key_env_vars))
+    return None
 
 
 def get_label(provider_id: str) -> str:

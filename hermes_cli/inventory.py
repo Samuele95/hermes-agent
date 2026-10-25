@@ -670,13 +670,11 @@ def _apply_custom_aliases(rows: list[dict]) -> None:
 
 
 def _provider_auth_hint(slug: str) -> tuple[str, str]:
-    """``(auth_type, key_env)`` for a canonical provider (``("api_key", "")`` when unregistered)."""
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    """``(auth_type, key_env)`` for a canonical provider (``("api_key", "")`` when nothing names a key)."""
+    from hermes_cli.providers import ApiKeyAuth, api_key_auth
 
-    cfg = PROVIDER_REGISTRY.get(slug)
-    auth_type = cfg.auth_type if cfg else "api_key"
-    key_env = cfg.api_key_env_vars[0] if (cfg and cfg.api_key_env_vars) else ""
-    return auth_type, key_env
+    auth = api_key_auth(slug) or ApiKeyAuth(auth_type="api_key", name=slug, env_vars=())
+    return auth.auth_type, auth.env_vars[0] if auth.env_vars else ""
 
 
 def _row(slug: str, name: str, is_current: bool, **extra: Any) -> dict:

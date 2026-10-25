@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The brand mark's fixed light tile (apps/desktop/DESIGN.md: BrandMark). -->
+    <color name="ic_launcher_background">#FFFFFF</color>
+    <!-- The window's background before Compose draws (the nous palette's background; dark in values-night). -->
+    <color name="hermes_background">#FFFFFF</color>
+</resources>

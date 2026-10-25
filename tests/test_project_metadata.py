@@ -115,6 +115,7 @@ def test_lazy_installable_extras_excluded_from_all():
         "voice",  # faster-whisper / sounddevice / numpy (composes stt-whisper + audio-io)
         "stt-whisper",
         "modal", "daytona", "vercel",
+        "asyncssh",  # the ssh backend's transport where no OpenSSH client is installed
         "messaging", "slack", "matrix", "dingtalk", "feishu",
         "telegram", "discord",
         "wake", "wake-openwakeword", "wake-sherpa", "wake-porcupine",

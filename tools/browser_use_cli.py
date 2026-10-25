@@ -261,7 +261,10 @@ def is_browser_use_cli_mode() -> bool:
     if _camofox_active():
         return False
     backend = get_browser_backend()
-    return backend == _BACKEND_KEY if backend else (is_legacy_browser_use_cloud_config(_read_browser_cfg()) or _find_cli() is not None)
+    if backend:
+        return backend == _BACKEND_KEY  # an explicit choice wins
+    return _interpreter_launchable() and (
+        is_legacy_browser_use_cloud_config(_read_browser_cfg()) or _find_cli() is not None)
 
 
 def default_downgrade_notice() -> Optional[str]:
@@ -292,6 +295,14 @@ def _harness_site_dir() -> Optional[str]:
     if spec is None or not spec.origin:
         return None
     return str(Path(spec.origin).resolve().parent.parent)
+
+
+def _interpreter_launchable() -> bool:
+    """False when CPython runs embedded in-process (e.g. a mobile app): ``sys.executable`` is empty, None
+    or no launchable file, so the harness can be importable yet the CLI cannot start."""
+    from hermes_platform.resolver import locate_command
+
+    return bool(sys.executable) and locate_command(sys.executable).found
 
 
 def _find_cli() -> Optional[list[str]]:
