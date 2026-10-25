@@ -38,7 +38,7 @@ class SshSmokeTest {
         val marker = requireNotNull(steps.args.getString("marker"))
         steps.setUpEndpoint()
 
-        compose.onNodeWithTag("open-ssh").performClick()
+        steps.openFromDrawer("open-ssh")
         compose.onNodeWithTag("ssh-host").performTextInput("127.0.0.1")
         compose.onNodeWithTag("ssh-user").performTextInput("hermes")
         compose.onNodeWithTag("ssh-port").performTextReplacement(port)

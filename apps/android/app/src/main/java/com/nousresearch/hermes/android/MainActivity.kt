@@ -30,7 +30,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.nousresearch.hermes.android.chat.ChatScreen
-import com.nousresearch.hermes.android.chat.HistoryScreen
 import com.nousresearch.hermes.android.chat.PromptAnswers
 import com.nousresearch.hermes.android.gateway.GatewayScreen
 import com.nousresearch.hermes.android.gateway.GatewayUi
@@ -68,10 +67,6 @@ class MainActivity : ComponentActivity() {
                                 SettingsScreen(it, onApprovals = { mode -> app.settings { choose(mode) } }, onClose = state.settings::close)
                                 return@Surface
                             }
-                            history?.let {
-                                HistoryScreen(it, onPick = { id -> app.history { pick(id) } }, onClose = state.history::close)
-                                return@Surface
-                            }
                             val gateway by app.gateway.state.collectAsState()
                             gateway?.let {
                                 GatewayPanel(it, app, state.telegram)
@@ -95,8 +90,11 @@ class MainActivity : ComponentActivity() {
                                                         clarify = { p, given -> app.chat { clarify(p, given) } },
                                                         secret = { p, value -> app.chat { secret(p, value) } })
                             ChatScreen(chat, about = state.about, onSetup = { app.setup { open() } }, answers = answers,
-                                       onTerminal = state.ssh::open, onGateway = app.gateway::open, onStop = { app.chat { cancel() } }, onHistory = { app.history { open() } },
-                                       onSettings = { app.settings { open() } }, onSend = { text ->
+                                       onTerminal = state.ssh::open, onGateway = app.gateway::open, onStop = { app.chat { cancel() } },
+                                       onSettings = { app.settings { open() } }, onNewChat = { app.chat { open() } },
+                                       // The drawer's sessions load as it opens; a tap continues one.
+                                       sessions = history, onSessions = { open -> if (open) app.history { open() } else state.history.close() },
+                                       onPickSession = { id -> app.history { pick(id) } }, onSend = { text ->
                                 if (Build.VERSION.SDK_INT >= 33 &&
                                     checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                                     askToNotify.launch(Manifest.permission.POST_NOTIFICATIONS)

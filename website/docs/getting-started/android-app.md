@@ -61,8 +61,8 @@ reuse it.
 
 ## First run: choose a model
 
-The app opens on its setup screen when no model is configured. You can return to it at any time with
-**Model** in the chat.
+The app opens on its setup screen when no model is configured. You can return to it at any time by
+tapping the model's name under the message field.
 
 - **A provider key.** Pick a provider from the list the core offers and paste its key. The key goes
   to Android's keystore. It never lands in a file. To remove it, open the provider again and tap
@@ -73,9 +73,13 @@ The app opens on its setup screen when no model is configured. You can return to
 
 ## What works on the phone
 
-- **Chat.** Replies stream in, with the model's reasoning folded under each reply. **Stop** ends a
-  reply the model is still writing. **History** lists past conversations; pick one to continue it. A
-  notification keeps a running reply alive while the app is in the background.
+- **Chat.** It looks like the desktop's chat, in the same Nous colors, light or dark with the system.
+  Replies stream in with their Markdown drawn (code, lists, tables, links), and the model's
+  reasoning is folded under each reply. **Stop** ends a reply the model is still writing. The menu
+  opens a drawer, like the desktop's sidebar. It lists past conversations by day, with messaging
+  and scheduled sessions grouped apart; pick one to continue it. The drawer also holds **New chat**,
+  **Gateway**, **Terminal** and **Settings**. A notification keeps a running reply alive while the
+  app is in the background.
 - **Notifications.** While the app is not on screen, a question from the agent and a finished reply
   each show a notification; tapping it opens the chat. On the lock screen they say only that Hermes
   asks or replied.
@@ -101,7 +105,7 @@ app cannot start a second Python process, and it ships no browser engine.
 ## Always-on gateway (optional)
 
 The gateway keeps Hermes reachable from your own Telegram bot and runs your scheduled jobs while the
-app is closed. It is off until you turn it on with **Gateway** in the chat.
+app is closed. It is off until you turn it on with **Gateway** in the drawer.
 
 - It runs in a separate process as a foreground service, with a notification that has a **Stop**
   action. If Android ends the process, the gateway starts again by itself.

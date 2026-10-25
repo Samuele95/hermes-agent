@@ -22,6 +22,11 @@ import com.nousresearch.hermes.android.chat.Entry
 import com.nousresearch.hermes.bridge.protocol.TurnStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import com.nousresearch.hermes.android.chat.HistoryUi
+import com.nousresearch.hermes.bridge.protocol.SessionListRow
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -139,14 +144,59 @@ class ChatScreenTest {
     }
 
     @Test
-    fun theActionsLeaveTheRuntimeLineOnOneLine() {
+    fun theDrawerHoldsTheAppsPlacesAndTheRuntimeLineOnOneLine() {
         val about = "Python 3.14.7 · SQLite 3.53.4 with FTS5 · ready in 1090 ms"
+        val went = mutableListOf<String>()
         compose.setContent {
-            ChatScreen(Chat(), onSend = {}, about = about, onSetup = {}, onTerminal = {}, onGateway = {}, onHistory = {}, onSettings = {})
+            ChatScreen(Chat(), onSend = {}, about = about, onSetup = { went += "setup" }, onTerminal = { went += "ssh" },
+                       onGateway = { went += "gateway" }, onSettings = { went += "settings" }, onNewChat = { went += "new" })
         }
+
+        compose.onNodeWithTag("open-drawer").performClick()
 
         val height = compose.onNodeWithText(about).getUnclippedBoundsInRoot().height
         assertTrue("the runtime line is $height tall: a column of words, not one caption line", height <= 24.dp)
-        listOf("open-history", "open-gateway", "open-ssh", "open-setup", "open-settings").forEach { compose.onNodeWithTag(it).assertExists() }
+        compose.onNodeWithTag("open-gateway").performClick()
+        assertEquals(listOf("gateway"), went)
+        listOf("drawer-new-chat", "open-ssh", "open-settings").forEach { compose.onNodeWithTag(it).assertExists() }
+    }
+
+    @Test
+    fun theDrawerListsTheSessionsAsItOpensAndATapContinuesOne() {
+        val heard = mutableListOf<String>()
+        val sessions = HistoryUi(listOf(SessionListRow(id = "db-1", title = "Calendar", messageCount = 3,
+                                                       startedAt = System.currentTimeMillis() / 1000.0)))
+        compose.setContent {
+            ChatScreen(Chat(), onSend = {}, sessions = sessions, onSessions = { heard += "open=$it" }, onPickSession = { heard += it })
+        }
+
+        compose.onNodeWithTag("open-drawer").performClick()
+        compose.onNodeWithText("Today").assertExists()
+        compose.onNodeWithText("Calendar").performClick()
+        compose.waitForIdle()
+
+        assertEquals(listOf("open=true", "db-1", "open=false"), heard)
+    }
+
+    @Test
+    fun anEmptyChatShowsTheWordmarkAndATranscriptReplacesIt() {
+        var chat by mutableStateOf(Chat())
+        compose.setContent { ChatScreen(chat, onSend = {}) }
+        compose.onNodeWithTag("intro").assertExists()
+
+        chat = Chat(listOf(Entry.User("hi")))
+
+        compose.onNodeWithTag("intro").assertDoesNotExist()
+    }
+
+    @Test
+    fun theComposerNamesTheModelAndOpensItsSetup() {
+        var opened = 0
+        compose.setContent { ChatScreen(Chat(model = "kimi-k2"), onSend = {}, onSetup = { opened++ }) }
+
+        compose.onNodeWithText("kimi-k2").assertExists()
+        compose.onNodeWithTag("open-setup").performClick()
+
+        assertEquals(1, opened)
     }
 }

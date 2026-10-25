@@ -37,6 +37,12 @@ class SmokeSteps(private val compose: ComposeTestRule) {
 
     fun chat(): Chat = (app.core.value as CoreState.Ready).chat.state.value
 
+    /** Goes to one of the drawer's places ([tag]): the chat's drawer holds them, as the desktop's sidebar does. */
+    fun openFromDrawer(tag: String) {
+        compose.onNodeWithTag("open-drawer").performClick()
+        compose.onNodeWithTag(tag).performClick()
+    }
+
     /** Sets up the passed endpoint from the setup screen, opening it from the chat when the app is configured. */
     fun setUpEndpoint() {
         val baseUrl = requireNotNull(args.getString("baseUrl")) { "no endpoint given: run scripts/smoke.sh" }

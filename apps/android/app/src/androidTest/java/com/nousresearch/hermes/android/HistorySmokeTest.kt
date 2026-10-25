@@ -35,7 +35,7 @@ class HistorySmokeTest {
         runBlocking { (steps.app.core.value as CoreState.Ready).chat.open() }  // a fresh session, as after a restart
         compose.waitUntil(30_000) { steps.chat().entries.isEmpty() }
 
-        compose.onNodeWithTag("open-history").performClick()
+        compose.onNodeWithTag("open-drawer").performClick()  // the drawer lists the sessions as it opens
         compose.waitUntil(60_000) { steps.shown("history") && !steps.shown("history-empty") }
         compose.onNodeWithText(word, substring = true, useUnmergedTree = true).performClick()
         compose.waitUntil(60_000) { steps.shown("draft") && steps.chat().entries.isNotEmpty() }
