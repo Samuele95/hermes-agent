@@ -60,3 +60,12 @@ def test_enums_keep_their_wire_values():
 def test_a_type_the_contract_does_not_define_fails_generation():
     with pytest.raises(ValueError, match="unknown type"):
         _render({"look": {"params": {"when": "date"}, "reply": {}}})
+
+
+def test_events_become_typed_payloads_and_secrets_named_constants():
+    text = gen.render({"version": 1, "enums": {"State": ["up", "down"]}, "calls": {},
+                       "events": {"gateway_state": {"summary": "A state change.", "fields": {"gateway": "State", "reason": "string?"}}},
+                       "secrets": {"ssh_identity": "TERMINAL_SSH_PRIVATE_KEY"}})
+
+    assert "data class GatewayStateEvent(\n    val gateway: State,\n    val reason: String?,\n)" in text
+    assert 'const val SSH_IDENTITY = "TERMINAL_SSH_PRIVATE_KEY"' in text

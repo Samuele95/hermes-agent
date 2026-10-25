@@ -25,6 +25,7 @@ import com.nousresearch.hermes.bridge.CoreRuntime
 import com.nousresearch.hermes.bridge.EmbeddedPython
 import com.nousresearch.hermes.bridge.ask
 import com.nousresearch.hermes.bridge.contract.BridgeCalls
+import com.nousresearch.hermes.bridge.contract.GatewayState
 import java.util.concurrent.Executors
 import kotlinx.coroutines.runBlocking
 
@@ -89,12 +90,12 @@ class GatewayService : Service() {
 
     /** One state change of the gateway host: `running`, `restarting`, `stopped` or `failed`. */
     private fun onEvent(line: String) {
-        val event = GatewayEvent.parse(line) ?: return
+        val event = gatewayStateEvent(line) ?: return
         when (event.gateway) {
-            GatewayEvent.State.RUNNING -> show(R.string.gateway_running).also { record(GatewayRecord.State.RUNNING) }
-            GatewayEvent.State.RESTARTING -> show(R.string.gateway_restarting).also { record(GatewayRecord.State.RESTARTING) }
-            GatewayEvent.State.STOPPED -> end()
-            GatewayEvent.State.FAILED -> failed(event.reason.orEmpty())
+            GatewayState.RUNNING -> show(R.string.gateway_running).also { record(GatewayRecord.State.RUNNING) }
+            GatewayState.RESTARTING -> show(R.string.gateway_restarting).also { record(GatewayRecord.State.RESTARTING) }
+            GatewayState.STOPPED -> end()
+            GatewayState.FAILED -> failed(event.reason.orEmpty())
         }
     }
 

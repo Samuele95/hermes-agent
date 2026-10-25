@@ -34,6 +34,14 @@ enum class TelegramCheck {
 }
 
 @Serializable
+enum class GatewayState {
+    @SerialName("stopped") STOPPED,
+    @SerialName("running") RUNNING,
+    @SerialName("restarting") RESTARTING,
+    @SerialName("failed") FAILED,
+}
+
+@Serializable
 data class RuntimeFactsReply(
     val python: String,
     val sqlite: String,
@@ -43,17 +51,17 @@ data class RuntimeFactsReply(
 
 @Serializable
 data class GatewayStartReply(
-    val gateway: String,
+    val gateway: GatewayState,
 )
 
 @Serializable
 data class GatewayStopReply(
-    val gateway: String,
+    val gateway: GatewayState,
 )
 
 @Serializable
 data class GatewayStateReply(
-    val gateway: String,
+    val gateway: GatewayState,
 )
 
 @Serializable
@@ -186,4 +194,17 @@ object BridgeCalls {
     val TELEGRAM_STATUS = BridgeCall("telegram_status", NoParams.serializer(), TelegramStatusReply.serializer())
     /** Asks Telegram who the held token belongs to: ok (bot named), refused by Telegram, or Telegram out of reach. */
     val TELEGRAM_CHECK = BridgeCall("telegram_check", NoParams.serializer(), TelegramCheckReply.serializer())
+}
+
+/** One state change of the :gateway process's gateway host, as a JSON line through native.emit; reason only for failed. */
+@Serializable
+data class GatewayStateEvent(
+    val gateway: GatewayState,
+    val reason: String?,
+)
+
+/** The keystore variable names both halves use. */
+object BridgeSecrets {
+    const val SSH_IDENTITY = "TERMINAL_SSH_PRIVATE_KEY"
+    const val TELEGRAM_BOT_TOKEN = "TELEGRAM_BOT_TOKEN"
 }

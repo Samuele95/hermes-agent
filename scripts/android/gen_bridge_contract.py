@@ -90,6 +90,11 @@ def render(contract: dict) -> str:
     out.append("\n/** Every call the app may make into its Python half. */\nobject BridgeCalls {\n")
     out.append("".join(descriptors).replace("    \n", "\n"))
     out.append("}\n")
+    for event, spec in contract.get("events", {}).items():
+        out.append("\n" + _doc(spec.get("summary")) + _data_class(f"{_type_name(event)}Event", spec["fields"], enums))
+    if contract.get("secrets"):
+        names = "".join(f"    const val {_constant(key)} = {_kotlin_string(name)}\n" for key, name in contract["secrets"].items())
+        out.append(f"\n/** The keystore variable names both halves use. */\nobject BridgeSecrets {{\n{names}}}\n")
     return "".join(out)
 
 

@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import com.nousresearch.hermes.bridge.ask
 import com.nousresearch.hermes.bridge.contract.BridgeCalls
+import com.nousresearch.hermes.bridge.contract.BridgeSecrets
 import com.nousresearch.hermes.bridge.contract.TelegramCheck
 import com.nousresearch.hermes.bridge.contract.TelegramConfigureParams
 
@@ -31,7 +32,7 @@ class TelegramSetup(
     private val bridge: AppBridge,
 ) {
     private companion object {
-        const val TOKEN = "TELEGRAM_BOT_TOKEN"
+        const val TOKEN = BridgeSecrets.TELEGRAM_BOT_TOKEN
     }
 
     private val setup = MutableStateFlow<TelegramState?>(null)

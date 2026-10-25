@@ -1,15 +1,34 @@
 {
-  "$comment": "The app's calls into its own Python half (hermes_android.call). Each call takes a JSON object with exactly its params and answers either its reply or {\"error\": <words for the user>}. Types: string, integer, boolean, string? (string or null), or an enum below. The Kotlin side is generated from this file (scripts/android/gen_bridge_contract.py).",
+  "$comment": "The app's calls into its own Python half (hermes_android.call). Each call takes a JSON object with exactly its params and answers either its reply or {\"error\": <words for the user>}. Events are the lines the Python half emits on its own (hermes_android.event_line); secrets are the keystore variable names both halves use. Types: string, integer, boolean, string? (string or null), or an enum below. The Kotlin side is generated from this file (scripts/android/gen_bridge_contract.py).",
   "version": 1,
   "enums": {
-    "Pinned": ["no", "yes", "changed"],
-    "TelegramCheck": ["ok", "refused", "unreachable"]
+    "Pinned": [
+      "no",
+      "yes",
+      "changed"
+    ],
+    "TelegramCheck": [
+      "ok",
+      "refused",
+      "unreachable"
+    ],
+    "GatewayState": [
+      "stopped",
+      "running",
+      "restarting",
+      "failed"
+    ]
   },
   "calls": {
     "runtime_facts": {
       "summary": "The interpreter facts the app shows.",
       "params": {},
-      "reply": {"python": "string", "sqlite": "string", "fts5": "boolean", "executable": "string"}
+      "reply": {
+        "python": "string",
+        "sqlite": "string",
+        "fts5": "boolean",
+        "executable": "string"
+      }
     },
     "secrets_changed": {
       "summary": "The keystore changed: re-read its secrets; variables it no longer holds are revoked.",
@@ -19,67 +38,136 @@
     "gateway_start": {
       "summary": "Starts the gateway in the :gateway process; state changes arrive as events.",
       "params": {},
-      "reply": {"gateway": "string"}
+      "reply": {
+        "gateway": "GatewayState"
+      }
     },
     "gateway_stop": {
       "summary": "Asks the gateway to drain and stop; 'stopped' arrives as an event.",
       "params": {},
-      "reply": {"gateway": "string"}
+      "reply": {
+        "gateway": "GatewayState"
+      }
     },
     "gateway_state": {
       "summary": "The gateway host's state in this process.",
       "params": {},
-      "reply": {"gateway": "string"}
+      "reply": {
+        "gateway": "GatewayState"
+      }
     },
     "save_custom_endpoint": {
       "summary": "Adds a custom OpenAI-compatible endpoint to config.yaml (Dv20); its key goes to the keystore under key_env.",
-      "params": {"name": "string", "base_url": "string", "model": "string", "has_key": "boolean"},
-      "reply": {"id": "string", "key_env": "string"}
+      "params": {
+        "name": "string",
+        "base_url": "string",
+        "model": "string",
+        "has_key": "boolean"
+      },
+      "reply": {
+        "id": "string",
+        "key_env": "string"
+      }
     },
     "ssh_new_key": {
       "summary": "A fresh Ed25519 identity; the app stores private in the keystore at once.",
       "params": {},
-      "reply": {"private": "string", "public": "string"}
+      "reply": {
+        "private": "string",
+        "public": "string"
+      }
     },
     "ssh_public_key": {
       "summary": "The public half of the identity the core reads from the keystore.",
       "params": {},
-      "reply": {"public": "string"}
+      "reply": {
+        "public": "string"
+      }
     },
     "ssh_host_key": {
       "summary": "A host's key, seen without logging in, and how it stands against known_hosts.",
-      "params": {"host": "string", "port": "integer"},
-      "reply": {"key": "string", "fingerprint": "string", "pinned": "Pinned"}
+      "params": {
+        "host": "string",
+        "port": "integer"
+      },
+      "reply": {
+        "key": "string",
+        "fingerprint": "string",
+        "pinned": "Pinned"
+      }
     },
     "ssh_trust_host": {
       "summary": "Pins a host key the user confirmed; refuses over a different pinned key.",
-      "params": {"host": "string", "port": "integer", "key": "string"},
-      "reply": {"pinned": "Pinned"}
+      "params": {
+        "host": "string",
+        "port": "integer",
+        "key": "string"
+      },
+      "reply": {
+        "pinned": "Pinned"
+      }
     },
     "ssh_configure": {
       "summary": "Points the terminal at the host (config.yaml terminal.*, Dv32).",
-      "params": {"host": "string", "user": "string", "port": "integer"},
-      "reply": {"backend": "string"}
+      "params": {
+        "host": "string",
+        "user": "string",
+        "port": "integer"
+      },
+      "reply": {
+        "backend": "string"
+      }
     },
     "ssh_check_login": {
       "summary": "Logs in once with the app's key against the pinned host key.",
-      "params": {"host": "string", "user": "string", "port": "integer"},
-      "reply": {"ok": "boolean"}
+      "params": {
+        "host": "string",
+        "user": "string",
+        "port": "integer"
+      },
+      "reply": {
+        "ok": "boolean"
+      }
     },
     "telegram_configure": {
       "summary": "Sets the one Telegram user the bot answers (config.yaml telegram.allow_from, Dv32).",
-      "params": {"allowed_user": "string"},
-      "reply": {"allowed_user": "string"}
+      "params": {
+        "allowed_user": "string"
+      },
+      "reply": {
+        "allowed_user": "string"
+      }
     },
     "telegram_status": {
       "summary": "Whether a token is held, who may talk to the bot, and whether this build has the Telegram SDK.",
       "params": {},
-      "reply": {"token": "boolean", "allowed_user": "string?", "sdk": "boolean"}
+      "reply": {
+        "token": "boolean",
+        "allowed_user": "string?",
+        "sdk": "boolean"
+      }
     },
     "telegram_check": {
       "summary": "Asks Telegram who the held token belongs to: ok (bot named), refused by Telegram, or Telegram out of reach.",
       "params": {},
-      "reply": {"check": "TelegramCheck", "bot": "string?", "message": "string?"}
+      "reply": {
+        "check": "TelegramCheck",
+        "bot": "string?",
+        "message": "string?"
+      }
     }
+  },
+  "events": {
+    "gateway_state": {
+      "summary": "One state change of the :gateway process's gateway host, as a JSON line through native.emit; reason only for failed.",
+      "fields": {
+        "gateway": "GatewayState",
+        "reason": "string?"
+      }
+    }
+  },
+  "secrets": {
+    "ssh_identity": "TERMINAL_SSH_PRIVATE_KEY",
+    "telegram_bot_token": "TELEGRAM_BOT_TOKEN"
   }
 }

@@ -112,6 +112,8 @@ class GatewayHost:
             else:
                 backoff = self._first_backoff_s
 
-    def _report(self, state: str, **detail: str) -> None:
+    def _report(self, state: str, reason: str | None = None) -> None:
+        from hermes_android import event_line
+
         self._state = state
-        self._emit(json.dumps({"gateway": state, **detail}))
+        self._emit(event_line("gateway_state", {"gateway": state, "reason": reason}))

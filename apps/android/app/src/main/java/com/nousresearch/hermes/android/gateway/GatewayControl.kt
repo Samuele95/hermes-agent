@@ -1,12 +1,12 @@
 package com.nousresearch.hermes.android.gateway
 
+import com.nousresearch.hermes.bridge.contract.GatewayStateEvent
 import java.util.concurrent.atomic.AtomicBoolean
 import com.nousresearch.hermes.bridge.bridgeJson
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /** What the gateway is doing, as seen from the app. */
@@ -160,19 +160,9 @@ class GatewayControl(
     }
 }
 
-/** One state change of the gateway host (`hermes_android.gateway_host`), as its JSON line reaches the service. */
-@Serializable
-data class GatewayEvent(val gateway: State, val reason: String? = null) {
-    @Serializable
-    enum class State {
-        @SerialName("running") RUNNING,
-        @SerialName("restarting") RESTARTING,
-        @SerialName("stopped") STOPPED,
-        @SerialName("failed") FAILED,
-    }
-
-    companion object {
-        /** The event [line] reports, or null for a line that is no known state. */
-        fun parse(line: String): GatewayEvent? = runCatching { bridgeJson.decodeFromString<GatewayEvent>(line) }.getOrNull()
-    }
-}
+/**
+ * One state change of the gateway host (`hermes_android.gateway_host`), as its JSON line reaches the service: the
+ * bridge contract's `gateway_state` event, or null for a line that is no such event.
+ */
+fun gatewayStateEvent(line: String): GatewayStateEvent? =
+    runCatching { bridgeJson.decodeFromString(GatewayStateEvent.serializer(), line) }.getOrNull()

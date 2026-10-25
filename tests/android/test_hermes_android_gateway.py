@@ -75,7 +75,7 @@ def test_a_real_gateway_runs_until_a_planned_stop_drains_it(gateway_home):
         time.sleep(0.2)
     host.stop()
 
-    assert events.wait_for("stopped", timeout=60) == {"gateway": "stopped"}
+    assert events.wait_for("stopped", timeout=60) == {"gateway": "stopped", "reason": None}
     deadline = time.monotonic() + 10  # "stopped" is the thread's last word: it ends right after
     while host.alive():
         assert time.monotonic() < deadline, "the gateway thread outlived its stop"

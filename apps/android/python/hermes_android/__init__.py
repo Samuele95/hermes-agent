@@ -133,6 +133,18 @@ def call(function: str, arg: str) -> str:
     return answer
 
 
+def event_line(event: str, payload: dict) -> str:
+    """A line the Python half emits to the app on its own (not as a reply): ``payload`` must have exactly the
+    fields ``bridge_contract.json`` declares for ``event``; anything else is a bug and raises."""
+    declared = _CONTRACT.get("events", {}).get(event)
+    if declared is None:
+        raise LookupError(f"{event!r} is not a bridge event")
+    why = _mismatch(declared["fields"], payload)
+    if why:
+        raise TypeError(f"event {event}: {why}")
+    return json.dumps(payload)
+
+
 def gateway_start(_arg: str) -> str:
     """Starts the gateway in this (``:gateway``) process; its state changes arrive through ``native.emit``."""
     if _gateway is not None:

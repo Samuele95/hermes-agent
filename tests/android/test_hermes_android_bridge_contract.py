@@ -20,6 +20,8 @@ hermes_android = importlib.import_module("hermes_android")  # apps/android/pytho
 
 CONTRACT = json.loads((Path(inspect.getfile(hermes_android)).parent / "bridge_contract.json").read_text(encoding="utf-8"))
 LIFECYCLE = {"prepare", "start", "submit", "stop", "call"}  # the C glue's own entry points
+# Functions of the package that are no call: the Python half's own lines (call() refuses them like any undeclared name).
+NOT_CALLS = LIFECYCLE | {"event_line"}
 
 
 def _record(monkeypatch, name, reply):
@@ -38,7 +40,7 @@ def test_every_declared_call_exists_and_every_bridge_function_is_declared():
                if fn.__module__ == "hermes_android" and not name.startswith("_")}
 
     assert set(CONTRACT["calls"]) <= defined
-    assert defined - LIFECYCLE == set(CONTRACT["calls"])
+    assert defined - NOT_CALLS == set(CONTRACT["calls"])
 
 
 def test_the_contract_uses_only_known_types():
@@ -113,3 +115,22 @@ def test_real_calls_answer_their_declared_replies():
 
     assert json.loads(hermes_android.call("gateway_state", "{}")) == {"gateway": "stopped"}
     assert set(json.loads(hermes_android.call("telegram_status", "{}"))) == {"token", "allowed_user", "sdk"}
+
+
+def test_an_event_line_is_held_to_its_declared_fields():
+    assert json.loads(hermes_android.event_line("gateway_state", {"gateway": "failed", "reason": "boom"})) == \
+        {"gateway": "failed", "reason": "boom"}
+    for bad in ({"gateway": "exploded", "reason": None}, {"gateway": "running"}, {"gateway": "running", "reason": None, "x": 1}):
+        with pytest.raises(TypeError):
+            hermes_android.event_line("gateway_state", bad)
+    with pytest.raises(LookupError):
+        hermes_android.event_line("no_such_event", {})
+
+
+def test_the_secret_names_are_the_ones_the_core_reads():
+    from gateway.config import PLATFORM_TOKEN_ENV_NAMES, Platform
+    from tools.environments import local_env_policy
+
+    assert CONTRACT["secrets"]["telegram_bot_token"] == PLATFORM_TOKEN_ENV_NAMES[Platform.TELEGRAM]
+    # The SSH identity is read by the asyncssh transport, and the core keeps it from every child process.
+    assert CONTRACT["secrets"]["ssh_identity"] in local_env_policy._ALWAYS_STRIP_KEYS

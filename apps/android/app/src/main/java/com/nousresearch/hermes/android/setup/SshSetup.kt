@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import com.nousresearch.hermes.bridge.ask
 import com.nousresearch.hermes.bridge.contract.BridgeCalls
+import com.nousresearch.hermes.bridge.contract.BridgeSecrets
 import com.nousresearch.hermes.bridge.contract.Pinned
 import com.nousresearch.hermes.bridge.contract.SshCheckLoginParams
 import com.nousresearch.hermes.bridge.contract.SshConfigureParams
@@ -42,7 +43,7 @@ class SshSetup(
     private val bridge: AppBridge,
 ) {
     private companion object {
-        const val IDENTITY = "TERMINAL_SSH_PRIVATE_KEY"
+        const val IDENTITY = BridgeSecrets.SSH_IDENTITY
     }
 
     private val setup = MutableStateFlow<SshState?>(null)
