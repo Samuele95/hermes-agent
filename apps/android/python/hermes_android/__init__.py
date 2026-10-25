@@ -55,6 +55,11 @@ def prepare(paths: dict[str, str]) -> None:
     runtime = Path(paths["runtime"])
     sys.path.append(str(runtime / "app"))
     site.addsitedir(str(runtime / "site-packages"))
+    # python.org's Android CPython finds no system CA store: without a bundle every HTTPS request through ssl's
+    # default context (urllib in the core) fails verification. certifi's, as httpx uses, unless the host set one.
+    import certifi
+
+    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 
 
 def start(paths: dict[str, str], native: Native) -> None:

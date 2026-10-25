@@ -59,6 +59,20 @@ def test_the_wheels_openssl_legacy_provider_is_declared_off(paths, monkeypatch):
     assert os.environ["CRYPTOGRAPHY_OPENSSL_NO_LEGACY"] == "1"
 
 
+def test_tls_verifies_against_certifis_authorities_unless_the_host_chose_a_bundle(paths, monkeypatch):
+    # python.org's Android CPython finds no system CA store, so every HTTPS request through ssl's default context
+    # (urllib: the model catalog, Nous account, the Telegram check, ...) failed verification on the phone.
+    import certifi
+
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    hermes_android.prepare(paths)
+    assert os.environ["SSL_CERT_FILE"] == certifi.where()
+
+    monkeypatch.setenv("SSL_CERT_FILE", "/etc/ssl/corporate.pem")
+    hermes_android.prepare(paths)
+    assert os.environ["SSL_CERT_FILE"] == "/etc/ssl/corporate.pem"
+
+
 def test_the_core_and_the_wheels_are_importable_with_pth_files_honoured(paths):
     runtime = Path(paths["runtime"])
 
