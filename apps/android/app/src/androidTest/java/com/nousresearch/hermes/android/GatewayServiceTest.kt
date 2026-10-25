@@ -66,6 +66,11 @@ class GatewayServiceTest {
             assertNull("the gateway came back after a planned stop", gatewayPid())
             SystemClock.sleep(100)
         }
+        noCrashRestart()
+    }
+
+    /** Since [beforePlannedStop], the system scheduled no crash-restart of the gateway's service. */
+    private fun noCrashRestart() {
         val restarts = shell("logcat -d -s ActivityManager").lines()
             .filter { "Scheduling restart of crashed service" in it && "GatewayService" in it }
         assertEquals("a planned stop read as a crash: $restarts", emptyList<String>(), restarts)
@@ -132,6 +137,7 @@ class GatewayServiceTest {
         waitFor("the controls to see it serving") { control.refresh(); control.state.value?.status?.takeIf { it == GatewayStatus.RUNNING } }
         val before = waitFor("the :gateway process") { gatewayPid() }
 
+        beforePlannedStop()
         control.restart()
 
         // A fresh interpreter, so the gateway reads its token and settings again.
@@ -140,6 +146,7 @@ class GatewayServiceTest {
             gatewayPid()?.takeIf { it != before && control.state.value?.status == GatewayStatus.RUNNING }
         }
         assertNotEquals(before, after)
+        noCrashRestart()  // the new gateway started once the old process had ended, not inside it
         beforePlannedStop()
         control.turnOff()
         waitFor("the controls to see it stopped", 60) { control.refresh(); control.state.value?.status?.takeIf { it == GatewayStatus.STOPPED } }

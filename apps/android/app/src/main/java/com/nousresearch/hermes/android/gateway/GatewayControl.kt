@@ -1,5 +1,6 @@
 package com.nousresearch.hermes.android.gateway
 
+import java.util.concurrent.atomic.AtomicBoolean
 import com.nousresearch.hermes.bridge.bridgeJson
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -9,7 +10,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /** What the gateway is doing, as seen from the app. */
-enum class GatewayStatus { STOPPED, STARTING, RUNNING, RESTARTING, FAILED }
+enum class GatewayStatus { STOPPED, STARTING, RUNNING, RESTARTING, STOPPING, FAILED }
 
 /**
  * The gateway's own account of itself, written by its service in the `:gateway` process on every change and
@@ -33,6 +34,9 @@ data class GatewayRecord(val state: State, val pid: Int, val reason: String? = n
  * again, and the new one writes its own record), except a failure, which stays until the next start.
  */
 fun statusOf(record: GatewayRecord?, alivePid: Int?): Pair<GatewayStatus, String?> = when {
+    // The record is written before the process ends: while its writer lives, the gateway is still stopping.
+    record != null && record.pid == alivePid &&
+        record.state in setOf(GatewayRecord.State.STOPPED, GatewayRecord.State.FAILED) -> GatewayStatus.STOPPING to null
     record?.state == GatewayRecord.State.FAILED -> GatewayStatus.FAILED to record.reason
     record == null || record.pid != alivePid -> (if (alivePid != null) GatewayStatus.STARTING else GatewayStatus.STOPPED) to null
     else -> when (record.state) {
@@ -74,9 +78,11 @@ class GatewayControl(
     private val screen = MutableStateFlow<GatewayUi?>(null)
     val state: StateFlow<GatewayUi?> = screen.asStateFlow()
 
-    /** A restart asked for: the gateway starts again once the stopping one is observed gone. */
-    @Volatile
-    private var restartPending = false
+    /** A restart asked for: the gateway starts again once the stopping one is observed gone; turning it off cancels it. */
+    private val restartPending = AtomicBoolean(false)
+
+    /** A restart still waits for the old gateway to end: someone must keep calling [refresh] until it is false. */
+    val restarting: Boolean get() = restartPending.get()
 
     fun open() {
         val (status, reason) = observe()
@@ -90,13 +96,15 @@ class GatewayControl(
     /** Re-reads what runs, for a screen that is showing; finishes a restart once the old gateway has stopped. */
     fun refresh() {
         val (status, reason) = observe()
-        if (restartPending && status in setOf(GatewayStatus.STOPPED, GatewayStatus.FAILED)) {
-            restartPending = false
+        // STOPPED and FAILED both mean the old process is gone (a live writer reads as STOPPING).
+        if (status in setOf(GatewayStatus.STOPPED, GatewayStatus.FAILED) && restartPending.compareAndSet(true, false)) {
             launcher.start()
             screen.update { it?.copy(status = GatewayStatus.STARTING, reason = null) }
             return
         }
-        screen.update { it?.copy(status = status, reason = reason) }
+        // A start waits for the old gateway to end: until then the screen says it is restarting, not what stops.
+        val shown = if (restartPending.get()) GatewayStatus.RESTARTING else status
+        screen.update { it?.copy(status = shown, reason = reason.takeUnless { restartPending.get() }) }
     }
 
     /**
@@ -108,17 +116,30 @@ class GatewayControl(
             turnOn()
             return
         }
-        restartPending = true
+        restartPending.set(true)
         launcher.stop()
         screen.update { it?.copy(status = GatewayStatus.RESTARTING) }
     }
 
     fun turnOn() {
+        // The old gateway is still ending (its stop recorded, its process alive): a start now would land in it.
+        if (observe().first == GatewayStatus.STOPPING) {
+            restartPending.set(true)
+            screen.update { it?.copy(status = GatewayStatus.RESTARTING, askBatteryExemption = !batteryExempt()) }
+            return
+        }
         launcher.start()
         screen.update { it?.copy(status = GatewayStatus.STARTING, askBatteryExemption = !batteryExempt()) }
     }
 
+    /** A pending start waited too long for the old gateway to end: it is dropped, so no later refresh starts it. */
+    fun abandonPendingStart() {
+        restartPending.set(false)
+        refresh()
+    }
+
     fun turnOff() {
+        restartPending.set(false)
         launcher.stop()
         refresh()
     }

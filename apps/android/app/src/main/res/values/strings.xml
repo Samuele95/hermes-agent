@@ -103,6 +103,7 @@
     <string name="gateway_status_starting">Starting…</string>
     <string name="gateway_status_running">Running.</string>
     <string name="gateway_status_restarting">Restarting…</string>
+    <string name="gateway_status_stopping">Stopping…</string>
     <string name="gateway_status_failed">Stopped after a failure:</string>
     <string name="gateway_boot">Start when the phone starts</string>
     <string name="gateway_battery_hint">When you turn it on, Android asks whether Hermes may ignore battery optimization: allowing it keeps the gateway connected while the phone sleeps.</string>

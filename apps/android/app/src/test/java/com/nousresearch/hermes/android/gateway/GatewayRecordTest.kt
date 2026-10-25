@@ -35,6 +35,13 @@ class GatewayRecordTest {
     }
 
     @Test
+    fun aStopOrFailureWhoseProcessStillLivesIsStopping() {
+        // The record is written before the process ends: until it has, nothing new may start in it.
+        assertEquals(GatewayStatus.STOPPING to null, statusOf(record(GatewayRecord.State.STOPPED, pid = 42), alivePid = 42))
+        assertEquals(GatewayStatus.STOPPING to null, statusOf(record(GatewayRecord.State.FAILED, pid = 42, reason = "x"), alivePid = 42))
+    }
+
+    @Test
     fun aGatewayProcessWithoutARecordYetIsStarting() {
         assertEquals(GatewayStatus.STARTING to null, statusOf(null, alivePid = 7))
     }

@@ -52,6 +52,7 @@ fun GatewayScreen(state: GatewayUi, samsung: Boolean, onOn: () -> Unit, onOff: (
             GatewayStatus.STARTING -> R.string.gateway_status_starting
             GatewayStatus.RUNNING -> R.string.gateway_status_running
             GatewayStatus.RESTARTING -> R.string.gateway_status_restarting
+            GatewayStatus.STOPPING -> R.string.gateway_status_stopping
             GatewayStatus.FAILED -> R.string.gateway_status_failed
         }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

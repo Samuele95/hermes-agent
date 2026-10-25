@@ -33,6 +33,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -91,6 +92,32 @@ class HermesApplication : Application() {
     val gateway: GatewayControl by lazy {
         GatewayControl(PrefsGatewaySettings(getSharedPreferences("gateway", MODE_PRIVATE)), ServiceGatewayLauncher(this),
                        observe = { observeGateway(this) }, batteryExempt = { batteryExempt(this) })
+    }
+
+    /**
+     * Restarts the gateway and sees the restart through on the app's scope, so it finishes even if the screen that
+     * asked closes before the old gateway has ended (up to a minute; its drain is bounded well below that).
+     */
+    fun restartGateway() {
+        gateway.restart()
+        seeThrough()
+    }
+
+    /** Turns the gateway on; one still stopping is started once it has ended, even if the screen closes meanwhile. */
+    fun turnGatewayOn() {
+        gateway.turnOn()
+        seeThrough()
+    }
+
+    private fun seeThrough() {
+        scope.launch(Dispatchers.IO) {
+            val until = SystemClock.elapsedRealtime() + 60_000
+            while (gateway.restarting && SystemClock.elapsedRealtime() < until) {
+                delay(500)
+                gateway.refresh()
+            }
+            if (gateway.restarting) gateway.abandonPendingStart()  // the screen shows what is, not a start long after
+        }
     }
 
     /** Starts the core on first use. */

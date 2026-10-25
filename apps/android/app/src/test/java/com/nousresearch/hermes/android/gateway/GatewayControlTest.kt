@@ -124,4 +124,85 @@ class GatewayControlTest {
             assertEquals(listOf("start"), launched)
         }
     }
+
+    @Test
+    fun aRestartWaitsUntilTheOldGatewayHasEnded() {
+        running = GatewayStatus.RUNNING
+        control.open()
+
+        control.restart()
+        running = GatewayStatus.STOPPING  // stop recorded, the old process still alive
+        control.refresh()
+        assertEquals(listOf("stop"), launched)
+
+        running = GatewayStatus.STOPPED
+        control.refresh()
+        assertEquals(listOf("stop", "start"), launched)
+    }
+
+    @Test
+    fun aRestartFinishesWithTheScreenClosed() {
+        running = GatewayStatus.RUNNING
+
+        control.restart()  // the screen may close right after the tap
+        assertTrue(control.restarting)
+        running = GatewayStatus.STOPPED
+        control.refresh()
+
+        assertEquals(listOf("stop", "start"), launched)
+        assertFalse(control.restarting)
+    }
+
+    @Test
+    fun turningItOffDuringARestartKeepsItOff() {
+        running = GatewayStatus.RUNNING
+        control.open()
+
+        control.restart()
+        control.turnOff()
+        running = GatewayStatus.STOPPED
+        control.refresh()
+
+        assertEquals(listOf("stop", "stop"), launched)  // no start after the user turned it off
+        assertEquals(GatewayStatus.STOPPED, control.state.value?.status)
+    }
+
+    @Test
+    fun turningItOnWhileTheOldGatewayStillStopsStartsItOnceThatOneHasEnded() {
+        running = GatewayStatus.STOPPING
+        control.open()
+
+        control.turnOn()
+        assertEquals(emptyList<String>(), launched)  // not into the process that is about to end
+
+        running = GatewayStatus.STOPPED
+        control.refresh()
+        assertEquals(listOf("start"), launched)
+    }
+
+    @Test
+    fun aRestartGivenUpOnStartsNothingLater() {
+        running = GatewayStatus.RUNNING
+        control.open()
+        control.restart()
+
+        control.abandonPendingStart()  // the old gateway did not end in time
+        running = GatewayStatus.STOPPED
+        control.refresh()
+
+        assertEquals(listOf("stop"), launched)
+        assertFalse(control.restarting)
+    }
+
+    @Test
+    fun aRestartInProgressKeepsSayingSo() {
+        running = GatewayStatus.RUNNING
+        control.open()
+
+        control.restart()
+        running = GatewayStatus.STOPPING
+        control.refresh()
+
+        assertEquals(GatewayStatus.RESTARTING, control.state.value?.status)
+    }
 }
