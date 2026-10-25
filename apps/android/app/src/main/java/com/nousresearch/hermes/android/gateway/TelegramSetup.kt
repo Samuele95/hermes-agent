@@ -7,9 +7,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import com.nousresearch.hermes.bridge.CoreError
 import com.nousresearch.hermes.bridge.ask
 import com.nousresearch.hermes.bridge.contract.BridgeCalls
+import com.nousresearch.hermes.bridge.contract.TelegramCheck
 import com.nousresearch.hermes.bridge.contract.TelegramConfigureParams
 
 /**
@@ -59,17 +59,23 @@ class TelegramSetup(
                 secrets.put(TOKEN, token)
                 bridge.secretsChanged()
             }
-            val bot = try {
-                bridge.ask(BridgeCalls.TELEGRAM_CHECK).bot
-            } catch (refused: CoreError) {
-                if (token != null) {
-                    secrets.delete(TOKEN)
-                    bridge.secretsChanged()
+            val checked = bridge.ask(BridgeCalls.TELEGRAM_CHECK)
+            when (checked.check) {
+                TelegramCheck.OK -> setup.update { it?.copy(tokenHeld = true, allowedUser = allowed, bot = checked.bot, busy = false) }
+                // Only a token Telegram itself refused is taken back; one it could not be asked about may be good.
+                TelegramCheck.REFUSED -> {
+                    if (token != null) {
+                        secrets.delete(TOKEN)
+                        bridge.secretsChanged()
+                    }
+                    setup.update { it?.copy(tokenHeld = secrets.contains(TOKEN), allowedUser = allowed, bot = null) }
+                    fail(checked.message.orEmpty())
                 }
-                setup.update { it?.copy(tokenHeld = secrets.contains(TOKEN), allowedUser = allowed) }
-                throw refused
+                TelegramCheck.UNREACHABLE -> {
+                    setup.update { it?.copy(tokenHeld = secrets.contains(TOKEN), allowedUser = allowed, bot = null) }
+                    fail(checked.message.orEmpty())
+                }
             }
-            setup.update { it?.copy(tokenHeld = true, allowedUser = allowed, bot = bot, busy = false) }
         } catch (failed: Exception) {
             fail(forUser(failed))
         } finally {

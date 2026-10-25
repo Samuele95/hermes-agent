@@ -2,7 +2,8 @@
   "$comment": "The app's calls into its own Python half (hermes_android.call). Each call takes a JSON object with exactly its params and answers either its reply or {\"error\": <words for the user>}. Types: string, integer, boolean, string? (string or null), or an enum below. The Kotlin side is generated from this file (scripts/android/gen_bridge_contract.py).",
   "version": 1,
   "enums": {
-    "Pinned": ["no", "yes", "changed"]
+    "Pinned": ["no", "yes", "changed"],
+    "TelegramCheck": ["ok", "refused", "unreachable"]
   },
   "calls": {
     "runtime_facts": {
@@ -76,9 +77,9 @@
       "reply": {"token": "boolean", "allowed_user": "string?", "sdk": "boolean"}
     },
     "telegram_check": {
-      "summary": "Asks Telegram who the held token belongs to.",
+      "summary": "Asks Telegram who the held token belongs to: ok (bot named), refused by Telegram, or Telegram out of reach.",
       "params": {},
-      "reply": {"bot": "string"}
+      "reply": {"check": "TelegramCheck", "bot": "string?", "message": "string?"}
     }
   }
 }

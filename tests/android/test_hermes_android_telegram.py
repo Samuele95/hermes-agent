@@ -112,19 +112,57 @@ def bot_api(monkeypatch):
     thread.join(5)
 
 
+def _checked() -> dict:
+    import hermes_android
+
+    return json.loads(hermes_android.call("telegram_check", "{}"))  # through the contract's checked entry
+
+
 def test_check_names_the_bot_the_token_belongs_to(home, bot_api, monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", TOKEN)
 
-    assert json.loads(telegram.check("")) == {"bot": "@phone_hermes_bot"}
+    assert _checked() == {"check": "ok", "bot": "@phone_hermes_bot", "message": None}
 
 
-def test_a_refused_token_is_reported_without_the_token(home, bot_api, monkeypatch):
+def test_a_refused_token_is_reported_as_refused_without_the_token(home, bot_api, monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "999:wrong-token")
 
-    answer = telegram.check("")
+    answer = _checked()
 
-    assert "error" in json.loads(answer)
-    assert "wrong-token" not in answer
+    assert answer["check"] == "refused" and answer["bot"] is None
+    assert "wrong-token" not in json.dumps(answer)
+
+
+def test_telegram_out_of_reach_is_not_a_refusal(home, monkeypatch):
+    # A token pasted without a connection may be good: the app keeps it and says Telegram could not be asked.
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", TOKEN)
+    monkeypatch.setattr(telegram, "API", "http://127.0.0.1:9")  # nothing listens there
+
+    answer = _checked()
+
+    assert answer["check"] == "unreachable" and answer["bot"] is None and TOKEN not in json.dumps(answer)
+
+
+def test_a_telegram_server_error_is_not_a_refusal(home, monkeypatch):
+    class Busy(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(502)
+            self.end_headers()
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Busy)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", TOKEN)
+    monkeypatch.setattr(telegram, "API", f"http://127.0.0.1:{server.server_port}")
+    try:
+        assert _checked()["check"] == "unreachable"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(5)
 
 
 def test_check_without_a_token_says_so(home, monkeypatch):

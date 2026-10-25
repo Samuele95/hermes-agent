@@ -54,8 +54,15 @@ def check(_arg: str) -> str:
     try:
         with urllib.request.urlopen(f"{API}/bot{token}/getMe", timeout=15) as response:
             bot = json.load(response)["result"]
-    except urllib.error.HTTPError as refused:  # its message names the status, never the URL (the token is in it)
-        return json.dumps({"error": f"Telegram refused the token ({refused.code}): check it with @BotFather."})
+    except urllib.error.HTTPError as answered:  # its message names the status, never the URL (the token is in it)
+        if answered.code in (401, 404):  # Telegram's answers for a token it does not know
+            return _checked("refused", f"Telegram refused the token ({answered.code}): check it with @BotFather.")
+        return _checked("unreachable", f"Telegram answered {answered.code}; the token was kept, check it again later.")
     except (urllib.error.URLError, OSError, ValueError, KeyError):
-        return json.dumps({"error": "Telegram could not be reached; check the phone's connection and try again."})
-    return json.dumps({"bot": f"@{bot['username']}"})
+        return _checked("unreachable", "Telegram could not be reached, so the token was kept unchecked; "
+                                       "check the phone's connection and try again.")
+    return json.dumps({"check": "ok", "bot": f"@{bot['username']}", "message": None})
+
+
+def _checked(outcome: str, message: str) -> str:
+    return json.dumps({"check": outcome, "bot": None, "message": message})

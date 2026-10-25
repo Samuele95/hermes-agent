@@ -27,6 +27,13 @@ enum class Pinned {
 }
 
 @Serializable
+enum class TelegramCheck {
+    @SerialName("ok") OK,
+    @SerialName("refused") REFUSED,
+    @SerialName("unreachable") UNREACHABLE,
+}
+
+@Serializable
 data class RuntimeFactsReply(
     val python: String,
     val sqlite: String,
@@ -142,7 +149,9 @@ data class TelegramStatusReply(
 
 @Serializable
 data class TelegramCheckReply(
-    val bot: String,
+    val check: TelegramCheck,
+    val bot: String?,
+    val message: String?,
 )
 
 /** Every call the app may make into its Python half. */
@@ -175,6 +184,6 @@ object BridgeCalls {
     val TELEGRAM_CONFIGURE = BridgeCall("telegram_configure", TelegramConfigureParams.serializer(), TelegramConfigureReply.serializer())
     /** Whether a token is held, who may talk to the bot, and whether this build has the Telegram SDK. */
     val TELEGRAM_STATUS = BridgeCall("telegram_status", NoParams.serializer(), TelegramStatusReply.serializer())
-    /** Asks Telegram who the held token belongs to. */
+    /** Asks Telegram who the held token belongs to: ok (bot named), refused by Telegram, or Telegram out of reach. */
     val TELEGRAM_CHECK = BridgeCall("telegram_check", NoParams.serializer(), TelegramCheckReply.serializer())
 }

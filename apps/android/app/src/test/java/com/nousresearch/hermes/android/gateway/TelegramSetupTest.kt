@@ -24,7 +24,7 @@ class TelegramSetupTest {
     private val answers = mutableMapOf(
         "telegram_status" to """{"token":false,"allowed_user":null,"sdk":true}""",
         "telegram_configure" to """{"allowed_user":"42"}""",
-        "telegram_check" to """{"bot":"@phone_hermes_bot"}""",
+        "telegram_check" to """{"check":"ok","bot":"@phone_hermes_bot","message":null}""",
     )
     private val telegram = TelegramSetup(secrets) { function, arg ->
         if (function == "secrets_changed") { secretsChanged++; return@TelegramSetup "{}" }
@@ -78,7 +78,7 @@ class TelegramSetupTest {
 
     @Test
     fun aTokenTelegramRefusesIsDeletedAgain() = runTest {
-        answers["telegram_check"] = """{"error":"Telegram refused the token (401)"}"""
+        answers["telegram_check"] = """{"check":"refused","bot":null,"message":"Telegram refused the token (401)"}"""
         telegram.open()
 
         telegram.save("bad".toByteArray(), "42")
@@ -93,7 +93,7 @@ class TelegramSetupTest {
     @Test
     fun aCheckFailingOnTheTokenAlreadyHeldKeepsItAndLeavesNoPlaintextCopy() = runTest {
         held["TELEGRAM_BOT_TOKEN"] = "123:abc".toByteArray()
-        answers["telegram_check"] = """{"error":"Telegram could not be reached"}"""
+        answers["telegram_check"] = """{"check":"unreachable","bot":null,"message":"Telegram could not be reached"}"""
         telegram.open()
 
         telegram.save(null, "42")
@@ -101,6 +101,18 @@ class TelegramSetupTest {
         assertEquals(true, telegram.state.value?.tokenHeld)
         assertArrayEquals("123:abc".toByteArray(), held["TELEGRAM_BOT_TOKEN"])
         assertTrue(handedOut.isNotEmpty() && handedOut.all { copy -> copy.all { it == 0.toByte() } })
+    }
+
+    @Test
+    fun aNewTokenCheckedWhileTelegramIsOutOfReachIsKept() = runTest {
+        answers["telegram_check"] = """{"check":"unreachable","bot":null,"message":"Telegram could not be reached, so the token was kept unchecked"}"""
+        telegram.open()
+
+        telegram.save("123:abc".toByteArray(), "42")
+
+        assertArrayEquals("123:abc".toByteArray(), held["TELEGRAM_BOT_TOKEN"])  // a good token pasted offline stays
+        assertEquals(true, telegram.state.value?.tokenHeld)
+        assertEquals("Telegram could not be reached, so the token was kept unchecked", telegram.state.value?.error)
     }
 
     @Test
