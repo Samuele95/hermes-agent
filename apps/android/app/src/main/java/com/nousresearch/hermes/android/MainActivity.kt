@@ -86,7 +86,8 @@ class MainActivity : ComponentActivity() {
                             }
                             ssh?.let {
                                 SshScreen(it, onLook = { target -> app.ssh { look(target) } }, onTrust = { app.ssh { trust() } },
-                                          onCheck = { app.ssh { checkLogin() } }, onCopy = ::copyPublicKey, onClose = state.ssh::close)
+                                          onCheck = { app.ssh { checkLogin() } }, onCopy = ::copyPublicKey, onClose = state.ssh::close,
+                                          onRunOnPhone = { app.ssh { runOnPhone() } })
                                 return@Surface
                             }
                             setup?.let {
@@ -102,7 +103,7 @@ class MainActivity : ComponentActivity() {
                                                         clarify = { p, given -> app.chat { clarify(p, given) } },
                                                         secret = { p, value -> app.chat { secret(p, value) } })
                             ChatScreen(chat, about = state.about, onSetup = { app.setup { open() } }, answers = answers,
-                                       onTerminal = state.ssh::open, onGateway = app.gateway::open, onStop = { app.chat { cancel() } },
+                                       onTerminal = { app.ssh { open() } }, onGateway = app.gateway::open, onStop = { app.chat { cancel() } },
                                        onSettings = { app.settings { open() } }, onNewChat = { app.chat { open() } },
                                        // The drawer's sessions load as it opens; a tap continues one.
                                        sessions = history, onSessions = { open -> if (open) app.history { open() } else state.history.close() },

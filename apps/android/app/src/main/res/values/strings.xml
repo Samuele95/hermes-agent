@@ -27,6 +27,10 @@
     <string name="history_empty">No past conversations yet.</string>
     <string name="ssh_title">Remote terminal (SSH)</string>
     <string name="ssh_done">Done</string>
+    <string name="ssh_runs_here">The terminal runs on this phone. Set up a host below to run it there instead.</string>
+    <string name="ssh_runs_on">The terminal runs on %1$s.</string>
+    <string name="ssh_run_on_phone">Run on this phone</string>
+    <string name="ssh_host_section">SSH host</string>
     <string name="ssh_host">Host</string>
     <string name="ssh_user">User</string>
     <string name="ssh_port">Port</string>

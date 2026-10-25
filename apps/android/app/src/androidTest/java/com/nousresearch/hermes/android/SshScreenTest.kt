@@ -29,7 +29,25 @@ class SshScreenTest {
 
     private fun show(state: SshState) = compose.setContent {
         SshScreen(state, onLook = { calls += "look $it" }, onTrust = { calls += "trust" }, onCheck = { calls += "check" },
-                  onCopy = { calls += "copy $it" }, onClose = { calls += "close" })
+                  onCopy = { calls += "copy $it" }, onClose = { calls += "close" }, onRunOnPhone = { calls += "phone" })
+    }
+
+    @Test
+    fun aTerminalOnAHostSaysSoAndCanComeBackToThePhone() {
+        show(SshState(remote = "delta@host.example:2222"))
+
+        compose.onNodeWithText("delta@host.example:2222", substring = true).assertExists()
+        compose.onNodeWithTag("ssh-local").performClick()
+
+        assertEquals(listOf("phone"), calls)
+    }
+
+    @Test
+    fun aTerminalOnThePhoneOffersNoWayBack() {
+        show(SshState())
+
+        compose.onNodeWithTag("ssh-runs-here").assertExists()
+        compose.onNodeWithTag("ssh-local").assertDoesNotExist()
     }
 
     @Test

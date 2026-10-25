@@ -139,6 +139,16 @@ data class SshCheckLoginReply(
 )
 
 @Serializable
+data class TerminalStatusReply(
+    @SerialName("ssh_host") val sshHost: String?,
+)
+
+@Serializable
+data class TerminalLocalReply(
+    val backend: String,
+)
+
+@Serializable
 data class TelegramConfigureParams(
     @SerialName("allowed_user") val allowedUser: String,
 )
@@ -188,6 +198,10 @@ object BridgeCalls {
     val SSH_CONFIGURE = BridgeCall("ssh_configure", SshConfigureParams.serializer(), SshConfigureReply.serializer())
     /** Logs in once with the app's key against the pinned host key. */
     val SSH_CHECK_LOGIN = BridgeCall("ssh_check_login", SshCheckLoginParams.serializer(), SshCheckLoginReply.serializer())
+    /** Where the terminal runs: user@host:port on an SSH host, null on the phone. */
+    val TERMINAL_STATUS = BridgeCall("terminal_status", NoParams.serializer(), TerminalStatusReply.serializer())
+    /** Runs the terminal on the phone again (config.yaml terminal.backend, Dv32); the host stays pinned. */
+    val TERMINAL_LOCAL = BridgeCall("terminal_local", NoParams.serializer(), TerminalLocalReply.serializer())
     /** Sets the one Telegram user the bot answers (config.yaml telegram.allow_from, Dv32). */
     val TELEGRAM_CONFIGURE = BridgeCall("telegram_configure", TelegramConfigureParams.serializer(), TelegramConfigureReply.serializer())
     /** Whether a token is held, who may talk to the bot, and whether this build has the Telegram SDK. */

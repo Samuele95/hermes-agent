@@ -88,6 +88,8 @@ check "the endpoint key is not in the log" test "$(printf '%s\n' "$log" | grep -
 check "the app's files are readable (run-as)" sh -c 'adb shell run-as "$1" ls files >/dev/null' _ "$app"
 check "the host key is pinned in the app's known_hosts" \
     sh -c 'adb shell run-as "$1" cat files/.ssh/known_hosts | grep -q "^\[127.0.0.1\]:$2 "' _ "$app" "$ssh_port"
+check "the terminal is back on the phone after the test (terminal.backend: local)" \
+    sh -c 'adb shell run-as "$1" cat files/.hermes/config.yaml | grep -q "^  backend: local$"' _ "$app"
 check "the app's identity is in the keystore" sh -c 'adb shell run-as "$1" test -s no_backup/secrets/TERMINAL_SSH_PRIVATE_KEY' _ "$app"
 # The identity is an OpenSSH-format key (hermes_android.ssh.new_key); the keystore blob above is AES-GCM ciphertext.
 check "the app's private key is in no file of the app as plaintext" \

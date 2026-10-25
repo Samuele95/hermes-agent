@@ -232,6 +232,18 @@ def ssh_check_login(arg: str) -> str:
     return ssh.check_login(arg)
 
 
+
+def terminal_status(arg: str) -> str:
+    from hermes_android import ssh
+
+    return ssh.status(arg)
+
+
+def terminal_local(arg: str) -> str:
+    from hermes_android import ssh
+
+    return ssh.local(arg)
+
 def telegram_configure(arg: str) -> str:
     from hermes_android import telegram
 

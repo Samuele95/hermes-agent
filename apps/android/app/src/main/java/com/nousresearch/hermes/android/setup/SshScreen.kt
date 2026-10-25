@@ -22,6 +22,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.nousresearch.hermes.android.R
 import com.nousresearch.hermes.android.ui.SecondaryButton
+import com.nousresearch.hermes.android.ui.SectionCaption
 import com.nousresearch.hermes.android.ui.PrimaryButton
 import com.nousresearch.hermes.android.ui.Page
 import com.nousresearch.hermes.android.ui.Hint
@@ -33,10 +34,19 @@ import androidx.compose.foundation.layout.size
 /** The SSH host the terminal runs on (D22): host form, host-key fingerprint to confirm, public key to install. */
 @Composable
 fun SshScreen(state: SshState, onLook: (SshTarget) -> Unit, onTrust: () -> Unit, onCheck: () -> Unit,
-              onCopy: (String) -> Unit, onClose: () -> Unit, modifier: Modifier = Modifier) {
+              onCopy: (String) -> Unit, onClose: () -> Unit, modifier: Modifier = Modifier, onRunOnPhone: () -> Unit = {}) {
     Page(stringResource(R.string.ssh_title), modifier.testTag("ssh"), onBack = onClose, backTag = "ssh-close", busy = state.busy) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             state.error?.let { Hint(it, Modifier.testTag("ssh-error"), color = MaterialTheme.colorScheme.error) }
+            // Where the terminal runs now, and the way back to the phone from a host.
+            val remote = state.remote
+            if (remote == null) {
+                Hint(stringResource(R.string.ssh_runs_here), Modifier.testTag("ssh-runs-here"))
+            } else {
+                Text(stringResource(R.string.ssh_runs_on, remote), Modifier.testTag("ssh-runs-on"), style = MaterialTheme.typography.bodyLarge)
+                SecondaryButton(stringResource(R.string.ssh_run_on_phone), onRunOnPhone, Modifier.testTag("ssh-local"), enabled = !state.busy)
+            }
+            SectionCaption(stringResource(R.string.ssh_host_section))
             when (val step = state.step) {
                 SshStep.Host -> HostForm(enabled = !state.busy, onLook)
                 is SshStep.Fingerprint -> {

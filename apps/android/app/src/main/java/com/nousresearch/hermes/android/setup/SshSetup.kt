@@ -30,7 +30,9 @@ sealed interface SshStep {
     data class Ready(val target: SshTarget, val publicKey: String, val loginOk: Boolean = false) : SshStep
 }
 
-data class SshState(val step: SshStep = SshStep.Host, val busy: Boolean = false, val error: String? = null)
+/** [remote] is where the terminal runs, as `user@host:port`; null while it runs on the phone. */
+data class SshState(val step: SshStep = SshStep.Host, val busy: Boolean = false, val error: String? = null,
+                    val remote: String? = null)
 
 /**
  * The SSH host setup (D22). The app's Ed25519 identity is created once and kept in [secrets], which
@@ -49,8 +51,21 @@ class SshSetup(
     private val setup = MutableStateFlow<SshState?>(null)
     val state: StateFlow<SshState?> = setup.asStateFlow()
 
-    fun open() {
+    /** Opens the setup on where the terminal runs now. */
+    suspend fun open() {
         setup.value = SshState()
+        step {
+            val runsOn = bridge.ask(BridgeCalls.TERMINAL_STATUS).sshHost
+            setup.update { it?.copy(remote = runsOn) }
+            null
+        }
+    }
+
+    /** The terminal runs on the phone again; the host stays pinned, so choosing it later needs no new confirmation. */
+    suspend fun runOnPhone() = step {
+        bridge.ask(BridgeCalls.TERMINAL_LOCAL)
+        setup.update { it?.copy(remote = null) }
+        SshStep.Host
     }
 
     fun close() {
@@ -92,6 +107,7 @@ class SshSetup(
 
     private suspend fun configured(target: SshTarget): SshStep.Ready {
         bridge.ask(BridgeCalls.SSH_CONFIGURE, SshConfigureParams(target.host, target.user, target.port))
+        setup.update { it?.copy(remote = "${target.user}@${target.host}:${target.port}") }
         return SshStep.Ready(target, bridge.ask(BridgeCalls.SSH_PUBLIC_KEY).public)
     }
 

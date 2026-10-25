@@ -129,6 +129,20 @@
         "ok": "boolean"
       }
     },
+    "terminal_status": {
+      "summary": "Where the terminal runs: user@host:port on an SSH host, null on the phone.",
+      "params": {},
+      "reply": {
+        "ssh_host": "string?"
+      }
+    },
+    "terminal_local": {
+      "summary": "Runs the terminal on the phone again (config.yaml terminal.backend, Dv32); the host stays pinned.",
+      "params": {},
+      "reply": {
+        "backend": "string"
+      }
+    },
     "telegram_configure": {
       "summary": "Sets the one Telegram user the bot answers (config.yaml telegram.allow_from, Dv32).",
       "params": {

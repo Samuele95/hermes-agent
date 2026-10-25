@@ -30,6 +30,8 @@ class SshSetupTest {
         "ssh_trust_host" to """{"pinned":"yes"}""",
         "ssh_configure" to """{"backend":"ssh"}""",
         "ssh_check_login" to """{"ok":true}""",
+        "terminal_status" to """{"ssh_host":null}""",
+        "terminal_local" to """{"backend":"local"}""",
     )
     private val ssh = SshSetup(secrets) { function, arg ->
         if (function == "secrets_changed") { secretsChanged++; return@SshSetup "{}" }
@@ -53,6 +55,38 @@ class SshSetupTest {
         assertEquals(SshStep.Fingerprint(target, "ssh-ed25519 AAAAHOST", "SHA256:abc"), ssh.state.value?.step)
         assertTrue("nothing is trusted or configured before the user confirms",
                    calls.none { it.first in setOf("ssh_trust_host", "ssh_configure") })
+    }
+
+    @Test
+    fun theSetupSaysWhereTheTerminalRunsWhenItOpens() = runTest {
+        answers["terminal_status"] = """{"ssh_host":"delta@host.example:2222"}"""
+
+        ssh.open()
+
+        assertEquals("delta@host.example:2222", ssh.state.value?.remote)
+    }
+
+    @Test
+    fun aConfiguredHostIsWhereTheTerminalRunsFromThenOn() = runTest {
+        pinned = "yes"
+        ssh.open()
+        assertNull(ssh.state.value?.remote)  // a fresh app runs it on the phone
+
+        ssh.look(target)
+
+        assertEquals("delta@host.example:22", ssh.state.value?.remote)
+    }
+
+    @Test
+    fun theTerminalComesBackToThePhone() = runTest {
+        answers["terminal_status"] = """{"ssh_host":"delta@host.example:2222"}"""
+        ssh.open()
+
+        ssh.runOnPhone()
+
+        assertTrue(calls.any { it.first == "terminal_local" })
+        assertNull(ssh.state.value?.remote)
+        assertEquals(SshStep.Host, ssh.state.value?.step)
     }
 
     @Test

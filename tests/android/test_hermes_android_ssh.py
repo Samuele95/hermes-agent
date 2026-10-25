@@ -161,3 +161,26 @@ def test_every_entry_refuses_a_bad_target_in_words_and_dials_nothing(home, monke
 
     assert answer == {"error": "An SSH host needs a host name, a user and a port between 1 and 65535."}
     assert not asyncssh_env.known_hosts_path().exists()
+
+
+def test_the_terminal_says_where_it_runs(home):
+    assert call("terminal_status") == {"ssh_host": None}  # a fresh app: on the phone
+
+    call("ssh_configure", host="host.example", user="delta", port=2222)
+
+    assert call("terminal_status") == {"ssh_host": "delta@host.example:2222"}
+
+
+def test_the_terminal_comes_back_to_the_phone_in_config_yaml_and_the_running_core(home, capsys, monkeypatch):
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    call("ssh_configure", host="host.example", user="delta", port=2222)
+
+    assert call("terminal_local") == {"backend": "local"}
+
+    assert capsys.readouterr().out == ""
+    assert not (home / ".hermes" / ".env").exists()
+    config = (home / ".hermes" / "config.yaml").read_text(encoding="utf-8")
+    assert "backend: local" in config and "# the user's" in config
+    import os
+    assert os.environ["TERMINAL_ENV"] == "local"  # the next terminal call runs on the phone
+    assert call("terminal_status") == {"ssh_host": None}

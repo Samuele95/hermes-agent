@@ -62,5 +62,11 @@ class SshSmokeTest {
         assertTrue("the reply carries the host's marker: $reply", reply?.text?.contains(marker) == true)
         compose.onNodeWithText(marker, substring = true).assertExists()  // rendered in the chat, not only in its state
         steps.screenshot("ssh-smoke")
+
+        // Back to the phone, as a user leaving the host would: the throwaway host is gone after this test.
+        steps.openFromDrawer("open-ssh")
+        compose.waitUntil(30_000) { steps.shown("ssh-local") }
+        compose.onNodeWithTag("ssh-local").performClick()
+        compose.waitUntil(30_000) { steps.shown("ssh-runs-here") }
     }
 }

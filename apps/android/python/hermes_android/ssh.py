@@ -124,6 +124,28 @@ def configure(arg: str) -> str:
     return json.dumps({"backend": "ssh"})
 
 
+
+def status(_arg: str) -> str:
+    """``{}`` -> ``{ssh_host}``: ``user@host:port`` while the terminal runs on an SSH host, else null (the phone)."""
+    from hermes_cli.config import load_config
+
+    terminal = load_config().get("terminal") or {}
+    if terminal.get("backend") != "ssh":
+        return json.dumps({"ssh_host": None})
+    return json.dumps({"ssh_host": f"{terminal.get('ssh_user', '')}@{terminal.get('ssh_host', '')}:{terminal.get('ssh_port', 22)}"})
+
+
+def local(_arg: str) -> str:
+    """``{}`` -> ``{backend: "local"}``: the terminal runs on the phone again. The host stays pinned and the
+    identity stays in the keystore, so choosing the host again needs no new confirmation."""
+    from hermes_cli.config import apply_terminal_config_to_env, load_config, save_config
+
+    config = load_config()
+    config.setdefault("terminal", {})["backend"] = "local"
+    save_config(config)
+    apply_terminal_config_to_env()
+    return json.dumps({"backend": "local"})
+
 def check_login(arg: str) -> str:
     """``{host, user, port}`` -> ``{ok: true}`` once the pinned host accepts the app's key, else ``{error}``.
     Strict: a host not pinned yet, or presenting another key, fails rather than being trusted on the way."""
