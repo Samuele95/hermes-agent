@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.ActivityManager
 import android.app.NotificationManager
 import android.os.Build
+import android.os.ParcelFileDescriptor
 import android.os.Process
 import android.os.SystemClock
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -15,6 +16,7 @@ import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -45,6 +47,30 @@ class GatewayServiceTest {
     private fun gatewayPid(): Int? = context.getSystemService(ActivityManager::class.java).runningAppProcesses
         ?.firstOrNull { it.processName == gatewayProcess }?.pid
 
+    private fun shell(command: String): String =
+        ParcelFileDescriptor.AutoCloseInputStream(InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(command))
+            .use { it.readBytes().decodeToString() }
+
+    /** Clears the log the system writes about the gateway's service, just before a planned stop. */
+    private fun beforePlannedStop() {
+        shell("logcat -c")
+    }
+
+    /**
+     * A planned stop stays a stop: Android must neither see a crash of the sticky service (a kill before the system
+     * had the service as stopped) and schedule its restart, nor bring the process back.
+     */
+    private fun staysStopped() {
+        val until = SystemClock.elapsedRealtime() + 5_000
+        while (SystemClock.elapsedRealtime() < until) {
+            assertNull("the gateway came back after a planned stop", gatewayPid())
+            SystemClock.sleep(100)
+        }
+        val restarts = shell("logcat -d -s ActivityManager").lines()
+            .filter { "Scheduling restart of crashed service" in it && "GatewayService" in it }
+        assertEquals("a planned stop read as a crash: $restarts", emptyList<String>(), restarts)
+    }
+
     /** The gateway's own record: running, and written by the `:gateway` process. */
     private fun runningIn(pid: Int?): Boolean =
         pid != null && state()?.let { it.optString("gateway_state") == "running" && it.optInt("pid") == pid } == true
@@ -60,6 +86,7 @@ class GatewayServiceTest {
     @After
     fun stopTheGateway() {
         if (gatewayPid() == null) return  // a Stop would start the process only to end it
+        beforePlannedStop()
         context.startService(GatewayService.stop(context))
         waitFor("the gateway process to end", 60) { if (gatewayPid() == null) true else null }
     }
@@ -88,9 +115,12 @@ class GatewayServiceTest {
 
         control.turnOn()
         waitFor("the controls to see it serving") { control.refresh(); control.state.value?.status?.takeIf { it == GatewayStatus.RUNNING } }
+        beforePlannedStop()
         control.turnOff()
 
         waitFor("the controls to see it stopped", 60) { control.refresh(); control.state.value?.status?.takeIf { it == GatewayStatus.STOPPED } }
+        waitFor("the :gateway process to end", 30) { if (gatewayPid() == null) true else null }
+        staysStopped()
         control.close()
     }
 
@@ -110,8 +140,11 @@ class GatewayServiceTest {
             gatewayPid()?.takeIf { it != before && control.state.value?.status == GatewayStatus.RUNNING }
         }
         assertNotEquals(before, after)
+        beforePlannedStop()
         control.turnOff()
         waitFor("the controls to see it stopped", 60) { control.refresh(); control.state.value?.status?.takeIf { it == GatewayStatus.STOPPED } }
+        waitFor("the :gateway process to end", 30) { if (gatewayPid() == null) true else null }
+        staysStopped()
         control.close()
     }
 

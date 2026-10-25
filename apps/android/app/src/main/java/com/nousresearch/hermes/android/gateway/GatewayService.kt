@@ -46,6 +46,9 @@ class GatewayService : Service() {
     }
 
     private val main = Handler(Looper.getMainLooper())
+
+    /** A planned stop is under way: the process ends with the service. */
+    private var ending = false
     private val worker = Executors.newSingleThreadExecutor { Thread(it, "gateway-control") }
 
     /** The core this process embeds, as the gateway host; the one adapter is [EmbeddedPython]. */
@@ -114,8 +117,15 @@ class GatewayService : Service() {
             record(GatewayRecord.State.STOPPED)
         }
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-        stopSelf()
-        Process.killProcess(Process.myPid())
+        ending = true
+        stopSelf()  // the process ends in onDestroy, once the system has this service as stopped
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // A fresh interpreter for the next start. Killed only after the system has this service as stopped: a kill
+        // before that reads as a crash of a sticky service, which the system schedules to restart.
+        if (ending) main.post { Process.killProcess(Process.myPid()) }
     }
 
     private fun show(text: Int) {
