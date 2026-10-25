@@ -334,6 +334,16 @@ class ChatSessionTest {
     }
 
     @Test
+    fun aSendThatFailsOtherwiseThanByARefusalIsSaid() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        submit = { "not a reply the app can read" }
+
+        chat.send("hello")
+
+        assertTrue(chat.state.value.entries.last().let { it is Entry.Notice && it.text.startsWith("Something went wrong (") })
+    }
+
+    @Test
     fun aQuestionThatWaitsIsNotifiedUntilItIsAnswered() = runTest(UnconfinedTestDispatcher()) {
         val chat = openChat().apply { open() }
 

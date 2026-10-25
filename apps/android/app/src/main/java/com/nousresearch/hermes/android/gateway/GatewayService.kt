@@ -13,11 +13,13 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.Process
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.nousresearch.hermes.android.HermesApplication
 import com.nousresearch.hermes.android.MainActivity
 import com.nousresearch.hermes.android.R
+import com.nousresearch.hermes.android.forUser
 import com.nousresearch.hermes.android.installRuntime
 import com.nousresearch.hermes.bridge.CoreRuntime
 import com.nousresearch.hermes.bridge.EmbeddedPython
@@ -38,6 +40,7 @@ class GatewayService : Service() {
         const val NOTIFICATION_ID = 2
         private const val FAILURE_ID = 3
         private const val CHANNEL = "gateway"
+        private const val TAG = "HermesGateway"
         private const val ACTION_STOP = "com.nousresearch.hermes.gateway.STOP"
 
         fun start(context: Context): Intent = Intent(context, GatewayService::class.java)
@@ -79,7 +82,8 @@ class GatewayService : Service() {
             runtime.startGateway(installRuntime(this), (application as HermesApplication).secrets) { line -> main.post { onEvent(line) } }
             runBlocking { runtime.bridge.ask(BridgeCalls.GATEWAY_START) }
         } catch (e: Exception) {
-            main.post { failed(e.toString()) }
+            Log.w(TAG, "the gateway did not start", e)
+            main.post { failed(forUser(e)) }
         }
     }
 
@@ -96,12 +100,16 @@ class GatewayService : Service() {
 
     private fun failed(reason: String) {
         record(GatewayRecord.State.FAILED, reason)
-        getSystemService(NotificationManager::class.java).notify(FAILURE_ID, NotificationCompat.Builder(this, CHANNEL)
+        fun builder() = NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_notify_error)
             .setContentTitle(getString(R.string.gateway_failed))
+            .setContentIntent(openApp())
+        // The reason may name hosts or carry the platform's own words: on the lock screen only the title shows.
+        getSystemService(NotificationManager::class.java).notify(FAILURE_ID, builder()
             .setContentText(reason)
             .setStyle(NotificationCompat.BigTextStyle().bigText(reason))
-            .setContentIntent(openApp())
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(builder().build())
             .build())
         end()
     }

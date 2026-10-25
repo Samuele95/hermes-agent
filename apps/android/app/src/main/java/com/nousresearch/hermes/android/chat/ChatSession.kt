@@ -129,6 +129,8 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, sc
             core.call(Methods.PROMPT_SUBMIT, PromptSubmitParams(sessionId = session, text = JsonPrimitive(text)))
         } catch (refused: CoreError) {
             chat.update { it.notice(refused.message ?: "The core refused the prompt (${refused.code}).") }
+        } catch (failed: Exception) {  // anything else: the message did not go out, and the user hears it
+            chat.update { it.notice(forUser(failed)) }
         }
     }
 

@@ -126,7 +126,14 @@ class HermesApplication : Application() {
             synchronized(this) {
                 if (!started) {
                     started = true
-                    scope.launch { state.value = runCatching { start() }.getOrElse { CoreState.Failed(it.toString()) } }
+                    scope.launch {
+                        state.value = try {
+                            start()
+                        } catch (failed: Exception) {  // the trace goes to the log; the screen gets the failure rule's words
+                            Log.w(TAG, "the core did not start", failed)
+                            CoreState.Failed(forUser(failed))
+                        }
+                    }
                 }
             }
             return state.asStateFlow()
