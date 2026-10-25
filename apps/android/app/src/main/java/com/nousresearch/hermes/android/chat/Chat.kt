@@ -21,10 +21,10 @@ sealed interface Entry {
 /**
  * A chat's transcript. While a turn runs, [streaming] is the reply written so far, [reasoning] the model's
  * reasoning so far (when the core shows it), [activity] what the agent is doing, and [prompts] what it is
- * waiting on the user for.
+ * waiting on the user for. [model] is the model the session runs, as the core last named it.
  */
 data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? = null, val activity: String? = null,
-                val prompts: List<Prompt> = emptyList(), val reasoning: String? = null) {
+                val prompts: List<Prompt> = emptyList(), val reasoning: String? = null, val model: String? = null) {
     val running: Boolean get() = streaming != null
 
     fun sent(text: String): Chat = copy(entries = entries + Entry.User(text))
@@ -50,6 +50,7 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
             copy(entries = entries.map { if (it is Entry.Tool && it.id == done.toolId) it.copy(summary = done.summary, done = true) else it })
         }
         Events.STATUS_UPDATE.name -> copy(activity = event.decode(Events.STATUS_UPDATE)!!.text)
+        Events.SESSION_INFO.name -> event.decode(Events.SESSION_INFO)!!.model.takeIf { it.isNotBlank() }?.let { copy(model = it) } ?: this
         // The core may end a turn with `error` alone (a refused @-reference, an ownership refusal, a crash), and the
         // TUI treats every `error` as the end of the turn: so does the chat, keeping the message as a notice.
         Events.ERROR.name -> notice(event.decode(Events.ERROR)!!.message).copy(streaming = null, activity = null, reasoning = null)

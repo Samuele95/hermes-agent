@@ -19,6 +19,15 @@ class ChatTest {
     private fun Chat.after(vararg events: CoreEvent): Chat = events.fold(this) { chat, e -> chat.reduce(e) }
 
     @Test
+    fun theCoresSessionInfoNamesTheModel() {
+        val switched = Chat(model = "deepseek-chat").reduce(event("session.info", """{"model":"kimi-k2","provider":"kimi"}"""))
+        assertEquals("kimi-k2", switched.model)
+
+        // An info frame about something else (tools, cwd) leaves the model as it was.
+        assertEquals("kimi-k2", switched.reduce(event("session.info", """{"cwd":"/tmp"}""")).model)
+    }
+
+    @Test
     fun aTurnStreamsIntoOneReplyThatEndsTheTurn() {
         val streaming = Chat().sent("hi").after(event("message.start"), event("message.delta", """{"text":"Hel"}"""),
                                                event("message.delta", """{"text":"lo"}"""))

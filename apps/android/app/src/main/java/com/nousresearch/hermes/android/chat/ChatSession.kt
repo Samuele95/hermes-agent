@@ -91,7 +91,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, sc
     /** Opens a new core session; reopening leaves the previous one, and its transcript, behind. */
     suspend fun open() {
         val created = core.call(Methods.SESSION_CREATE, SessionCreateParams(source = SOURCE))
-        switchTo(created.sessionId, Chat(), created.info.desktopContract)
+        switchTo(created.sessionId, Chat(model = created.info.model.ifBlank { null }), created.info.desktopContract)
     }
 
     /** Past conversations with something in them, as the core lists them (newest first). */
@@ -106,7 +106,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, sc
         val resumed = core.call(Methods.SESSION_RESUME, SessionResumeParams(sessionId = sessionId, source = SOURCE))
         val inTurn = resumed.running == true
         val chat = Chat(entries = transcriptOf(resumed.messages),
-                        streaming = if (inTurn) resumed.inflight?.assistant.orEmpty() else null)
+                        streaming = if (inTurn) resumed.inflight?.assistant.orEmpty() else null, model = resumed.info.model.ifBlank { null })
         val open = resumed.openRequests.orEmpty().map { InTurnPrompt(it.id, it.method, it.params) }
         switchTo(resumed.sessionId, chat, resumed.info.desktopContract, open)
     }

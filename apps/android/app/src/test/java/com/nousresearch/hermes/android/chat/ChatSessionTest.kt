@@ -47,7 +47,7 @@ class ChatSessionTest {
                                                  {"id":"db-empty","message_count":0,"started_at":2.0}]}"""
             "session.resume" -> """{"session_id":"s-resumed","message_count":2,"stored_session_id":"db-old",
                                    "messages":[{"role":"user","text":"what's on my calendar?"},{"role":"assistant","text":"Two meetings."}],
-                                   "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}}}"""
+                                   "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT},"model":"kimi-k2"}}"""
             else -> error("unexpected $method")
         }
     }
@@ -82,6 +82,17 @@ class ChatSessionTest {
         assertEquals(Triple("prompt.submit", "s1", "hello"),
                      Triple(method, params.getValue("session_id").jsonPrimitive.content, params.getValue("text").jsonPrimitive.content))
         assertEquals(listOf(Entry.User("hello")), chat.state.value.entries)
+    }
+
+    @Test
+    fun aChatKnowsTheModelItsSessionRuns() = runTest(UnconfinedTestDispatcher()) {
+        contract = """"desktop_contract":${BackendContract.BACKEND_CONTRACT},"model":"deepseek-chat","provider":"deepseek""""
+        val chat = openChat().apply { open() }
+        assertEquals("deepseek-chat", chat.state.value.model)
+
+        chat.resume("db-old")  // a stored session runs the model it was resumed with
+
+        assertEquals("kimi-k2", chat.state.value.model)
     }
 
     @Test
