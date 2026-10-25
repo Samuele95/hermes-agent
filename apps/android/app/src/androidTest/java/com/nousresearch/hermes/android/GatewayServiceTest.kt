@@ -95,6 +95,27 @@ class GatewayServiceTest {
     }
 
     @Test
+    fun aRestartFromTheControlsBringsUpANewGatewayProcess() {
+        val control = (context.applicationContext as HermesApplication).gateway
+        control.open()
+        control.turnOn()
+        waitFor("the controls to see it serving") { control.refresh(); control.state.value?.status?.takeIf { it == GatewayStatus.RUNNING } }
+        val before = waitFor("the :gateway process") { gatewayPid() }
+
+        control.restart()
+
+        // A fresh interpreter, so the gateway reads its token and settings again.
+        val after = waitFor("a new gateway serving") {
+            control.refresh()
+            gatewayPid()?.takeIf { it != before && control.state.value?.status == GatewayStatus.RUNNING }
+        }
+        assertNotEquals(before, after)
+        control.turnOff()
+        waitFor("the controls to see it stopped", 60) { control.refresh(); control.state.value?.status?.takeIf { it == GatewayStatus.STOPPED } }
+        control.close()
+    }
+
+    @Test
     fun aKilledGatewayProcessComesBackByItself() {
         context.startForegroundService(GatewayService.start(context))
         val first = waitFor("the gateway to run") { gatewayPid()?.takeIf(::runningIn) }

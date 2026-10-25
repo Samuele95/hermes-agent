@@ -124,7 +124,8 @@ class MainActivity : ComponentActivity() {
         GatewayScreen(ui, samsung = Build.MANUFACTURER.equals("samsung", ignoreCase = true), onOn = app.gateway::turnOn,
                       onOff = app.gateway::turnOff, onStartAtBoot = app.gateway::setStartAtBoot,
                       onClose = { telegram.close(); app.gateway.close() },
-                      telegram = bot, onTelegramSave = { token, user -> app.telegram { save(token, user) } })
+                      telegram = bot, onTelegramSave = { token, user -> app.telegram { save(token, user) } },
+                      onRestart = app.gateway::restart)
     }
 
     /** The public key goes on the clipboard so the user can paste it into the host's authorized_keys. */

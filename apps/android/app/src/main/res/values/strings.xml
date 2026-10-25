@@ -73,6 +73,7 @@
     <string name="gateway_starting">Starting…</string>
     <string name="gateway_running">Running: scheduled jobs, and messages to your bot once it is set up, are handled here.</string>
     <string name="gateway_restarting">Restarting…</string>
+    <string name="gateway_restart">Restart</string>
     <string name="gateway_stop">Stop</string>
     <string name="gateway_failed">Hermes gateway stopped</string>
     <string name="gateway_screen_title">Always-on gateway</string>
@@ -84,7 +85,7 @@
     <string name="telegram_token_replace">New bot token (leave empty to keep the current one)</string>
     <string name="telegram_user">Your Telegram user id</string>
     <string name="telegram_save">Save and check</string>
-    <string name="telegram_applies">A running gateway picks up changes the next time it starts: turn it off and on.</string>
+    <string name="telegram_applies">A running gateway picks up changes the next time it starts: tap Restart above.</string>
     <string name="gateway_explain">Keeps Hermes reachable from your messaging bot and runs your scheduled jobs while the app is closed. It runs in the background with a notification.</string>
     <string name="gateway_switch">Always-on gateway</string>
     <string name="gateway_status_stopped">Off.</string>

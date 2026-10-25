@@ -89,4 +89,39 @@ class GatewayControlTest {
 
         assertNull(control.state.value)
     }
+
+    @Test
+    fun restartingARunningGatewayStartsItAgainOnceItHasStopped() {
+        running = GatewayStatus.RUNNING
+        control.open()
+
+        control.restart()
+        control.refresh()  // still draining: the old process has not stopped yet
+        assertEquals(listOf("stop"), launched)
+
+        running = GatewayStatus.STOPPED
+        control.refresh()
+        assertEquals(listOf("stop", "start"), launched)  // started only after it stopped
+        assertEquals(GatewayStatus.STARTING, control.state.value?.status)
+
+        running = GatewayStatus.STARTING  // the new process is coming up
+        control.refresh()
+        running = GatewayStatus.FAILED  // and fails on its own: that is shown, not restarted again
+        control.refresh()
+        assertEquals(listOf("stop", "start"), launched)  // started once
+        assertEquals(GatewayStatus.FAILED, control.state.value?.status)
+    }
+
+    @Test
+    fun restartingAGatewayThatDoesNotRunJustStartsIt() {
+        for (status in listOf(GatewayStatus.STOPPED, GatewayStatus.FAILED)) {
+            launched.clear()
+            running = status
+            control.open()
+
+            control.restart()
+
+            assertEquals(listOf("start"), launched)
+        }
+    }
 }

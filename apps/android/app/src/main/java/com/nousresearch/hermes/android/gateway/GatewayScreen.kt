@@ -37,7 +37,8 @@ import com.nousresearch.hermes.android.R
 @Composable
 fun GatewayScreen(state: GatewayUi, samsung: Boolean, onOn: () -> Unit, onOff: () -> Unit,
                   onStartAtBoot: (Boolean) -> Unit, onClose: () -> Unit, modifier: Modifier = Modifier,
-                  telegram: TelegramState? = null, onTelegramSave: (ByteArray?, String) -> Unit = { _, _ -> }) {
+                  telegram: TelegramState? = null, onTelegramSave: (ByteArray?, String) -> Unit = { _, _ -> },
+                  onRestart: () -> Unit = {}) {
     Column(modifier.fillMaxSize().safeDrawingPadding().padding(12.dp).testTag("gateway"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(stringResource(R.string.gateway_screen_title), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
@@ -53,8 +54,14 @@ fun GatewayScreen(state: GatewayUi, samsung: Boolean, onOn: () -> Unit, onOff: (
             GatewayStatus.RESTARTING -> R.string.gateway_status_restarting
             GatewayStatus.FAILED -> R.string.gateway_status_failed
         }
-        Text(listOfNotNull(stringResource(status), state.reason).joinToString(" "),
-             Modifier.testTag("gateway-status-${state.status.name.lowercase()}"), style = MaterialTheme.typography.bodySmall)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(listOfNotNull(stringResource(status), state.reason).joinToString(" "),
+                 Modifier.weight(1f).testTag("gateway-status-${state.status.name.lowercase()}"), style = MaterialTheme.typography.bodySmall)
+            // A running gateway reads its token, allowlist and settings only at its start.
+            if (state.status == GatewayStatus.RUNNING) {
+                TextButton(onRestart, Modifier.testTag("gateway-restart")) { Text(stringResource(R.string.gateway_restart)) }
+            }
+        }
         Setting(stringResource(R.string.gateway_boot), state.startAtBoot, "gateway-boot", onStartAtBoot)
         Text(stringResource(R.string.gateway_battery_hint), style = MaterialTheme.typography.bodySmall)
         if (samsung) {

@@ -74,6 +74,10 @@ class GatewayControl(
     private val screen = MutableStateFlow<GatewayUi?>(null)
     val state: StateFlow<GatewayUi?> = screen.asStateFlow()
 
+    /** A restart asked for: the gateway starts again once the stopping one is observed gone. */
+    @Volatile
+    private var restartPending = false
+
     fun open() {
         val (status, reason) = observe()
         screen.value = GatewayUi(status, settings.startAtBoot, reason = reason)
@@ -83,10 +87,30 @@ class GatewayControl(
         screen.value = null
     }
 
-    /** Re-reads what runs, for a screen that is showing. */
+    /** Re-reads what runs, for a screen that is showing; finishes a restart once the old gateway has stopped. */
     fun refresh() {
         val (status, reason) = observe()
+        if (restartPending && status in setOf(GatewayStatus.STOPPED, GatewayStatus.FAILED)) {
+            restartPending = false
+            launcher.start()
+            screen.update { it?.copy(status = GatewayStatus.STARTING, reason = null) }
+            return
+        }
         screen.update { it?.copy(status = status, reason = reason) }
+    }
+
+    /**
+     * Restarts the gateway, which reads its bot token, allowlist and settings only when it starts: a running one
+     * drains and stops first (its process ends), then [refresh] starts the new one; one that does not run starts.
+     */
+    fun restart() {
+        if (observe().first in setOf(GatewayStatus.STOPPED, GatewayStatus.FAILED)) {
+            turnOn()
+            return
+        }
+        restartPending = true
+        launcher.stop()
+        screen.update { it?.copy(status = GatewayStatus.RESTARTING) }
     }
 
     fun turnOn() {

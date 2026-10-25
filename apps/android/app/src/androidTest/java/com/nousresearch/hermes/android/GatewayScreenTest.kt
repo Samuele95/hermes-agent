@@ -33,7 +33,8 @@ class GatewayScreenTest {
     private fun show(state: GatewayUi, samsung: Boolean = false, telegram: TelegramState? = null) = compose.setContent {
         GatewayScreen(state, samsung, onOn = { calls += "on" }, onOff = { calls += "off" },
                       onStartAtBoot = { calls += "boot $it" }, onClose = { calls += "close" },
-                      telegram = telegram, onTelegramSave = { token, user -> calls += "telegram ${token?.decodeToString()} $user" })
+                      telegram = telegram, onTelegramSave = { token, user -> calls += "telegram ${token?.decodeToString()} $user" },
+                      onRestart = { calls += "restart" })
     }
 
     private val stopped = GatewayUi(GatewayStatus.STOPPED, startAtBoot = false)
@@ -125,5 +126,21 @@ class GatewayScreenTest {
         show(GatewayUi(GatewayStatus.STOPPED, startAtBoot = false), samsung = false)
 
         compose.onNodeWithTag("gateway-samsung-hint").assertDoesNotExist()
+    }
+
+    @Test
+    fun aRunningGatewayIsRestartedFromItsStatusLine() {
+        show(GatewayUi(GatewayStatus.RUNNING, startAtBoot = false))
+
+        compose.onNodeWithTag("gateway-restart").performClick()
+
+        assertEquals(listOf("restart"), calls)
+    }
+
+    @Test
+    fun onlyARunningGatewayOffersARestart() {
+        show(stopped)
+
+        compose.onNodeWithTag("gateway-restart").assertDoesNotExist()
     }
 }
