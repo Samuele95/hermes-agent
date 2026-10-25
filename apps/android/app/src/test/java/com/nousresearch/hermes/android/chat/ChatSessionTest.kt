@@ -8,6 +8,15 @@ import com.nousresearch.hermes.bridge.protocol.BackendContract
 import com.nousresearch.hermes.bridge.protocol.TurnStatus
 import com.nousresearch.hermes.bridge.CoreError
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
@@ -341,6 +350,96 @@ class ChatSessionTest {
         chat.send("hello")
 
         assertTrue(chat.state.value.entries.last().let { it is Entry.Notice && it.text.startsWith("Something went wrong (") })
+    }
+
+    @Test
+    fun underConcurrentEventsEveryShownQuestionCanStillBeAnswered() = runBlocking {
+        // Questions and events arrive on different threads; a question shown on screen must keep its request.
+        repeat(20) { round ->
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val fresh = FakeCoreGateway { method, _ ->
+                if (method == "session.create") """{"session_id":"s1","stored_session_id":"db","message_count":0,"messages":[],"info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}}}"""
+                else submit()
+            }
+            val chat = ChatSession(fresh, host, scope, keepSecret = { _, _ -> }).apply { open() }
+            val asks = (1..50).map { n -> scope.launch { fresh.ask("srq-$round-$n", "clarify", """{"session_id":"s1","questions":[{"qid":"q","question":"$n?"}]}""") } }
+            val events = (1..50).map { n -> scope.launch { fresh.emit("status.update", "s1", """{"kind":"status","text":"step $n"}""") } }
+            (asks + events).joinAll()
+            withTimeout(10_000) { while (chat.state.value.prompts.size < 50) delay(5) }
+
+            chat.state.value.prompts.forEach { chat.clarify(it as Prompt.Clarify, mapOf("q" to "a")) }
+
+            assertEquals("round $round", 50, fresh.settled.size)
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun aSessionResumedInTheMiddleOfATurnComesBackRunningWithItsQuestions() = runTest(UnconfinedTestDispatcher()) {
+        val fresh = FakeCoreGateway { method, _ ->
+            when (method) {
+                "session.create" -> """{"session_id":"s1","stored_session_id":"db1","message_count":0,"messages":[],"info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}}}"""
+                "session.resume" -> """{"session_id":"s-live","message_count":1,"messages":[{"role":"user","text":"plan my week"}],
+                    "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}},"running":true,
+                    "inflight":{"assistant":"Monday: ","streaming":true,"user":"plan my week"},
+                    "open_requests":[{"id":"srq-9","method":"clarify","params":{"session_id":"s-live","questions":[{"qid":"q1","question":"Gym days?"}]}}]}"""
+                else -> error("unexpected $method")
+            }
+        }
+        val chat = ChatSession(fresh, host, backgroundScope, keepSecret = { _, _ -> }, notifier = notifier).apply { open() }
+
+        chat.resume("db-live")
+
+        val shown = chat.state.value
+        assertEquals("Monday: ", shown.streaming)  // running: Stop is offered, the reply goes on
+        assertEquals(listOf("begin:s-live"), turns)
+        assertEquals(listOf("pending:srq-9"), notices)
+        chat.clarify(shown.prompts.single() as Prompt.Clarify, mapOf("q1" to "Tue, Thu"))
+        assertEquals("srq-9", fresh.settled.single().first)
+        fresh.emit("message.complete", "s-live", """{"text":"Monday: rest."}""")
+        assertEquals(listOf("begin:s-live", "end:s-live"), turns)
+    }
+
+    @Test
+    fun resumingTheChatsOwnSessionKeepsItsQuestions() = runTest(UnconfinedTestDispatcher()) {
+        val fresh = FakeCoreGateway { method, _ ->
+            when (method) {
+                "session.create" -> """{"session_id":"s1","stored_session_id":"db1","message_count":0,"messages":[],"info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}}}"""
+                "session.resume" -> """{"session_id":"s1","message_count":1,"messages":[{"role":"user","text":"plan"}],
+                    "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}},"running":true,"inflight":{"assistant":""},
+                    "open_requests":[{"id":"srq-1","method":"clarify","params":{"session_id":"s1","questions":[{"qid":"q1","question":"Which day?"}]}}]}"""
+                else -> error("unexpected $method")
+            }
+        }
+        val chat = ChatSession(fresh, host, backgroundScope, keepSecret = { _, _ -> }).apply { open() }
+        fresh.ask("srq-1", "clarify", """{"session_id":"s1","questions":[{"qid":"q1","question":"Which day?"}]}""")
+
+        chat.resume("db1")  // History → the conversation already on screen
+
+        assertEquals(emptyList<Pair<String, String>>(), fresh.settled)  // nothing declined behind the user's back
+        chat.clarify(chat.state.value.prompts.single() as Prompt.Clarify, mapOf("q1" to "Tue"))
+        assertEquals(listOf("srq-1"), fresh.settled.map { it.first })
+    }
+
+    @Test
+    fun aQuestionNewerThanTheResumeSnapshotOfTheSameSessionIsKept() = runTest(UnconfinedTestDispatcher()) {
+        val fresh = FakeCoreGateway { method, _ ->
+            when (method) {
+                "session.create" -> """{"session_id":"s1","stored_session_id":"db1","message_count":0,"messages":[],"info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}}}"""
+                // The core's snapshot predates the approval the turn asked meanwhile: no open requests in it.
+                "session.resume" -> """{"session_id":"s1","message_count":1,"messages":[{"role":"user","text":"clean up"}],
+                    "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}},"running":true,"inflight":{"assistant":""},"open_requests":[]}"""
+                else -> error("unexpected $method")
+            }
+        }
+        val chat = ChatSession(fresh, host, backgroundScope, keepSecret = { _, _ -> }).apply { open() }
+        fresh.ask("srq-7", "approval", """{"session_id":"s1","request_id":"r7","command":"rm -rf build"}""")
+
+        chat.resume("db1")
+
+        assertEquals(emptyList<Pair<String, String>>(), fresh.settled)  // not declined (an approval declined = denied)
+        chat.approve(chat.state.value.prompts.single() as Prompt.Approval, ApprovalChoice.ONCE)
+        assertEquals(listOf("srq-7"), fresh.settled.map { it.first })
     }
 
     @Test
