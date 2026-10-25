@@ -86,7 +86,8 @@ class MainActivity : ComponentActivity() {
                                             onModel = { model, confirmed -> app.setup { choose(model, confirmed) } },
                                             onBack = state.setup::back, onClose = state.setup::close,
                                             onAddEndpoint = state.setup::addEndpoint, onOpenUrl = ::openInBrowser,
-                                            onEndpoint = { name, url, model, key -> app.setup { saveEndpoint(name, url, model, key) } })
+                                            onEndpoint = { name, url, model, key -> app.setup { saveEndpoint(name, url, model, key) } },
+                                            onForget = { app.setup { forgetKey() } })
                                 return@Surface
                             }
                             val answers = PromptAnswers(approve = { p, choice -> app.chat { approve(p, choice) } },

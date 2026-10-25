@@ -16,6 +16,7 @@ import com.nousresearch.hermes.android.gateway.TelegramSetup
 import com.nousresearch.hermes.android.gateway.batteryExempt
 import com.nousresearch.hermes.android.gateway.observeGateway
 import com.nousresearch.hermes.android.setup.ApprovalSettings
+import com.nousresearch.hermes.android.setup.PrefsKeyNames
 import com.nousresearch.hermes.android.setup.ProviderSetup
 import com.nousresearch.hermes.android.setup.SshSetup
 import com.nousresearch.hermes.android.turn.ForegroundTurnHost
@@ -144,7 +145,8 @@ class HermesApplication : Application() {
     private suspend fun start(): CoreState.Ready {
         val began = SystemClock.elapsedRealtime()
         val paths = withContext(Dispatchers.IO) { installRuntime(this@HermesApplication) }
-        val ready = composeCore(runtime, paths, secrets, ForegroundTurnHost(this), notifier, scope)
+        val ready = composeCore(runtime, paths, secrets, ForegroundTurnHost(this), notifier, scope,
+                                PrefsKeyNames(getSharedPreferences("provider_keys", MODE_PRIVATE)))
         return ready.copy(about = "${ready.about} · ready in ${SystemClock.elapsedRealtime() - began} ms")
     }
 }

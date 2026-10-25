@@ -23,7 +23,7 @@ class ProviderSetupTest {
     private val held = mutableMapOf<String, ByteArray>()
     private val secrets = object : SecretStore {
         override fun put(name: String, value: ByteArray) { held[name] = value.copyOf() }
-        override fun get(name: String) = held[name]
+        override fun get(name: String) = held[name]?.copyOf()  // a fresh copy, as the keystore decrypts one
         override fun delete(name: String) { held.remove(name) }
         override fun all() = held.toMap()
     }
@@ -285,8 +285,40 @@ class ProviderSetupTest {
         assertTrue(setup.step() is SetupStep.Providers)
     }
 
+    @Test
+    fun aKeyHeldOnThePhoneCanBeForgottenFromItsProvidersModels() = runTest {
+        setup.open()
+        setup.pick("deepseek")
+        deepseekRow = SIGNED_IN_DEEPSEEK  // as the core lists a configured provider: no key_env
+        setup.submitKey("sk-held".toByteArray())  // the app keeps which variable it stored the key under
+        assertTrue((setup.step() as SetupStep.Models).keyHeld)
+        log.clear()
+        disconnect = { deepseekRow = UNAUTHENTICATED_DEEPSEEK; """{"slug":"deepseek","name":"DeepSeek","disconnected":true}""" }
+
+        setup.forgetKey()
+
+        assertNull(held["DEEPSEEK_API_KEY"])
+        assertEquals(listOf("secrets_changed", "model.disconnect", "model.options"), log)
+        val listed = (setup.step() as SetupStep.Providers).choices.first { it.slug == "deepseek" }
+        assertEquals(false, listed.ready)
+    }
+
+    @Test
+    fun aProviderSignedInWithoutAKeyOnThePhoneOffersNothingToForget() = runTest {
+        // Signed in by a key the keystore does not hold (another secret source, or an older .env).
+        deepseekRow = SIGNED_IN_DEEPSEEK  // as the core lists a configured provider: no key_env
+        setup.open()
+
+        setup.pick("deepseek")
+        setup.forgetKey()
+
+        assertEquals(false, (setup.step() as SetupStep.Models).keyHeld)
+        assertTrue(log.none { it == "model.disconnect" })
+    }
+
     private companion object {
         const val READY_NOUS = """{"slug":"nous","name":"Nous Portal","models":["nous/hermes-4"],"authenticated":true}"""
+        const val SIGNED_IN_DEEPSEEK = """{"slug":"deepseek","name":"DeepSeek","models":["deepseek-v4-pro"],"authenticated":true}"""
         const val UNAUTHENTICATED_DEEPSEEK =
             """{"slug":"deepseek","name":"DeepSeek","models":[],"authenticated":false,"auth_type":"api_key","key_env":"DEEPSEEK_API_KEY"}"""
     }

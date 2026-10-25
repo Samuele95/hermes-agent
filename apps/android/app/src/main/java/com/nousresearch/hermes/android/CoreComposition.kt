@@ -6,6 +6,7 @@ import com.nousresearch.hermes.android.chat.Notifier
 import com.nousresearch.hermes.android.chat.SessionHistory
 import com.nousresearch.hermes.android.gateway.TelegramSetup
 import com.nousresearch.hermes.android.setup.ApprovalSettings
+import com.nousresearch.hermes.android.setup.KeyNames
 import com.nousresearch.hermes.android.setup.ProviderSetup
 import com.nousresearch.hermes.android.setup.SshSetup
 import com.nousresearch.hermes.android.turn.TurnHost
@@ -34,7 +35,7 @@ fun installRuntime(context: Context): HermesPaths {
  * chat's session is open on return, and setup is showing already when the core has no provider yet.
  */
 suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, secrets: SecretStore, turns: TurnHost,
-                        notifier: Notifier, scope: CoroutineScope): CoreState.Ready {
+                        notifier: Notifier, scope: CoroutineScope, keyNames: KeyNames = KeyNames.InMemory()): CoreState.Ready {
     val gateway = runtime.connect(paths, secrets)
     val bridge = runtime.bridge
     val keepSecret: suspend (String, ByteArray) -> Unit = { name, value ->
@@ -42,7 +43,7 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, secrets: Secre
         bridge.secretsChanged()
     }
     val chat = ChatSession(gateway, turns, scope, keepSecret, notifier).apply { open() }
-    val setup = ProviderSetup(gateway, secrets, bridge, session = { chat.sessionId }, reopenChat = chat::open)
+    val setup = ProviderSetup(gateway, secrets, bridge, session = { chat.sessionId }, reopenChat = chat::open, keyNames = keyNames)
     val history = SessionHistory(list = chat::pastSessions, resume = chat::resume)
     // Undispatched: setup is showing before the core is Ready, so the chat never flashes first.
     if (setup.needed()) scope.launch(start = CoroutineStart.UNDISPATCHED) { setup.open() }

@@ -1,5 +1,8 @@
 package com.nousresearch.hermes.android
 
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
@@ -34,7 +37,7 @@ class SetupScreenTest {
                     onModel = { model, confirmed -> picked += "model:$model:$confirmed" }, onBack = {}, onClose = {},
                     onAddEndpoint = { picked += "add-endpoint" },
                     onEndpoint = { name, url, model, key -> picked += "endpoint:$name|$url|$model|${key?.let(::String)}" },
-                    onOpenUrl = { picked += "open:$it" })
+                    onOpenUrl = { picked += "open:$it" }, onForget = { picked += "forget" })
     }
 
     @Test
@@ -111,5 +114,20 @@ class SetupScreenTest {
         show(Setup(SetupStep.Key(deepseek), error = "DeepSeek did not accept the key."))
 
         compose.onNodeWithTag("setup-error").assertExists()
+    }
+
+    @Test
+    fun aKeyHeldOnThePhoneCanBeForgottenAndOnlyThen() {
+        var step by mutableStateOf<SetupStep>(SetupStep.Models(deepseek.copy(ready = true, models = listOf("v4")), keyHeld = true))
+        compose.setContent {
+            SetupScreen(Setup(step = step), onPick = {}, onKey = {}, onModel = { _, _ -> }, onBack = {}, onClose = {},
+                        onForget = { picked += "forget" })
+        }
+
+        compose.onNodeWithTag("forget-key").performClick()
+        assertEquals(listOf("forget"), picked)
+
+        step = SetupStep.Models(deepseek.copy(ready = true, models = listOf("v4")), keyHeld = false)
+        compose.onNodeWithTag("forget-key").assertDoesNotExist()
     }
 }

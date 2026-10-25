@@ -38,7 +38,8 @@ sealed interface SetupStep {
 
     data class Key(val provider: ProviderChoice) : SetupStep
 
-    data class Models(val provider: ProviderChoice) : SetupStep
+    /** The provider's models to pick the default from; [keyHeld]: its key is on this phone and can be forgotten. */
+    data class Models(val provider: ProviderChoice, val keyHeld: Boolean = false) : SetupStep
 
     /** A custom OpenAI-compatible endpoint: name, base URL, model and an optional key. */
     data object Endpoint : SetupStep
@@ -68,6 +69,7 @@ class ProviderSetup(
     private val bridge: AppBridge,
     private val session: suspend () -> String,
     private val reopenChat: suspend () -> Unit,
+    private val keyNames: KeyNames = KeyNames.InMemory(),
 ) {
     private companion object {
         /** `model.disconnect`'s answer when the provider holds no credential. */
@@ -97,7 +99,7 @@ class ProviderSetup(
     suspend fun pick(slug: String) {
         val provider = choices.first { it.slug == slug }
         when {
-            provider.ready -> setup.update { it?.copy(step = SetupStep.Models(provider), error = null) }
+            provider.ready -> setup.update { it?.copy(step = models(provider), error = null) }
             provider.signIn -> signIn(provider)
             else -> setup.update { it?.copy(step = SetupStep.Key(provider), error = null) }
         }
@@ -134,7 +136,7 @@ class ProviderSetup(
                 "approved" -> step {
                     val signedIn = listed(refresh = true).firstOrNull { it.slug == provider.slug && it.ready }
                         ?: throw CoreError(0, "${provider.name} did not list the account.")
-                    SetupStep.Models(signedIn)
+                    models(signedIn)
                 }
                 else -> setup.update {
                     it?.copy(step = SetupStep.Providers(choices), error = polled.errorMessage ?: "${provider.name} sign-in ${polled.status}.")
@@ -156,7 +158,8 @@ class ProviderSetup(
                 forget(provider.slug, name)
                 throw CoreError(0, "${provider.name} did not accept the key.")
             }
-            SetupStep.Models(signedIn)
+            keyNames[provider.slug] = name
+            models(signedIn)
         }
     }
 
@@ -169,7 +172,7 @@ class ProviderSetup(
                 confirmExpensiveModel = confirmed))
             if (set.confirmRequired == true) {
                 setup.update { it?.copy(confirm = Confirm(model, set.confirmMessage.orEmpty())) }
-                return@step SetupStep.Models(provider)
+                return@step models(provider)
             }
             reopenChat()
             setup.value = null
@@ -199,8 +202,9 @@ class ProviderSetup(
             if (hasKey) {
                 store(keyEnv, key!!)
                 bridge.secretsChanged()
+                keyNames[saved.id] = keyEnv
             }
-            SetupStep.Models(ProviderChoice(saved.id, name, keyEnv.ifEmpty { null }, true, listOf(model)))
+            models(ProviderChoice(saved.id, name, keyEnv.ifEmpty { null }, true, listOf(model)))
         }
         if (setup.value?.error == null) choose(model)
     }
@@ -225,6 +229,7 @@ class ProviderSetup(
      */
     private suspend fun forget(slug: String, name: String) {
         secrets.delete(name)
+        keyNames.remove(slug)
         bridge.secretsChanged()
         try {
             core.call(Methods.MODEL_DISCONNECT, ModelDisconnectParams(slug))
@@ -232,6 +237,22 @@ class ProviderSetup(
             if (nothingLeft.code != NOTHING_TO_DISCONNECT) throw nothingLeft
         }
     }
+
+    /** Takes the shown provider's key off the phone (keystore and core); the list then shows the provider as it now is. */
+    suspend fun forgetKey() {
+        val shown = setup.value?.step as? SetupStep.Models ?: return
+        val name = keyName(shown.provider)?.takeIf { shown.keyHeld } ?: return
+        step {
+            forget(shown.provider.slug, name)
+            SetupStep.Providers(listed(refresh = false).also { choices = it })
+        }
+    }
+
+    private fun models(provider: ProviderChoice) =
+        SetupStep.Models(provider, keyHeld = keyName(provider)?.let(secrets::contains) == true)
+
+    /** The variable the provider's key is under: the core names it for an unconfigured provider, else the app recorded it. */
+    private fun keyName(provider: ProviderChoice): String? = provider.keyEnv ?: keyNames[provider.slug]
 
     private suspend fun listed(refresh: Boolean): List<ProviderChoice> =
         core.call(Methods.MODEL_OPTIONS, ModelOptionsParams(includeUnconfigured = true, refresh = refresh)).providers.mapNotNull(::offered)

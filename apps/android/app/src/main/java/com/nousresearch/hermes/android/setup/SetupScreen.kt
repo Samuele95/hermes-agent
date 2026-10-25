@@ -38,7 +38,7 @@ import com.nousresearch.hermes.android.R
 fun SetupScreen(setup: Setup, onPick: (String) -> Unit, onKey: (ByteArray) -> Unit, onModel: (String, Boolean) -> Unit,
                 onBack: () -> Unit, onClose: () -> Unit, modifier: Modifier = Modifier, onAddEndpoint: () -> Unit = {},
                 onEndpoint: (name: String, baseUrl: String, model: String, key: ByteArray?) -> Unit = { _, _, _, _ -> },
-                onOpenUrl: (String) -> Unit = {}) {
+                onOpenUrl: (String) -> Unit = {}, onForget: () -> Unit = {}) {
     Column(modifier.fillMaxSize().safeDrawingPadding().padding(12.dp).testTag("setup"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             if (setup.step !is SetupStep.Loading && setup.step !is SetupStep.Providers) {
@@ -62,7 +62,14 @@ fun SetupScreen(setup: Setup, onPick: (String) -> Unit, onKey: (ByteArray) -> Un
                 }
             }
             is SetupStep.Key -> KeyField(step.provider, enabled = !setup.busy, onKey)
-            is SetupStep.Models -> ModelPicker(step.provider, setup, onModel, Modifier.weight(1f))
+            is SetupStep.Models -> {
+                ModelPicker(step.provider, setup, onModel, Modifier.weight(1f))
+                if (step.keyHeld) {
+                    TextButton(onForget, Modifier.testTag("forget-key"), enabled = !setup.busy) {
+                        Text(stringResource(R.string.setup_forget_key, step.provider.name))
+                    }
+                }
+            }
             SetupStep.Endpoint -> EndpointForm(enabled = !setup.busy, onEndpoint)
             is SetupStep.SignIn -> SignIn(step, onOpenUrl)
         }

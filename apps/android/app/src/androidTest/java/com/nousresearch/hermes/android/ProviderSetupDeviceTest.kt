@@ -80,5 +80,16 @@ class ProviderSetupDeviceTest {
         val holding = app.filesDir.walkTopDown().filter { it.isFile && it.length() < 64L shl 20 }
             .filter { file -> file.readBytes().let { String(it, Charsets.ISO_8859_1).contains("sk-hermes-android-test") } }.toList()
         assertEquals(emptyList<File>(), holding)
+
+        // Forgetting it from the setup screen takes it off the phone and out of the core's credential rows.
+        setup.open()
+        setup.pick("deepseek")
+        assertTrue("the held key can be forgotten: ${setup.state.value}", (setup.state.value?.step as? SetupStep.Models)?.keyHeld == true)
+        setup.forgetKey()
+        assertNull(app.secrets.get("DEEPSEEK_API_KEY"))
+        val listed = (setup.state.value?.step as? SetupStep.Providers ?: error("not back on the list: ${setup.state.value}")).choices
+        assertFalse("DeepSeek no longer signed in", listed.first { it.slug == "deepseek" }.ready)
+        val pool = auth.takeIf { it.isFile }?.let { JSONObject(it.readText()).optJSONObject("credential_pool") }
+        assertFalse(pool?.optJSONArray("deepseek")?.length()?.let { it > 0 } ?: false)
     }
 }
