@@ -28,7 +28,8 @@ enum class ApprovalMode(val wire: String) {
     }
 }
 
-data class SettingsState(val approvals: ApprovalMode, val busy: Boolean = false, val error: String? = null)
+/** [approvals] is null when the core's mode could not be read: no mode is shown as the one in force. */
+data class SettingsState(val approvals: ApprovalMode?, val busy: Boolean = false, val error: String? = null)
 
 /**
  * The app's settings that live in the core's config (Dv22): read and written over the protocol, like the
@@ -46,7 +47,7 @@ class ApprovalSettings(private val core: CoreGateway) {
         screen.value = try {
             SettingsState(ApprovalMode.of(core.call(Methods.CONFIG_GET, ConfigGetParams(key = KEY)).value))
         } catch (failed: Exception) {
-            SettingsState(ApprovalMode.MANUAL, error = forUser(failed))
+            SettingsState(approvals = null, error = forUser(failed))
         }
     }
 

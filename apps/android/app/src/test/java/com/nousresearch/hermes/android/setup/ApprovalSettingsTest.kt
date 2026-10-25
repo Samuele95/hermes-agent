@@ -14,7 +14,7 @@ class ApprovalSettingsTest {
     private var refuse: String? = null
     private val core = FakeCoreGateway { method, params ->
         when (method) {
-            "config.get" -> """{"value":"$mode"}"""
+            "config.get" -> { refuse?.let { throw CoreError(5001, it) }; """{"value":"$mode"}""" }
             "config.set" -> {
                 refuse?.let { throw CoreError(4002, it) }
                 mode = params.getValue("value").jsonPrimitive.content
@@ -51,6 +51,15 @@ class ApprovalSettingsTest {
         settings.choose(ApprovalMode.OFF)
 
         assertEquals(SettingsState(ApprovalMode.SMART, error = "managed install — settings are read-only"), settings.state.value)
+    }
+
+    @Test
+    fun aModeThatCannotBeReadSelectsNone() = runTest {
+        refuse = "config.yaml could not be read"
+
+        settings.open()
+
+        assertEquals(SettingsState(approvals = null, error = "config.yaml could not be read"), settings.state.value)
     }
 
     @Test

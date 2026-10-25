@@ -69,4 +69,14 @@ class SettingsScreenTest {
             ready.settings.close()
         }
     }
+
+    @Test
+    fun aModeThatCouldNotBeReadSelectsNoneButCanBeChosen() {
+        show(SettingsState(approvals = null, error = "could not read the mode"))
+
+        listOf("manual", "smart", "off").forEach { compose.onNodeWithTag("approvals-$it").assertIsNotSelected() }
+        compose.onNodeWithTag("approvals-smart").performClick()
+
+        assertEquals(listOf(ApprovalMode.SMART), chosen)
+    }
 }
