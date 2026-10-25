@@ -74,6 +74,16 @@
     <string name="gateway_running">Running: scheduled jobs, and messages to your bot once it is set up, are handled here.</string>
     <string name="gateway_restarting">Restarting…</string>
     <string name="gateway_restart">Restart</string>
+    <string name="chat_settings">Settings</string>
+    <string name="settings_title">Settings</string>
+    <string name="approvals_title">Command approvals</string>
+    <string name="approvals_explain">Who approves a command the agent wants to run when Hermes flags it as risky. Applies to every conversation from now on.</string>
+    <string name="approvals_manual">Ask me</string>
+    <string name="approvals_manual_detail">You approve or deny every flagged command.</string>
+    <string name="approvals_smart">Smart</string>
+    <string name="approvals_smart_detail">A second model approves clearly safe commands, refuses clearly destructive ones, and asks you about the rest.</string>
+    <string name="approvals_off">Never ask</string>
+    <string name="approvals_off_detail">Flagged commands run without asking. Only for hosts you can afford to lose.</string>
     <string name="gateway_stop">Stop</string>
     <string name="gateway_failed">Hermes gateway stopped</string>
     <string name="gateway_screen_title">Always-on gateway</string>

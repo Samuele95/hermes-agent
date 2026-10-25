@@ -132,11 +132,11 @@ class ChatScreenTest {
     fun theActionsLeaveTheRuntimeLineOnOneLine() {
         val about = "Python 3.14.7 · SQLite 3.53.4 with FTS5 · ready in 1090 ms"
         compose.setContent {
-            ChatScreen(Chat(), onSend = {}, about = about, onSetup = {}, onTerminal = {}, onGateway = {}, onHistory = {})
+            ChatScreen(Chat(), onSend = {}, about = about, onSetup = {}, onTerminal = {}, onGateway = {}, onHistory = {}, onSettings = {})
         }
 
         val height = compose.onNodeWithText(about).getUnclippedBoundsInRoot().height
         assertTrue("the runtime line is $height tall: a column of words, not one caption line", height <= 24.dp)
-        listOf("open-history", "open-gateway", "open-ssh", "open-setup").forEach { compose.onNodeWithTag(it).assertExists() }
+        listOf("open-history", "open-gateway", "open-ssh", "open-setup", "open-settings").forEach { compose.onNodeWithTag(it).assertExists() }
     }
 }

@@ -15,6 +15,7 @@ import com.nousresearch.hermes.android.gateway.ServiceGatewayLauncher
 import com.nousresearch.hermes.android.gateway.TelegramSetup
 import com.nousresearch.hermes.android.gateway.batteryExempt
 import com.nousresearch.hermes.android.gateway.observeGateway
+import com.nousresearch.hermes.android.setup.ApprovalSettings
 import com.nousresearch.hermes.android.setup.ProviderSetup
 import com.nousresearch.hermes.android.setup.SshSetup
 import com.nousresearch.hermes.android.turn.ForegroundTurnHost
@@ -39,7 +40,8 @@ sealed interface CoreState {
     data object Starting : CoreState
 
     data class Ready(val gateway: CoreGateway, val chat: ChatSession, val setup: ProviderSetup, val ssh: SshSetup,
-                     val telegram: TelegramSetup, val history: SessionHistory, val about: String) : CoreState
+                     val telegram: TelegramSetup, val history: SessionHistory, val settings: ApprovalSettings,
+                     val about: String) : CoreState
 
     data class Failed(val reason: String) : CoreState
 }
@@ -124,6 +126,11 @@ class HermesApplication : Application() {
     /** Runs one history action on the app's scope, so it outlives the activity that asked for it. */
     fun history(action: suspend SessionHistory.() -> Unit) {
         scope.launch { (state.value as? CoreState.Ready)?.history?.action() }
+    }
+
+    /** Runs one settings action on the app's scope, so it outlives the activity that asked for it. */
+    fun settings(action: suspend ApprovalSettings.() -> Unit) {
+        scope.launch { (state.value as? CoreState.Ready)?.settings?.action() }
     }
 
     /** Runs one Telegram setup action on the app's scope, so it outlives the activity that asked for it. */

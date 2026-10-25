@@ -5,6 +5,7 @@ import com.nousresearch.hermes.android.chat.ChatSession
 import com.nousresearch.hermes.android.chat.Notifier
 import com.nousresearch.hermes.android.chat.SessionHistory
 import com.nousresearch.hermes.android.gateway.TelegramSetup
+import com.nousresearch.hermes.android.setup.ApprovalSettings
 import com.nousresearch.hermes.android.setup.ProviderSetup
 import com.nousresearch.hermes.android.setup.SshSetup
 import com.nousresearch.hermes.android.turn.TurnHost
@@ -48,5 +49,5 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, secrets: Secre
     val facts = bridge.ask(BridgeCalls.RUNTIME_FACTS)
     val fts = if (facts.fts5) "with FTS5" else "without FTS5"
     return CoreState.Ready(gateway, chat, setup, SshSetup(secrets, bridge), TelegramSetup(secrets, bridge), history,
-                           "Python ${facts.python} · SQLite ${facts.sqlite} $fts")
+                           ApprovalSettings(gateway), "Python ${facts.python} · SQLite ${facts.sqlite} $fts")
 }

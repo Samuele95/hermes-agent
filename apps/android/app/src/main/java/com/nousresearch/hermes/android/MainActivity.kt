@@ -38,6 +38,7 @@ import com.nousresearch.hermes.android.gateway.TelegramSetup
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import com.nousresearch.hermes.android.setup.SettingsScreen
 import com.nousresearch.hermes.android.setup.SetupScreen
 import com.nousresearch.hermes.android.setup.SshScreen
 
@@ -61,6 +62,11 @@ class MainActivity : ComponentActivity() {
                             val setup by state.setup.state.collectAsState()
                             val ssh by state.ssh.state.collectAsState()
                             val history by state.history.state.collectAsState()
+                            val settings by state.settings.state.collectAsState()
+                            settings?.let {
+                                SettingsScreen(it, onApprovals = { mode -> app.settings { choose(mode) } }, onClose = state.settings::close)
+                                return@Surface
+                            }
                             history?.let {
                                 HistoryScreen(it, onPick = { id -> app.history { pick(id) } }, onClose = state.history::close)
                                 return@Surface
@@ -87,7 +93,8 @@ class MainActivity : ComponentActivity() {
                                                         clarify = { p, given -> app.chat { clarify(p, given) } },
                                                         secret = { p, value -> app.chat { secret(p, value) } })
                             ChatScreen(chat, about = state.about, onSetup = { app.setup { open() } }, answers = answers,
-                                       onTerminal = state.ssh::open, onGateway = app.gateway::open, onStop = { app.chat { cancel() } }, onHistory = { app.history { open() } }, onSend = { text ->
+                                       onTerminal = state.ssh::open, onGateway = app.gateway::open, onStop = { app.chat { cancel() } }, onHistory = { app.history { open() } },
+                                       onSettings = { app.settings { open() } }, onSend = { text ->
                                 if (Build.VERSION.SDK_INT >= 33 &&
                                     checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                                     askToNotify.launch(Manifest.permission.POST_NOTIFICATIONS)

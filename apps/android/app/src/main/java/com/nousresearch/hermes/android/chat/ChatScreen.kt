@@ -42,7 +42,8 @@ import com.nousresearch.hermes.android.R
 @Composable
 fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifier, about: String? = null,
                onSetup: (() -> Unit)? = null, answers: PromptAnswers? = null, onTerminal: (() -> Unit)? = null,
-               onGateway: (() -> Unit)? = null, onStop: () -> Unit = {}, onHistory: (() -> Unit)? = null) {
+               onGateway: (() -> Unit)? = null, onStop: () -> Unit = {}, onHistory: (() -> Unit)? = null,
+               onSettings: (() -> Unit)? = null) {
     var draft by rememberSaveable { mutableStateOf("") }
     val list = rememberLazyListState()
     val rows = chat.entries.size + (if (chat.running) 1 else 0) + (if (chat.activity != null) 1 else 0)
@@ -56,6 +57,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
             onGateway?.let { TextButton(it, Modifier.testTag("open-gateway")) { Text(stringResource(R.string.chat_gateway)) } }
             onTerminal?.let { TextButton(it, Modifier.testTag("open-ssh")) { Text(stringResource(R.string.chat_terminal)) } }
             onSetup?.let { TextButton(it, Modifier.testTag("open-setup")) { Text(stringResource(R.string.chat_model)) } }
+            onSettings?.let { TextButton(it, Modifier.testTag("open-settings")) { Text(stringResource(R.string.chat_settings)) } }
         }
         about?.let {
             Text(it, Modifier.fillMaxWidth().padding(horizontal = 12.dp), style = MaterialTheme.typography.labelSmall,
