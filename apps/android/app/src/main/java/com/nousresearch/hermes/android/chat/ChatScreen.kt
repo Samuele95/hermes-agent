@@ -1,5 +1,8 @@
 package com.nousresearch.hermes.android.chat
 
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -46,12 +49,17 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
     LaunchedEffect(rows, chat.streaming) { if (rows > 0) list.animateScrollToItem(rows - 1) }
 
     Column(modifier.fillMaxSize().safeDrawingPadding()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(about.orEmpty(), Modifier.weight(1f), style = MaterialTheme.typography.labelSmall)
+        // The actions keep their own row (scrolling sideways when they outgrow the screen); the runtime line is one caption.
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp),
+            horizontalArrangement = Arrangement.End) {
             onHistory?.let { TextButton(it, Modifier.testTag("open-history")) { Text(stringResource(R.string.chat_history)) } }
             onGateway?.let { TextButton(it, Modifier.testTag("open-gateway")) { Text(stringResource(R.string.chat_gateway)) } }
             onTerminal?.let { TextButton(it, Modifier.testTag("open-ssh")) { Text(stringResource(R.string.chat_terminal)) } }
             onSetup?.let { TextButton(it, Modifier.testTag("open-setup")) { Text(stringResource(R.string.chat_model)) } }
+        }
+        about?.let {
+            Text(it, Modifier.fillMaxWidth().padding(horizontal = 12.dp), style = MaterialTheme.typography.labelSmall,
+                 maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), list, PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(chat.entries) { EntryRow(it) }

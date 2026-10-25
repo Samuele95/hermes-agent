@@ -1,6 +1,9 @@
 package com.nousresearch.hermes.android
 
 import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.height
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -18,6 +21,7 @@ import com.nousresearch.hermes.android.chat.ChatScreen
 import com.nousresearch.hermes.android.chat.Entry
 import com.nousresearch.hermes.bridge.protocol.TurnStatus
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -122,5 +126,17 @@ class ChatScreenTest {
         compose.setContent { ChatScreen(Chat(listOf(reply)), onSend = {}) }
 
         assertEquals(1, compose.onAllNodesWithText("no provider", substring = true).fetchSemanticsNodes().size)
+    }
+
+    @Test
+    fun theActionsLeaveTheRuntimeLineOnOneLine() {
+        val about = "Python 3.14.7 · SQLite 3.53.4 with FTS5 · ready in 1090 ms"
+        compose.setContent {
+            ChatScreen(Chat(), onSend = {}, about = about, onSetup = {}, onTerminal = {}, onGateway = {}, onHistory = {})
+        }
+
+        val height = compose.onNodeWithText(about).getUnclippedBoundsInRoot().height
+        assertTrue("the runtime line is $height tall: a column of words, not one caption line", height <= 24.dp)
+        listOf("open-history", "open-gateway", "open-ssh", "open-setup").forEach { compose.onNodeWithTag(it).assertExists() }
     }
 }
