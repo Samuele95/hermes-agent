@@ -31,6 +31,13 @@
       "base_url": "string",
       "kind": "string",
       "models": "[string]"
+    },
+    "SavedEndpoint": {
+      "id": "string",
+      "name": "string",
+      "base_url": "string",
+      "model": "string",
+      "has_key": "boolean"
     }
   },
   "calls": {
@@ -71,8 +78,9 @@
       }
     },
     "save_custom_endpoint": {
-      "summary": "Adds a custom OpenAI-compatible endpoint to config.yaml (Dv20); its key goes to the keystore under key_env.",
+      "summary": "Adds a custom OpenAI-compatible endpoint to config.yaml (Dv20), or replaces the saved one id names (null for a new one); its key goes to the keystore under key_env.",
       "params": {
+        "id": "string?",
         "name": "string",
         "base_url": "string",
         "model": "string",
@@ -81,6 +89,23 @@
       "reply": {
         "id": "string",
         "key_env": "string"
+      }
+    },
+    "list_custom_endpoints": {
+      "summary": "The custom endpoints saved in config.yaml (providers.*), without keys: has_key says whether one is in the keystore under the entry's key_env.",
+      "params": {},
+      "reply": {
+        "endpoints": "[SavedEndpoint]"
+      }
+    },
+    "delete_custom_endpoint": {
+      "summary": "Removes a saved custom endpoint from config.yaml; names the keystore variable the app deletes, and whether the default model lost its provider.",
+      "params": {
+        "id": "string"
+      },
+      "reply": {
+        "key_env": "string?",
+        "was_default": "boolean"
       }
     },
     "probe_endpoint": {

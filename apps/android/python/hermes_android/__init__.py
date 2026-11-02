@@ -200,6 +200,20 @@ def save_custom_endpoint(arg: str) -> str:
     return endpoints.save_custom_endpoint(arg)
 
 
+def list_custom_endpoints(_arg: str) -> str:
+    """The app's call into :func:`hermes_android.endpoints.list_saved`."""
+    from hermes_android import endpoints
+
+    return endpoints.list_saved()
+
+
+def delete_custom_endpoint(arg: str) -> str:
+    """The app's call into :func:`hermes_android.endpoints.delete`."""
+    from hermes_android import endpoints
+
+    return endpoints.delete(arg)
+
+
 def probe_endpoint(arg: str) -> str:
     """The app's call into :func:`hermes_android.endpoints.probe`."""
     from hermes_android import endpoints

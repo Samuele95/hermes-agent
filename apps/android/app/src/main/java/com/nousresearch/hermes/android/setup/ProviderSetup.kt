@@ -190,7 +190,7 @@ class ProviderSetup(
         val hasKey = key != null && key.isNotEmpty()
         step {
             val saved = try {
-                bridge.ask(BridgeCalls.SAVE_CUSTOM_ENDPOINT, SaveCustomEndpointParams(name, baseUrl, model, hasKey))
+                bridge.ask(BridgeCalls.SAVE_CUSTOM_ENDPOINT, SaveCustomEndpointParams(null, name, baseUrl, model, hasKey))
             } catch (refused: CoreError) {
                 key?.fill(0)
                 throw refused

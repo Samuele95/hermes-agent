@@ -58,6 +58,15 @@ data class FoundEndpoint(
 )
 
 @Serializable
+data class SavedEndpoint(
+    val id: String,
+    val name: String,
+    @SerialName("base_url") val baseUrl: String,
+    val model: String,
+    @SerialName("has_key") val hasKey: Boolean,
+)
+
+@Serializable
 data class RuntimeFactsReply(
     val python: String,
     val sqlite: String,
@@ -82,6 +91,7 @@ data class GatewayStateReply(
 
 @Serializable
 data class SaveCustomEndpointParams(
+    val id: String?,
     val name: String,
     @SerialName("base_url") val baseUrl: String,
     val model: String,
@@ -92,6 +102,22 @@ data class SaveCustomEndpointParams(
 data class SaveCustomEndpointReply(
     val id: String,
     @SerialName("key_env") val keyEnv: String,
+)
+
+@Serializable
+data class ListCustomEndpointsReply(
+    val endpoints: List<SavedEndpoint>,
+)
+
+@Serializable
+data class DeleteCustomEndpointParams(
+    val id: String,
+)
+
+@Serializable
+data class DeleteCustomEndpointReply(
+    @SerialName("key_env") val keyEnv: String?,
+    @SerialName("was_default") val wasDefault: Boolean,
 )
 
 @Serializable
@@ -224,8 +250,12 @@ object BridgeCalls {
     val GATEWAY_STOP = BridgeCall("gateway_stop", NoParams.serializer(), GatewayStopReply.serializer())
     /** The gateway host's state in this process. */
     val GATEWAY_STATE = BridgeCall("gateway_state", NoParams.serializer(), GatewayStateReply.serializer())
-    /** Adds a custom OpenAI-compatible endpoint to config.yaml (Dv20); its key goes to the keystore under key_env. */
+    /** Adds a custom OpenAI-compatible endpoint to config.yaml (Dv20), or replaces the saved one id names (null for a new one); its key goes to the keystore under key_env. */
     val SAVE_CUSTOM_ENDPOINT = BridgeCall("save_custom_endpoint", SaveCustomEndpointParams.serializer(), SaveCustomEndpointReply.serializer())
+    /** The custom endpoints saved in config.yaml (providers.*), without keys: has_key says whether one is in the keystore under the entry's key_env. */
+    val LIST_CUSTOM_ENDPOINTS = BridgeCall("list_custom_endpoints", NoParams.serializer(), ListCustomEndpointsReply.serializer())
+    /** Removes a saved custom endpoint from config.yaml; names the keystore variable the app deletes, and whether the default model lost its provider. */
+    val DELETE_CUSTOM_ENDPOINT = BridgeCall("delete_custom_endpoint", DeleteCustomEndpointParams.serializer(), DeleteCustomEndpointReply.serializer())
     /** The server behind an address (URL, host:port or a bare host on the known ports) and its models; the key, if any, is used for this probe only. */
     val PROBE_ENDPOINT = BridgeCall("probe_endpoint", ProbeEndpointParams.serializer(), ProbeEndpointReply.serializer())
     /** OpenAI-compatible servers on the phone's Wi-Fi network (its /24 at most, the known ports), each with its models. */

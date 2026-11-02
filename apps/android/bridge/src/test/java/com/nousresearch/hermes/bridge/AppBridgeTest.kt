@@ -18,11 +18,11 @@ class AppBridgeTest {
     @Test
     fun aRequestGoesOutUnderTheCallsNameWithTheContractsFieldNames() = runBlocking {
         answering("""{"id":"lan","key_env":""}""")
-            .ask(BridgeCalls.SAVE_CUSTOM_ENDPOINT, SaveCustomEndpointParams("lan", "http://10.0.0.2/v1", "m", true))
+            .ask(BridgeCalls.SAVE_CUSTOM_ENDPOINT, SaveCustomEndpointParams(null, "lan", "http://10.0.0.2/v1", "m", true))
 
         val (function, arg) = sent.single()
         assertEquals("save_custom_endpoint", function)
-        assertEquals(Json.parseToJsonElement("""{"name":"lan","base_url":"http://10.0.0.2/v1","model":"m","has_key":true}"""),
+        assertEquals(Json.parseToJsonElement("""{"id":null,"name":"lan","base_url":"http://10.0.0.2/v1","model":"m","has_key":true}"""),
                      Json.parseToJsonElement(arg))
     }
 

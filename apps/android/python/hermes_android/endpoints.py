@@ -17,8 +17,9 @@ import urllib.request
 
 
 def save_custom_endpoint(arg: str) -> str:
-    """``{name, base_url, model, has_key}`` -> ``{id, key_env}`` (``key_env`` is ``""`` for a keyless endpoint),
-    or ``{error}`` in words the app shows when the request is incomplete."""
+    """``{id, name, base_url, model, has_key}`` -> ``{id, key_env}`` (``key_env`` is ``""`` for a keyless endpoint),
+    or ``{error}`` in words the app shows when the request is incomplete. ``id`` names the saved endpoint an
+    edit replaces (null for a new one)."""
     from hermes_cli.config import custom_endpoint_key_env, load_config, save_config
 
     request = json.loads(arg)
@@ -29,13 +30,16 @@ def save_custom_endpoint(arg: str) -> str:
     if not name or not model or parsed.scheme not in ("http", "https") or not parsed.netloc:
         return json.dumps({"error": "An endpoint needs a name, a model and an http(s) base URL."})
 
-    # The Desktop's id rule (hermes_cli/web_routers/config_env.py::_custom_endpoint_id).
-    endpoint_id = re.sub(r"[^A-Za-z0-9_-]+", "-", name).strip("-_").lower() or "custom"
-    key_env = custom_endpoint_key_env(endpoint_id) if request.get("has_key") else ""
-
     cfg = load_config()
     current = cfg.get("providers")
     providers = current if isinstance(current, dict) else {}
+    given_id = str(request.get("id") or "").strip()
+    # An edit keeps its id (and so its key's variable name), whatever the new name; a new endpoint takes
+    # the Desktop's id rule (hermes_cli/web_routers/config_env.py::_custom_endpoint_id).
+    endpoint_id = given_id if given_id in providers else (
+        re.sub(r"[^A-Za-z0-9_-]+", "-", name).strip("-_").lower() or "custom")
+    key_env = custom_endpoint_key_env(endpoint_id) if request.get("has_key") else ""
+
     # Merged, not replaced: an entry may carry hand-written keys the app has no field for.
     entry = dict(providers.get(endpoint_id) or {})
     models = dict(entry.get("models") or {})
@@ -49,6 +53,41 @@ def save_custom_endpoint(arg: str) -> str:
     cfg["providers"] = providers
     save_config(cfg)
     return json.dumps({"id": endpoint_id, "key_env": key_env})
+
+
+def list_saved() -> str:
+    """``{endpoints: [{id, name, base_url, model, has_key}]}``: the ``providers.*`` entries this app's form writes."""
+    from hermes_cli.config import load_config
+
+    providers = load_config().get("providers")
+    rows = []
+    for endpoint_id, entry in (providers.items() if isinstance(providers, dict) else []):
+        if isinstance(entry, dict) and entry.get("base_url"):
+            rows.append({"id": str(endpoint_id), "name": str(entry.get("name") or endpoint_id),
+                         "base_url": str(entry["base_url"]), "model": str(entry.get("model") or ""),
+                         "has_key": bool(entry.get("key_env"))})
+    return json.dumps({"endpoints": rows})
+
+
+def delete(arg: str) -> str:
+    """``{id}`` -> ``{key_env, was_default}``: the entry is gone; the app deletes the keystore entry it names.
+    A default model that used it loses its provider, as the Desktop's delete does."""
+    from hermes_cli.config import load_config, save_config
+
+    endpoint_id = str(json.loads(arg).get("id") or "")
+    cfg = load_config()
+    providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+    entry = providers.pop(endpoint_id, None)
+    if not isinstance(entry, dict):
+        return json.dumps({"error": "That endpoint is no longer saved."})
+    model = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+    was_default = model.get("provider") == endpoint_id
+    if was_default:
+        model.pop("provider", None)
+        cfg["model"] = model
+    cfg["providers"] = providers
+    save_config(cfg)
+    return json.dumps({"key_env": entry.get("key_env") or None, "was_default": was_default})
 
 
 KNOWN_PORTS = ((11434, "ollama"), (1234, "lmstudio"), (8080, "llamacpp"), (8000, "vllm"))

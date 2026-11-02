@@ -29,7 +29,7 @@ def home(tmp_path, monkeypatch):
 
 
 def save(**fields) -> dict:
-    request = {"name": "Host Ollama", "base_url": "http://127.0.0.1:11434/v1/", "model": "gemma4:12b-it-q8_0",
+    request = {"id": None, "name": "Host Ollama", "base_url": "http://127.0.0.1:11434/v1/", "model": "gemma4:12b-it-q8_0",
                "has_key": True, **fields}
     return json.loads(endpoints.save_custom_endpoint(json.dumps(request)))
 
@@ -74,6 +74,66 @@ def test_an_incomplete_endpoint_is_refused_in_words_before_anything_is_written(h
     assert save(**fields) == {"error": "An endpoint needs a name, a model and an http(s) base URL."}
 
     assert "providers" not in load_config() or not load_config()["providers"]
+
+
+def listed() -> list[dict]:
+    return json.loads(endpoints.list_saved())["endpoints"]
+
+
+def test_saved_endpoints_are_listed_without_keys(home):
+    save()
+    save(name="Other", base_url="http://10.0.0.2:1234/v1", model="qwen", has_key=False)
+
+    assert listed() == [
+        {"id": "host-ollama", "name": "Host Ollama", "base_url": "http://127.0.0.1:11434/v1",
+         "model": "gemma4:12b-it-q8_0", "has_key": True},
+        {"id": "other", "name": "Other", "base_url": "http://10.0.0.2:1234/v1", "model": "qwen", "has_key": False}]
+
+
+def test_an_edit_keeps_the_id_even_when_the_name_changes(home):
+    save()
+
+    edited = save(id="host-ollama", name="DGX", base_url="http://spark-98d1:11434/v1")
+
+    assert edited["id"] == "host-ollama" and edited["key_env"] == KEY_ENV
+    assert [(e["id"], e["name"], e["base_url"]) for e in listed()] == [("host-ollama", "DGX", "http://spark-98d1:11434/v1")]
+
+
+def test_an_id_no_longer_saved_is_a_new_endpoint_named_by_the_id_rule(home):
+    # e.g. deleted on another screen while this form was open: the stale id is not written as given.
+    saved = save(id="Gone Away")
+
+    assert saved == {"id": "host-ollama", "key_env": KEY_ENV}
+    assert [e["id"] for e in listed()] == ["host-ollama"]
+
+
+def test_a_deleted_endpoint_is_gone_and_names_its_key_and_default(home):
+    from hermes_cli.config import save_config
+    save()
+    cfg = load_config()
+    cfg["model"] = {"default": "gemma4:12b-it-q8_0", "provider": "host-ollama"}
+    save_config(cfg)
+
+    gone = json.loads(endpoints.delete(json.dumps({"id": "host-ollama"})))
+
+    assert gone == {"key_env": KEY_ENV, "was_default": True}
+    assert listed() == []
+    assert load_config()["model"].get("provider") in (None, "")
+
+
+def test_deleting_an_unknown_endpoint_is_an_error_in_words(home):
+    assert "error" in json.loads(endpoints.delete(json.dumps({"id": "nope"})))
+
+
+def test_the_list_and_delete_bridge_calls_answer_their_declared_replies(home):
+    import hermes_android
+    save(has_key=False)
+
+    rows = json.loads(hermes_android.call("list_custom_endpoints", ""))["endpoints"]
+    gone = json.loads(hermes_android.call("delete_custom_endpoint", json.dumps({"id": "host-ollama"})))
+
+    assert [r["id"] for r in rows] == ["host-ollama"]
+    assert gone == {"key_env": None, "was_default": False}
 
 
 @pytest.fixture
