@@ -52,3 +52,13 @@ def closed_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+def silent_listener():
+    """A listening socket that never accepts: the kernel completes each connection, nothing ever answers
+    (a port that is open but whose server hangs). Close it when done."""
+    import socket
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(16)
+    return sock

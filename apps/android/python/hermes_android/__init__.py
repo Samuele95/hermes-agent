@@ -212,10 +212,12 @@ def discover_endpoints(arg: str) -> str:
     """The app's call into :func:`hermes_android.discovery.discover` ("Search this network")."""
     from hermes_android import discovery
 
+    cidr = json.loads(arg)["cidr"]
     try:
-        return json.dumps({"found": discovery.discover(json.loads(arg)["cidr"])})
+        discovery.hosts(cidr)
     except ValueError:
         return json.dumps({"error": "This network's address range could not be read."})
+    return json.dumps({"found": discovery.discover(cidr)})
 
 
 def ssh_new_key(arg: str) -> str:
