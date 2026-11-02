@@ -78,7 +78,7 @@
       }
     },
     "save_custom_endpoint": {
-      "summary": "Adds a custom OpenAI-compatible endpoint to config.yaml (Dv20), or replaces the saved one id names (null for a new one); its key goes to the keystore under key_env.",
+      "summary": "Adds a custom OpenAI-compatible endpoint to config.yaml (Dv20), or replaces the saved one id names (null for a new one); a new key goes to the keystore under key_env, an edit without one keeps the entry's key_env.",
       "params": {
         "id": "string?",
         "name": "string",
@@ -99,7 +99,7 @@
       }
     },
     "delete_custom_endpoint": {
-      "summary": "Removes a saved custom endpoint from config.yaml; names the keystore variable the app deletes, and whether the default model lost its provider.",
+      "summary": "Removes a saved custom endpoint from config.yaml; names the keystore variable the app deletes (null unless the entry's key is in its own HERMES_CUSTOM_<ID>_API_KEY), and whether the default model was detached from it.",
       "params": {
         "id": "string"
       },

@@ -107,18 +107,100 @@ def test_an_id_no_longer_saved_is_a_new_endpoint_named_by_the_id_rule(home):
     assert [e["id"] for e in listed()] == ["host-ollama"]
 
 
-def test_a_deleted_endpoint_is_gone_and_names_its_key_and_default(home):
+def test_adding_again_under_a_saved_name_without_a_key_is_keyless(home):
+    # Only an edit (id given) keeps the key variable; the add form's "no key" means no key.
+    save()
+
+    assert save(has_key=False) == {"id": "host-ollama", "key_env": ""}
+    assert "key_env" not in load_config()["providers"]["host-ollama"]
+
+
+def test_a_deleted_default_endpoint_no_longer_routes_the_main_model(home, servers):
+    # The shape the app's `config.set model "<m> --provider <id> --global"` writes, through the core's own
+    # selection path; plus the key pointer the Desktop's activation also mirrors onto `model`.
+    from hermes_cli.config import save_config
+    from hermes_cli.model_switch import persist_model_selection, switch_model
+    server = servers(models=["gemma4"])
+    url = f"http://127.0.0.1:{server.port}/v1"
+    save(base_url=url, model="gemma4", has_key=False)
+    cfg = load_config()
+    chosen = switch_model("gemma4", "", "", is_global=True, explicit_provider="host-ollama",
+                          user_providers=cfg.get("providers"), custom_providers=cfg.get("custom_providers"))
+    assert chosen.success
+    persist_model_selection(chosen)
+    cfg = load_config()
+    cfg["model"]["key_env"] = KEY_ENV
+    save_config(cfg)
+    assert resolve_runtime_provider()["base_url"] == url  # routed there before the delete
+
+    gone = json.loads(endpoints.delete(json.dumps({"id": "host-ollama"})))
+
+    assert gone["was_default"] is True
+    assert listed() == []
+    model = load_config()["model"]
+    assert model["default"] == "gemma4"
+    assert not {"provider", "base_url", "api_key", "key_env"} & set(model)
+    from hermes_cli.auth_constants import AuthError
+    with pytest.raises(AuthError) as nothing_left:  # no provider left, rather than the deleted URL
+        resolve_runtime_provider()
+    assert nothing_left.value.code == "no_provider_configured"
+
+
+@pytest.mark.parametrize("spelled", ["host-ollama", "custom:host-ollama", "custom:host ollama"])
+def test_every_spelling_of_the_deleted_endpoint_detaches_the_main_model(home, spelled):
+    # The core spells a picked custom provider as its key or as custom:<lowercased name>
+    # (hermes_cli/web_routers/config_env.py::_model_names_provider).
     from hermes_cli.config import save_config
     save()
     cfg = load_config()
-    cfg["model"] = {"default": "gemma4:12b-it-q8_0", "provider": "host-ollama"}
+    cfg["model"] = {"default": "gemma4", "provider": spelled, "base_url": "http://127.0.0.1:11434/v1",
+                    "api_key": "sk-inline", "key_env": KEY_ENV}
     save_config(cfg)
 
     gone = json.loads(endpoints.delete(json.dumps({"id": "host-ollama"})))
 
     assert gone == {"key_env": KEY_ENV, "was_default": True}
-    assert listed() == []
-    assert load_config()["model"].get("provider") in (None, "")
+    assert load_config()["model"] == {"default": "gemma4"}
+
+
+def test_a_main_model_on_another_provider_is_left_alone(home):
+    from hermes_cli.config import save_config
+    save()
+    cfg = load_config()
+    cfg["model"] = {"default": "x", "provider": "other", "base_url": "http://10.0.0.9/v1", "key_env": "OTHER_KEY"}
+    save_config(cfg)
+
+    gone = json.loads(endpoints.delete(json.dumps({"id": "host-ollama"})))
+
+    assert gone["was_default"] is False
+    assert load_config()["model"] == {"default": "x", "provider": "other", "base_url": "http://10.0.0.9/v1",
+                                      "key_env": "OTHER_KEY"}
+
+
+def _hand_written_proxy(home):
+    # An entry written by hand (or by the Desktop) whose key lives in another provider's variable.
+    from hermes_cli.config import save_config
+    cfg = load_config()
+    cfg["providers"] = {"proxy": {"name": "Proxy", "base_url": "http://10.0.0.3/v1", "model": "m",
+                                  "key_env": "OPENROUTER_API_KEY"}}
+    save_config(cfg)
+
+
+def test_deleting_an_entry_keyed_by_another_variable_names_no_key_to_delete(home):
+    _hand_written_proxy(home)
+
+    gone = json.loads(endpoints.delete(json.dumps({"id": "proxy"})))
+
+    assert gone == {"key_env": None, "was_default": False}  # OPENROUTER_API_KEY is not this endpoint's to delete
+
+
+def test_an_edit_without_a_new_key_keeps_the_entrys_key_variable(home):
+    _hand_written_proxy(home)
+
+    saved = save(id="proxy", name="Proxy", base_url="http://10.0.0.4/v1", model="m", has_key=False)
+
+    assert saved == {"id": "proxy", "key_env": "OPENROUTER_API_KEY"}
+    assert load_config()["providers"]["proxy"]["key_env"] == "OPENROUTER_API_KEY"
 
 
 def test_deleting_an_unknown_endpoint_is_an_error_in_words(home):

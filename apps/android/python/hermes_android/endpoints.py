@@ -38,10 +38,17 @@ def save_custom_endpoint(arg: str) -> str:
     # the Desktop's id rule (hermes_cli/web_routers/config_env.py::_custom_endpoint_id).
     endpoint_id = given_id if given_id in providers else (
         re.sub(r"[^A-Za-z0-9_-]+", "-", name).strip("-_").lower() or "custom")
-    key_env = custom_endpoint_key_env(endpoint_id) if request.get("has_key") else ""
+    existing = providers.get(endpoint_id) if isinstance(providers.get(endpoint_id), dict) else {}
+    if request.get("has_key"):
+        key_env = custom_endpoint_key_env(endpoint_id)  # the new key goes to this endpoint's own variable
+    elif endpoint_id == given_id:
+        # An edit with no new key keeps the variable its key already lives in, whichever that is.
+        key_env = str(existing.get("key_env") or "")
+    else:
+        key_env = ""
 
     # Merged, not replaced: an entry may carry hand-written keys the app has no field for.
-    entry = dict(providers.get(endpoint_id) or {})
+    entry = dict(existing)
     models = dict(entry.get("models") or {})
     models.setdefault(model, {})
     entry.update({"name": name, "base_url": base_url, "model": model, "models": models})
@@ -69,10 +76,24 @@ def list_saved() -> str:
     return json.dumps({"endpoints": rows})
 
 
+def _names_endpoint(provider: object, endpoint_id: str, entry: dict) -> bool:
+    """True when ``model.provider`` names this endpoint: its key, or ``custom:<key>`` / ``custom:<lowercased
+    name>`` as the core's model switch spells it. Mirrors the Desktop's
+    ``hermes_cli/web_routers/config_env.py::_model_names_provider`` (that module pulls in the web server)."""
+    names = {endpoint_id.strip().lower()}
+    if str(entry.get("name") or "").strip():
+        names.add(str(entry["name"]).strip().lower())
+    return str(provider or "").strip().lower().removeprefix("custom:") in names
+
+
 def delete(arg: str) -> str:
-    """``{id}`` -> ``{key_env, was_default}``: the entry is gone; the app deletes the keystore entry it names.
-    A default model that used it loses its provider, as the Desktop's delete does."""
-    from hermes_cli.config import load_config, save_config
+    """``{id}`` -> ``{key_env, was_default}``: the entry is gone. ``key_env`` is the keystore variable the app
+    deletes: this endpoint's own (``HERMES_CUSTOM_<ID>_API_KEY``), or null when the entry kept its key
+    elsewhere (a hand-written entry may point at another provider's variable, which is not this endpoint's
+    to delete), as the Desktop's delete removes only ``custom_endpoint_key_env(id)``. A default model that
+    used the endpoint loses its provider, base URL and key fields, as the Desktop's
+    ``_detach_main_model_from_provider`` does, so the core no longer routes to the deleted URL."""
+    from hermes_cli.config import custom_endpoint_key_env, load_config, save_config
 
     endpoint_id = str(json.loads(arg).get("id") or "")
     cfg = load_config()
@@ -81,13 +102,15 @@ def delete(arg: str) -> str:
     if not isinstance(entry, dict):
         return json.dumps({"error": "That endpoint is no longer saved."})
     model = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
-    was_default = model.get("provider") == endpoint_id
+    was_default = _names_endpoint(model.get("provider"), endpoint_id, entry)
     if was_default:
-        model.pop("provider", None)
+        for field in ("provider", "base_url", "api_key", "key_env"):
+            model.pop(field, None)
         cfg["model"] = model
     cfg["providers"] = providers
     save_config(cfg)
-    return json.dumps({"key_env": entry.get("key_env") or None, "was_default": was_default})
+    own = custom_endpoint_key_env(endpoint_id)
+    return json.dumps({"key_env": own if entry.get("key_env") == own else None, "was_default": was_default})
 
 
 KNOWN_PORTS = ((11434, "ollama"), (1234, "lmstudio"), (8080, "llamacpp"), (8000, "vllm"))
