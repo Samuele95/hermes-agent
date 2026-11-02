@@ -6,9 +6,12 @@ import com.nousresearch.hermes.bridge.AppBridge
 import com.nousresearch.hermes.bridge.SecretStore
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonPrimitive
@@ -24,6 +27,7 @@ class ProviderSetupTest {
     private val answers = mutableMapOf<String, String>()   // bridge calls answered by these tests
     private val sent = mutableListOf<Pair<String, String>>()
     private var subnet: String? = null
+    private var subnetFound: suspend () -> String? = { subnet }  // the shell's Wi-Fi adapter
     private fun argOf(function: String) = Json.parseToJsonElement(sent.last { it.first == function }.second).jsonObject
     private val held = mutableMapOf<String, ByteArray>()
     private val secrets = object : SecretStore {
@@ -57,6 +61,7 @@ class ProviderSetupTest {
     private var endpointSaved: (JsonObject) -> String = { """{"id":"host-ollama","key_env":"HERMES_CUSTOM_HOST_OLLAMA_API_KEY"}""" }
     private var secretsChanged: () -> Unit = { log += "secrets_changed" }
     private val bridge = AppBridge { function, request ->
+        if (function == "delete_custom_endpoint") dropListed(Json.parseToJsonElement(request).jsonObject.getValue("id").jsonPrimitive.content)
         answers[function]?.let { sent += function to request; return@AppBridge it }
         when (function) {
             "secrets_changed" -> { secretsChanged(); "{}" }
@@ -69,9 +74,17 @@ class ProviderSetupTest {
         }
     }
     private val setup = ProviderSetup(core, secrets, bridge, session = { "s1" }, reopenChat = { log += "reopen_chat" },
-                                    subnet = { subnet })
+                                    subnet = { subnetFound() })
 
     private fun ProviderSetup.step() = state.value?.step
+
+    /** As the Python half does: a deleted endpoint is no longer listed. */
+    private fun dropListed(id: String) {
+        val listed = answers["list_custom_endpoints"] ?: return
+        val kept = Json.parseToJsonElement(listed).jsonObject.getValue("endpoints").jsonArray
+            .filter { it.jsonObject.getValue("id").jsonPrimitive.content != id }
+        answers["list_custom_endpoints"] = JsonObject(mapOf("endpoints" to JsonArray(kept))).toString()
+    }
 
     @Test
     fun aBridgeFailureMidStepIsShownByItsKindAndTheAppGoesOn() = runTest {
@@ -358,6 +371,7 @@ class ProviderSetupTest {
         setup.findServer("spark-98d1.tailf0dece.ts.net", key)
 
         assertTrue(setup.state.value?.error!!.contains("short name"))
+        assertEquals("the typed key reaches the probe", "sk-x", argOf("probe_endpoint")["api_key"]!!.jsonPrimitive.content)
         assertTrue(key.all { it == 0.toByte() })
     }
 
@@ -398,13 +412,127 @@ class ProviderSetupTest {
         held["HERMES_CUSTOM_DGX_API_KEY"] = "k".toByteArray()
         var disconnected: String? = null
         disconnect = { params -> disconnected = params["slug"]?.jsonPrimitive?.content; """{"slug":"dgx","name":"DGX","disconnected":true}""" }
+        var heldAtReload: Boolean? = null
+        secretsChanged = { log += "secrets_changed"; heldAtReload = held.containsKey("HERMES_CUSTOM_DGX_API_KEY") }
         setup.open()
 
         setup.deleteEndpoint("dgx")
 
         assertFalse(held.containsKey("HERMES_CUSTOM_DGX_API_KEY"))
-        assertTrue("secrets_changed" in log)
+        assertEquals("the keystore lets go before the core re-reads it", false, heldAtReload)
         assertEquals("dgx", disconnected)
+        assertEquals(emptyList<String>(), (setup.step() as SetupStep.Providers).saved.map { it.id })
+    }
+
+    @Test
+    fun aFailedProbeDropsTheModelsAnEarlierAddressListed() = runTest {
+        answers["probe_endpoint"] = """{"outcome":"found","base_url":"http://a:11434/v1","kind":"ollama","models":["a-model"]}"""
+        setup.open(); setup.addEndpoint()
+        setup.findServer("a", null)
+        answers["probe_endpoint"] = """{"outcome":"unreachable","base_url":null,"kind":null,"models":[]}"""
+
+        setup.findServer("b", null)
+
+        assertNull("b could be saved with a's model", (setup.step() as SetupStep.Endpoint).probe)
+        assertTrue(setup.state.value?.error!!.startsWith("Nothing answered"))
+    }
+
+    @Test
+    fun aKeyTypedOutsideTheFormIsStillWiped() = runTest {
+        setup.open()  // the providers list, not the endpoint form
+        val probing = "sk-a".toByteArray()
+        val saving = "sk-b".toByteArray()
+
+        setup.findServer("spark-98d1", probing)
+        setup.saveEndpoint("DGX", "http://spark-98d1:11434/v1", "m", saving)
+
+        assertArrayEquals(ByteArray(4), probing)
+        assertArrayEquals(ByteArray(4), saving)
+    }
+
+    @Test
+    fun aSearchThatFindsNothingSaysSoAndStopsScanning() = runTest {
+        subnet = "192.168.1.37/24"
+        answers["discover_endpoints"] = """{"found":[]}"""
+        setup.open(); setup.addEndpoint()
+
+        setup.searchNetwork()
+
+        assertEquals("No model server answered on this network.", setup.state.value?.error)
+        assertEquals(false, (setup.step() as SetupStep.Endpoint).scanning)
+    }
+
+    @Test
+    fun aSearchWithoutWiFiSaysSoAndStopsScanning() = runTest {
+        setup.open(); setup.addEndpoint()
+
+        setup.searchNetwork()
+
+        assertEquals("Connect to a Wi-Fi network to search it.", setup.state.value?.error)
+        assertEquals(false, (setup.step() as SetupStep.Endpoint).scanning)
+    }
+
+    @Test
+    fun aFailingWiFiAdapterIsShownByItsKind() = runTest {
+        subnetFound = { throw IllegalStateException("no ConnectivityManager") }
+        setup.open(); setup.addEndpoint()
+
+        setup.searchNetwork()
+
+        assertEquals("Something went wrong (IllegalStateException).", setup.state.value?.error)
+        assertEquals(false, (setup.step() as SetupStep.Endpoint).scanning)
+    }
+
+    @Test
+    fun aCancelledSearchStopsScanning() = runTest {
+        subnetFound = { awaitCancellation() }
+        setup.open(); setup.addEndpoint()
+        val searching = launch { setup.searchNetwork() }
+        runCurrent()
+        assertEquals(true, (setup.step() as SetupStep.Endpoint).scanning)
+
+        searching.cancel()
+        searching.join()
+
+        assertEquals(false, (setup.step() as SetupStep.Endpoint).scanning)
+    }
+
+    @Test
+    fun deletingTheDefaultEndpointStartsTheChatAfreshOnTheProviderList() = runTest {
+        answers["list_custom_endpoints"] = """{"endpoints":[$dgx]}"""
+        answers["delete_custom_endpoint"] = """{"key_env":"HERMES_CUSTOM_DGX_API_KEY","was_default":true}"""
+        setup.open()
+
+        setup.deleteEndpoint("dgx")
+
+        // The live session keeps the model it was opened with (L11), and the core has detached it.
+        assertEquals("reopen_chat", log.last { it == "reopen_chat" })
+        assertEquals(emptyList<String>(), (setup.step() as SetupStep.Providers).saved.map { it.id })
+    }
+
+    @Test
+    fun deletingAnotherEndpointLeavesTheChatAlone() = runTest {
+        answers["list_custom_endpoints"] = """{"endpoints":[$dgx]}"""
+        answers["delete_custom_endpoint"] = """{"key_env":"HERMES_CUSTOM_DGX_API_KEY","was_default":false}"""
+        setup.open()
+
+        setup.deleteEndpoint("dgx")
+
+        assertTrue("reopen_chat" !in log)
+        assertTrue(setup.step() is SetupStep.Providers)
+    }
+
+    @Test
+    fun aDeleteWhoseKeyCouldNotBeForgottenAtTheCoreSaysSoAndNoLongerListsTheEndpoint() = runTest {
+        answers["list_custom_endpoints"] = """{"endpoints":[$dgx]}"""
+        answers["delete_custom_endpoint"] = """{"key_env":"HERMES_CUSTOM_DGX_API_KEY","was_default":false}"""
+        disconnect = { throw CoreError(5035, "HERMES_CUSTOM_DGX_API_KEY is managed elsewhere") }
+        setup.open()
+
+        setup.deleteEndpoint("dgx")
+
+        assertEquals("HERMES_CUSTOM_DGX_API_KEY is managed elsewhere", setup.state.value?.error)
+        assertEquals(emptyList<String>(), (setup.step() as SetupStep.Providers).saved.map { it.id })
     }
 
     private companion object {

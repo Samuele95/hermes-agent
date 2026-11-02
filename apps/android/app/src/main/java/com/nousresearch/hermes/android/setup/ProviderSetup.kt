@@ -210,8 +210,10 @@ class ProviderSetup(
      * probe only and wiped after; nothing is stored until [saveEndpoint].
      */
     suspend fun findServer(address: String, key: ByteArray?) {
-        val form = setup.value?.step as? SetupStep.Endpoint ?: return
+        val form = setup.value?.step as? SetupStep.Endpoint ?: return run { key?.fill(0) }
         step {
+            // What an earlier probe found belongs to another address: saved with this one, it would name a wrong model.
+            setup.update { it?.copy(step = form.copy(probe = null)) }
             val found = try {
                 bridge.ask(BridgeCalls.PROBE_ENDPOINT,
                            ProbeEndpointParams(address.trim(), key?.takeIf { it.isNotEmpty() }?.decodeToString()))
@@ -226,24 +228,40 @@ class ProviderSetup(
     /** Looks for model servers on the phone's Wi-Fi network (only when the user asks: it knocks on every host). */
     suspend fun searchNetwork() {
         val form = setup.value?.step as? SetupStep.Endpoint ?: return
-        val cidr = subnet() ?: run {
-            setup.update { it?.copy(error = "Connect to a Wi-Fi network to search it.") }
-            return
-        }
         setup.update { it?.copy(step = form.copy(scanning = true), error = null) }
-        step {
-            val found = bridge.ask(BridgeCalls.DISCOVER_ENDPOINTS, DiscoverEndpointsParams(cidr)).found
-            if (found.isEmpty()) throw CoreError(0, "No model server answered on this network.")
-            form.copy(scan = found, scanning = false)
+        try {
+            step {
+                val cidr = subnet() ?: throw CoreError(0, "Connect to a Wi-Fi network to search it.")
+                val found = bridge.ask(BridgeCalls.DISCOVER_ENDPOINTS, DiscoverEndpointsParams(cidr)).found
+                if (found.isEmpty()) throw CoreError(0, "No model server answered on this network.")
+                form.copy(scan = found)
+            }
+        } finally {  // found, failed or cancelled: the search is over
+            setup.update { s -> (s?.step as? SetupStep.Endpoint)?.let { s.copy(step = it.copy(scanning = false)) } ?: s }
         }
-        setup.update { s -> (s?.step as? SetupStep.Endpoint)?.let { s.copy(step = it.copy(scanning = false)) } ?: s }
     }
 
-    /** Deletes the saved endpoint [id] and forgets its key, on the phone and at the core (L10). */
+    /**
+     * Deletes the saved endpoint [id] and forgets its key, on the phone and at the core (L10). When it was the default
+     * model, the chat starts afresh: its live session would keep the model it was opened with (L11).
+     */
     suspend fun deleteEndpoint(id: String) {
         step {
             val gone = bridge.ask(BridgeCalls.DELETE_CUSTOM_ENDPOINT, DeleteCustomEndpointParams(id))
-            forget(id, gone.keyEnv)  // always the endpoint's own slot, held or not
+            val notForgotten = try {
+                forget(id, gone.keyEnv)  // always the endpoint's own slot, held or not
+                null
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failed: Exception) {
+                failed
+            }
+            if (gone.wasDefault) reopenChat()
+            if (notForgotten != null) {  // the endpoint is gone all the same: the list must not offer it
+                saved = savedEndpoints()
+                setup.update { it?.copy(step = SetupStep.Providers(choices, saved)) }
+                throw notForgotten
+            }
             providers(refresh = true)
         }
     }
@@ -253,7 +271,7 @@ class ProviderSetup(
      * with none, an edited endpoint keeps the key it had), then makes [model] the default.
      */
     suspend fun saveEndpoint(name: String, baseUrl: String, model: String, key: ByteArray?) {
-        val form = setup.value?.step as? SetupStep.Endpoint ?: return
+        val form = setup.value?.step as? SetupStep.Endpoint ?: return run { key?.fill(0) }
         // has_key: a NEW key goes to the keystore. Without one, the Python half keeps an edited entry's key_env.
         val newKey = key != null && key.isNotEmpty()
         step {
