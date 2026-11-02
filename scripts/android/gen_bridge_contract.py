@@ -4,8 +4,8 @@
 Python half, each with its request and reply; ``hermes_android.call`` holds the Python side to it at run
 time. This renders the same declaration into kotlinx serialization types and one typed descriptor per call,
 so the app cannot name an undeclared call or build a request the Python side would refuse. Types: string,
-integer, boolean, ``string?`` (present, may be null) and the contract's enums; anything else is a
-generation error.
+integer, boolean, ``string?`` (present, may be null), ``[T]`` (a list of T), and the contract's enums and
+records; anything else is a generation error.
 """
 
 from __future__ import annotations
@@ -52,38 +52,44 @@ def _type_name(call: str) -> str:
     return camel[:1].upper() + camel[1:]
 
 
-def _kotlin_type(kind: str, enums: dict, where: str) -> str:
+def _kotlin_type(kind: str, names: set, where: str) -> str:
+    if kind.startswith("[") and kind.endswith("]"):
+        return f"List<{_kotlin_type(kind[1:-1], names, where)}>"
     if kind in _PRIMITIVES:
         return _PRIMITIVES[kind]
-    if kind in enums:
+    if kind in names:
         return kind
     raise ValueError(f"{where}: unknown type {kind!r}")
 
 
-def _data_class(name: str, fields: dict, enums: dict) -> str:
+def _data_class(name: str, fields: dict, names: set) -> str:
     lines = []
     for field, kind in fields.items():
         ident = _camel(field)
         serial = f"@SerialName({_kotlin_string(field)}) " if ident.strip("`") != field else ""
-        lines.append(f"    {serial}val {ident}: {_kotlin_type(kind, enums, f'{name}.{field}')},")
+        lines.append(f"    {serial}val {ident}: {_kotlin_type(kind, names, f'{name}.{field}')},")
     return "@Serializable\ndata class {}(\n{}\n)\n".format(name, "\n".join(lines))
 
 
 def render(contract: dict) -> str:
     enums: dict = contract.get("enums", {})
+    records: dict = contract.get("records", {})
+    names = set(enums) | set(records)
     out = [HEADER.format(package=PACKAGE)]
     for enum, values in enums.items():
         entries = "\n".join(f"    @SerialName({_kotlin_string(value)}) {_constant(value)}," for value in values)
         out.append(f"\n@Serializable\nenum class {enum} {{\n{entries}\n}}\n")
+    for record, fields in records.items():
+        out.append("\n" + _data_class(record, fields, names))
     descriptors = []
     for call, spec in contract["calls"].items():
         base = _type_name(call)
         params = f"{base}Params" if spec["params"] else "NoParams"
         reply = f"{base}Reply" if spec["reply"] else "NoReply"
         if spec["params"]:
-            out.append("\n" + _data_class(params, spec["params"], enums))
+            out.append("\n" + _data_class(params, spec["params"], names))
         if spec["reply"]:
-            out.append("\n" + _data_class(reply, spec["reply"], enums))
+            out.append("\n" + _data_class(reply, spec["reply"], names))
         descriptors.append(f"    {_doc(spec.get('summary')).replace(chr(10), chr(10) + '    ')}"
                            f"val {_constant(call)} = BridgeCall({_kotlin_string(call)}, {params}.serializer(), "
                            f"{reply}.serializer())\n")
@@ -91,7 +97,7 @@ def render(contract: dict) -> str:
     out.append("".join(descriptors).replace("    \n", "\n"))
     out.append("}\n")
     for event, spec in contract.get("events", {}).items():
-        out.append("\n" + _doc(spec.get("summary")) + _data_class(f"{_type_name(event)}Event", spec["fields"], enums))
+        out.append("\n" + _doc(spec.get("summary")) + _data_class(f"{_type_name(event)}Event", spec["fields"], names))
     if contract.get("secrets"):
         names = "".join(f"    const val {_constant(key)} = {_kotlin_string(name)}\n" for key, name in contract["secrets"].items())
         out.append(f"\n/** The keystore variable names both halves use. */\nobject BridgeSecrets {{\n{names}}}\n")

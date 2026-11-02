@@ -62,6 +62,20 @@ def test_a_type_the_contract_does_not_define_fails_generation():
         _render({"look": {"params": {"when": "date"}, "reply": {}}})
 
 
+def test_lists_and_records_become_kotlin_lists_and_data_classes():
+    text = gen.render({"version": 1, "enums": {}, "records": {"FoundEndpoint": {"base_url": "string", "models": "[string]"}},
+                       "calls": {"scan": {"summary": "Scan.", "params": {}, "reply": {"found": "[FoundEndpoint]"}}}})
+
+    assert "data class FoundEndpoint(\n    @SerialName(\"base_url\") val baseUrl: String,\n    val models: List<String>,\n)" in text
+    assert "    val found: List<FoundEndpoint>," in text
+    assert text.index("data class FoundEndpoint") < text.index("data class ScanReply")
+
+
+def test_a_list_of_an_unknown_type_fails_generation():
+    with pytest.raises(ValueError, match="unknown type"):
+        gen.render({"version": 1, "enums": {}, "calls": {"x": {"params": {"a": "[nope]"}, "reply": {}}}})
+
+
 def test_events_become_typed_payloads_and_secrets_named_constants():
     text = gen.render({"version": 1, "enums": {"State": ["up", "down"]}, "calls": {},
                        "events": {"gateway_state": {"summary": "A state change.", "fields": {"gateway": "State", "reason": "string?"}}},

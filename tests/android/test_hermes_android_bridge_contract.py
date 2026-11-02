@@ -43,11 +43,37 @@ def test_every_declared_call_exists_and_every_bridge_function_is_declared():
     assert defined - NOT_CALLS == set(CONTRACT["calls"])
 
 
+def _known(kind: str) -> bool:
+    if kind.startswith("[") and kind.endswith("]"):
+        return _known(kind[1:-1])
+    return kind in {"string", "integer", "boolean", "string?"} | set(CONTRACT["enums"]) | set(CONTRACT.get("records", {}))
+
+
 def test_the_contract_uses_only_known_types():
-    known = {"string", "integer", "boolean", "string?"} | set(CONTRACT["enums"])
     for name, call in CONTRACT["calls"].items():
         for field, kind in {**call["params"], **call["reply"]}.items():
-            assert kind in known, (name, field, kind)
+            assert _known(kind), (name, field, kind)
+    for record, fields in CONTRACT.get("records", {}).items():
+        for field, kind in fields.items():
+            assert _known(kind), (record, field, kind)
+
+
+def test_a_list_holds_every_item_to_its_type(monkeypatch):
+    monkeypatch.setitem(hermes_android._CONTRACT["records"], "Item", {"id": "string", "n": "integer"})
+    assert hermes_android._conforms("[string]", ["a", "b"])
+    assert hermes_android._conforms("[string]", [])
+    assert not hermes_android._conforms("[string]", ["a", 1])
+    assert not hermes_android._conforms("[string]", "a")
+    assert hermes_android._conforms("[Item]", [{"id": "x", "n": 1}])
+    assert not hermes_android._conforms("[Item]", [{"id": "x"}])  # a missing field
+    assert not hermes_android._conforms("[Item]", [{"id": "x", "n": 1, "extra": 2}])  # an undeclared field
+
+
+def test_a_record_is_an_object_with_exactly_its_fields(monkeypatch):
+    monkeypatch.setitem(hermes_android._CONTRACT["records"], "Item", {"id": "string", "tags": "[string]"})
+    assert hermes_android._conforms("Item", {"id": "x", "tags": ["a"]})
+    assert not hermes_android._conforms("Item", {"id": "x", "tags": "a"})
+    assert not hermes_android._conforms("Item", ["x"])
 
 
 def test_a_call_the_contract_does_not_name_is_refused(monkeypatch):
