@@ -162,8 +162,23 @@ class SetupScreenTest {
         compose.onNodeWithText("API key (leave empty to keep the saved one)").assertExists()
         compose.onNodeWithTag("endpoint-save").performScrollTo().performClick()
         compose.onNodeWithTag("endpoint-delete").performScrollTo().performClick()
+        assertEquals("one tap does not delete", listOf("endpoint:DGX|http://spark-98d1:11434/v1|gemma4:12b-it-q8_0|null"), picked)
+        compose.onNodeWithTag("endpoint-delete-confirm").performScrollTo().performClick()
 
         assertEquals(listOf("endpoint:DGX|http://spark-98d1:11434/v1|gemma4:12b-it-q8_0|null", "delete dgx"), picked)
+    }
+
+    @Test
+    fun aDeleteThatIsNotConfirmedDeletesNothing() {
+        show(Setup(SetupStep.Endpoint(editing = dgx)))
+
+        compose.onNodeWithTag("endpoint-delete").performScrollTo().performClick()
+        compose.onNodeWithText("Delete DGX? Its key on this phone goes too.").assertExists()
+        compose.onNodeWithTag("endpoint-delete-cancel").performScrollTo().performClick()
+
+        compose.onNodeWithTag("endpoint-delete-confirm").assertDoesNotExist()
+        compose.onNodeWithTag("endpoint-delete").assertExists()
+        assertEquals(emptyList<String>(), picked)
     }
 
     @Test

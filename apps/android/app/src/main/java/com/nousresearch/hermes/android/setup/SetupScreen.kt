@@ -197,8 +197,19 @@ private fun EndpointForm(step: SetupStep.Endpoint, enabled: Boolean, onEndpoint:
         key = ""
     }, Modifier.testTag("endpoint-save"), enabled = enabled && address.isNotBlank() && model.isNotBlank())
     if (editing != null) {
-        SecondaryButton(stringResource(R.string.setup_delete_endpoint), { onDeleteEndpoint(editing.id) }, Modifier.testTag("endpoint-delete"),
-                        enabled = enabled, color = MaterialTheme.colorScheme.error)
+        // A delete also forgets the endpoint's key: one tap asks, a second one deletes.
+        var confirming by remember(editing.id) { mutableStateOf(false) }
+        if (!confirming) {
+            SecondaryButton(stringResource(R.string.setup_delete_endpoint), { confirming = true }, Modifier.testTag("endpoint-delete"),
+                            enabled = enabled, color = MaterialTheme.colorScheme.error)
+        } else {
+            Hint(stringResource(R.string.setup_delete_endpoint_confirm, editing.name), color = MaterialTheme.colorScheme.error)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PrimaryButton(stringResource(R.string.setup_delete), { confirming = false; onDeleteEndpoint(editing.id) },
+                              Modifier.testTag("endpoint-delete-confirm"), enabled = enabled)
+                SecondaryButton(stringResource(R.string.setup_cancel), { confirming = false }, Modifier.testTag("endpoint-delete-cancel"))
+            }
+        }
     }
 }
 
