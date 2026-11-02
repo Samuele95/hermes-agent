@@ -42,6 +42,15 @@ enum class GatewayState {
 }
 
 @Serializable
+enum class EndpointProbe {
+    @SerialName("found") FOUND,
+    @SerialName("unreachable") UNREACHABLE,
+    @SerialName("needs_key") NEEDS_KEY,
+    @SerialName("refused") REFUSED,
+    @SerialName("no_models") NO_MODELS,
+}
+
+@Serializable
 data class RuntimeFactsReply(
     val python: String,
     val sqlite: String,
@@ -76,6 +85,20 @@ data class SaveCustomEndpointParams(
 data class SaveCustomEndpointReply(
     val id: String,
     @SerialName("key_env") val keyEnv: String,
+)
+
+@Serializable
+data class ProbeEndpointParams(
+    val address: String,
+    @SerialName("api_key") val apiKey: String?,
+)
+
+@Serializable
+data class ProbeEndpointReply(
+    val outcome: EndpointProbe,
+    @SerialName("base_url") val baseUrl: String?,
+    val kind: String?,
+    val models: List<String>,
 )
 
 @Serializable
@@ -186,6 +209,8 @@ object BridgeCalls {
     val GATEWAY_STATE = BridgeCall("gateway_state", NoParams.serializer(), GatewayStateReply.serializer())
     /** Adds a custom OpenAI-compatible endpoint to config.yaml (Dv20); its key goes to the keystore under key_env. */
     val SAVE_CUSTOM_ENDPOINT = BridgeCall("save_custom_endpoint", SaveCustomEndpointParams.serializer(), SaveCustomEndpointReply.serializer())
+    /** The server behind an address (URL, host:port or a bare host on the known ports) and its models; the key, if any, is used for this probe only. */
+    val PROBE_ENDPOINT = BridgeCall("probe_endpoint", ProbeEndpointParams.serializer(), ProbeEndpointReply.serializer())
     /** A fresh Ed25519 identity; the app stores private in the keystore at once. */
     val SSH_NEW_KEY = BridgeCall("ssh_new_key", NoParams.serializer(), SshNewKeyReply.serializer())
     /** The public half of the identity the core reads from the keystore. */

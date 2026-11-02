@@ -200,6 +200,14 @@ def save_custom_endpoint(arg: str) -> str:
     return endpoints.save_custom_endpoint(arg)
 
 
+def probe_endpoint(arg: str) -> str:
+    """The app's call into :func:`hermes_android.endpoints.probe`."""
+    from hermes_android import endpoints
+
+    request = json.loads(arg)
+    return json.dumps(endpoints.probe(request["address"], request.get("api_key")))
+
+
 def ssh_new_key(arg: str) -> str:
     from hermes_android import ssh
 

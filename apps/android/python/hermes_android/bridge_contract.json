@@ -17,6 +17,13 @@
       "running",
       "restarting",
       "failed"
+    ],
+    "EndpointProbe": [
+      "found",
+      "unreachable",
+      "needs_key",
+      "refused",
+      "no_models"
     ]
   },
   "records": {},
@@ -68,6 +75,19 @@
       "reply": {
         "id": "string",
         "key_env": "string"
+      }
+    },
+    "probe_endpoint": {
+      "summary": "The server behind an address (URL, host:port or a bare host on the known ports) and its models; the key, if any, is used for this probe only.",
+      "params": {
+        "address": "string",
+        "api_key": "string?"
+      },
+      "reply": {
+        "outcome": "EndpointProbe",
+        "base_url": "string?",
+        "kind": "string?",
+        "models": "[string]"
       }
     },
     "ssh_new_key": {
