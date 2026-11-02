@@ -186,12 +186,22 @@ def _hand_written_proxy(home):
     save_config(cfg)
 
 
-def test_deleting_an_entry_keyed_by_another_variable_names_no_key_to_delete(home):
+def test_deleting_an_entry_keyed_by_another_variable_names_only_its_own_slot(home):
     _hand_written_proxy(home)
 
     gone = json.loads(endpoints.delete(json.dumps({"id": "proxy"})))
 
-    assert gone == {"key_env": None, "was_default": False}  # OPENROUTER_API_KEY is not this endpoint's to delete
+    # OPENROUTER_API_KEY is not this endpoint's to delete; its own slot is (as Desktop's delete does).
+    assert gone == {"key_env": "HERMES_CUSTOM_PROXY_API_KEY", "was_default": False}
+
+
+def test_deleting_a_keyless_entry_still_names_its_own_slot(home):
+    # A key stored earlier may still sit in the keystore after a keyless re-save dropped key_env.
+    save(has_key=False)
+
+    gone = json.loads(endpoints.delete(json.dumps({"id": "host-ollama"})))
+
+    assert gone["key_env"] == "HERMES_CUSTOM_HOST_OLLAMA_API_KEY"
 
 
 def test_an_edit_without_a_new_key_keeps_the_entrys_key_variable(home):
@@ -215,7 +225,7 @@ def test_the_list_and_delete_bridge_calls_answer_their_declared_replies(home):
     gone = json.loads(hermes_android.call("delete_custom_endpoint", json.dumps({"id": "host-ollama"})))
 
     assert [r["id"] for r in rows] == ["host-ollama"]
-    assert gone == {"key_env": None, "was_default": False}
+    assert gone == {"key_env": "HERMES_CUSTOM_HOST_OLLAMA_API_KEY", "was_default": False}
 
 
 @pytest.fixture

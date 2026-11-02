@@ -99,12 +99,12 @@
       }
     },
     "delete_custom_endpoint": {
-      "summary": "Removes a saved custom endpoint from config.yaml; names the keystore variable the app deletes (null unless the entry's key is in its own HERMES_CUSTOM_<ID>_API_KEY), and whether the default model was detached from it.",
+      "summary": "Removes a saved custom endpoint from config.yaml; names the keystore variable the app deletes (always the endpoint's own HERMES_CUSTOM_<ID>_API_KEY, never another provider's), and whether the default model was detached from it.",
       "params": {
         "id": "string"
       },
       "reply": {
-        "key_env": "string?",
+        "key_env": "string",
         "was_default": "boolean"
       }
     },

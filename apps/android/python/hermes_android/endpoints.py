@@ -109,8 +109,9 @@ def delete(arg: str) -> str:
         cfg["model"] = model
     cfg["providers"] = providers
     save_config(cfg)
-    own = custom_endpoint_key_env(endpoint_id)
-    return json.dumps({"key_env": own if entry.get("key_env") == own else None, "was_default": was_default})
+    # Only the endpoint's own slot is named for deletion, whatever key_env the entry held (as Desktop's delete):
+    # another provider's variable is never this endpoint's, and its own slot may outlive a keyless re-save.
+    return json.dumps({"key_env": custom_endpoint_key_env(endpoint_id), "was_default": was_default})
 
 
 KNOWN_PORTS = ((11434, "ollama"), (1234, "lmstudio"), (8080, "llamacpp"), (8000, "vllm"))

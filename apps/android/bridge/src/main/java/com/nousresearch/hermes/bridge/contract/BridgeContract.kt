@@ -116,7 +116,7 @@ data class DeleteCustomEndpointParams(
 
 @Serializable
 data class DeleteCustomEndpointReply(
-    @SerialName("key_env") val keyEnv: String?,
+    @SerialName("key_env") val keyEnv: String,
     @SerialName("was_default") val wasDefault: Boolean,
 )
 
@@ -254,7 +254,7 @@ object BridgeCalls {
     val SAVE_CUSTOM_ENDPOINT = BridgeCall("save_custom_endpoint", SaveCustomEndpointParams.serializer(), SaveCustomEndpointReply.serializer())
     /** The custom endpoints saved in config.yaml (providers.*), without keys: has_key says whether one is in the keystore under the entry's key_env. */
     val LIST_CUSTOM_ENDPOINTS = BridgeCall("list_custom_endpoints", NoParams.serializer(), ListCustomEndpointsReply.serializer())
-    /** Removes a saved custom endpoint from config.yaml; names the keystore variable the app deletes (null unless the entry's key is in its own HERMES_CUSTOM_<ID>_API_KEY), and whether the default model was detached from it. */
+    /** Removes a saved custom endpoint from config.yaml; names the keystore variable the app deletes (always the endpoint's own HERMES_CUSTOM_<ID>_API_KEY, never another provider's), and whether the default model was detached from it. */
     val DELETE_CUSTOM_ENDPOINT = BridgeCall("delete_custom_endpoint", DeleteCustomEndpointParams.serializer(), DeleteCustomEndpointReply.serializer())
     /** The server behind an address (URL, host:port or a bare host on the known ports) and its models; the key, if any, is used for this probe only. */
     val PROBE_ENDPOINT = BridgeCall("probe_endpoint", ProbeEndpointParams.serializer(), ProbeEndpointReply.serializer())
