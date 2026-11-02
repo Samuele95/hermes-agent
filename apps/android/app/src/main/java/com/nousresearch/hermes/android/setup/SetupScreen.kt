@@ -73,7 +73,7 @@ fun SetupScreen(setup: Setup, onPick: (String) -> Unit, onKey: (ByteArray) -> Un
                     }
                 }
             }
-            SetupStep.Endpoint -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) { EndpointForm(enabled = !setup.busy, onEndpoint) }
+            is SetupStep.Endpoint -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) { EndpointForm(enabled = !setup.busy, onEndpoint) }
             is SetupStep.SignIn -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) { SignIn(step, onOpenUrl) }
         }
     }

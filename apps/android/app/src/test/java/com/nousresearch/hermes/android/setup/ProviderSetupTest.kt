@@ -14,12 +14,17 @@ import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** Setting up a provider: the core lists them, the key goes to the keystore, the chosen model becomes the default. */
 class ProviderSetupTest {
+    private val answers = mutableMapOf<String, String>()   // bridge calls answered by these tests
+    private val sent = mutableListOf<Pair<String, String>>()
+    private var subnet: String? = null
+    private fun argOf(function: String) = Json.parseToJsonElement(sent.last { it.first == function }.second).jsonObject
     private val held = mutableMapOf<String, ByteArray>()
     private val secrets = object : SecretStore {
         override fun put(name: String, value: ByteArray) { held[name] = value.copyOf() }
@@ -52,13 +57,19 @@ class ProviderSetupTest {
     private var endpointSaved: (JsonObject) -> String = { """{"id":"host-ollama","key_env":"HERMES_CUSTOM_HOST_OLLAMA_API_KEY"}""" }
     private var secretsChanged: () -> Unit = { log += "secrets_changed" }
     private val bridge = AppBridge { function, request ->
+        answers[function]?.let { sent += function to request; return@AppBridge it }
         when (function) {
             "secrets_changed" -> { secretsChanged(); "{}" }
-            "save_custom_endpoint" -> { log += "save_endpoint"; endpointSaved(Json.parseToJsonElement(request).jsonObject) }
+            "save_custom_endpoint" -> {
+                sent += function to request
+                log += "save_endpoint"
+                endpointSaved(Json.parseToJsonElement(request).jsonObject)
+            }
             else -> error("unexpected bridge call $function")
         }
     }
-    private val setup = ProviderSetup(core, secrets, bridge, session = { "s1" }, reopenChat = { log += "reopen_chat" })
+    private val setup = ProviderSetup(core, secrets, bridge, session = { "s1" }, reopenChat = { log += "reopen_chat" },
+                                    subnet = { subnet })
 
     private fun ProviderSetup.step() = state.value?.step
 
@@ -314,6 +325,86 @@ class ProviderSetupTest {
 
         assertEquals(false, (setup.step() as SetupStep.Models).keyHeld)
         assertTrue(log.none { it == "model.disconnect" })
+    }
+
+    private val dgx = """{"id":"dgx","name":"DGX","base_url":"http://spark-98d1:11434/v1","model":"gemma4:12b-it-q8_0","has_key":true}"""
+
+    @Test
+    fun theProviderListShowsTheSavedEndpoints() = runTest {
+        answers["list_custom_endpoints"] = """{"endpoints":[$dgx]}"""
+        setup.open()
+
+        assertEquals(listOf("dgx"), (setup.state.value?.step as SetupStep.Providers).saved.map { it.id })
+    }
+
+    @Test
+    fun findingAServerFillsItsModels() = runTest {
+        answers["probe_endpoint"] = """{"outcome":"found","base_url":"http://spark-98d1:11434/v1","kind":"ollama","models":["gemma4:12b-it-q8_0","gemma3:12b-it-q8_0"]}"""
+        setup.open(); setup.addEndpoint()
+
+        setup.findServer("spark-98d1", null)
+
+        assertEquals(listOf("gemma4:12b-it-q8_0", "gemma3:12b-it-q8_0"), (setup.state.value?.step as SetupStep.Endpoint).probe?.models)
+        assertNull(setup.state.value?.error)
+        assertEquals("spark-98d1", argOf("probe_endpoint")["address"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun aRefusingServerIsExplainedAndTheTypedKeyIsWiped() = runTest {
+        answers["probe_endpoint"] = """{"outcome":"refused","base_url":null,"kind":null,"models":[]}"""
+        setup.open(); setup.addEndpoint()
+        val key = "sk-x".toByteArray()
+
+        setup.findServer("spark-98d1.tailf0dece.ts.net", key)
+
+        assertTrue(setup.state.value?.error!!.contains("short name"))
+        assertTrue(key.all { it == 0.toByte() })
+    }
+
+    @Test
+    fun searchingTheNetworkListsWhatItFound() = runTest {
+        subnet = "192.168.1.37/24"
+        answers["discover_endpoints"] = """{"found":[{"base_url":"http://192.168.1.20:11434/v1","kind":"ollama","models":["m1"]}]}"""
+        setup.open(); setup.addEndpoint()
+
+        setup.searchNetwork()
+
+        assertEquals("192.168.1.37/24", argOf("discover_endpoints")["cidr"]!!.jsonPrimitive.content)
+        assertEquals(listOf("http://192.168.1.20:11434/v1"), (setup.state.value?.step as SetupStep.Endpoint).scan?.map { it.baseUrl })
+    }
+
+    @Test
+    fun anEditKeepsItsIdAndItsKeyWhenNoNewKeyIsTyped() = runTest {
+        answers["list_custom_endpoints"] = """{"endpoints":[$dgx]}"""
+        held["HERMES_CUSTOM_DGX_API_KEY"] = "k".toByteArray()
+        endpointSaved = { """{"id":"dgx","key_env":"HERMES_CUSTOM_DGX_API_KEY"}""" }
+        setup.open()
+        setup.editEndpoint("dgx")
+
+        setup.saveEndpoint("DGX", "http://spark-98d1:11434/v1", "gemma3:12b-it-q8_0", null)
+
+        val sentSave = argOf("save_custom_endpoint")
+        assertEquals("dgx", sentSave["id"]!!.jsonPrimitive.content)
+        // has_key means "a NEW key is in the keystore": an edit without one sends false and the
+        // Python half keeps the entry's key_env (Task 4 fix b2b4a37221).
+        assertEquals(false, sentSave["has_key"]!!.jsonPrimitive.boolean)
+        assertTrue("the held key is untouched", held.containsKey("HERMES_CUSTOM_DGX_API_KEY"))
+    }
+
+    @Test
+    fun deletingAnEndpointForgetsItsKeyAndDisconnectsIt() = runTest {
+        answers["list_custom_endpoints"] = """{"endpoints":[$dgx]}"""
+        answers["delete_custom_endpoint"] = """{"key_env":"HERMES_CUSTOM_DGX_API_KEY","was_default":false}"""
+        held["HERMES_CUSTOM_DGX_API_KEY"] = "k".toByteArray()
+        var disconnected: String? = null
+        disconnect = { params -> disconnected = params["slug"]?.jsonPrimitive?.content; """{"slug":"dgx","name":"DGX","disconnected":true}""" }
+        setup.open()
+
+        setup.deleteEndpoint("dgx")
+
+        assertFalse(held.containsKey("HERMES_CUSTOM_DGX_API_KEY"))
+        assertTrue("secrets_changed" in log)
+        assertEquals("dgx", disconnected)
     }
 
     private companion object {

@@ -7,6 +7,13 @@ import com.nousresearch.hermes.bridge.CoreGateway
 import com.nousresearch.hermes.bridge.SecretStore
 import com.nousresearch.hermes.bridge.ask
 import com.nousresearch.hermes.bridge.contract.BridgeCalls
+import com.nousresearch.hermes.bridge.contract.DeleteCustomEndpointParams
+import com.nousresearch.hermes.bridge.contract.DiscoverEndpointsParams
+import com.nousresearch.hermes.bridge.contract.EndpointProbe
+import com.nousresearch.hermes.bridge.contract.ProbeEndpointParams
+import com.nousresearch.hermes.bridge.contract.FoundEndpoint
+import com.nousresearch.hermes.bridge.contract.ProbeEndpointReply
+import com.nousresearch.hermes.bridge.contract.SavedEndpoint
 import com.nousresearch.hermes.bridge.contract.SaveCustomEndpointParams
 import com.nousresearch.hermes.bridge.protocol.ConfigSetParams
 import com.nousresearch.hermes.bridge.protocol.Methods
@@ -16,6 +23,7 @@ import com.nousresearch.hermes.bridge.protocol.ModelOptionsParams
 import com.nousresearch.hermes.bridge.protocol.NousLoginParams
 import com.nousresearch.hermes.bridge.protocol.NousLoginStartParams
 import com.nousresearch.hermes.bridge.protocol.ProfileParams
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -34,15 +42,20 @@ data class ProviderChoice(val slug: String, val name: String, val keyEnv: String
 sealed interface SetupStep {
     data object Loading : SetupStep
 
-    data class Providers(val choices: List<ProviderChoice>) : SetupStep
+    /** The providers to choose from, and the custom endpoints saved on this phone ([saved]: to edit or delete). */
+    data class Providers(val choices: List<ProviderChoice>, val saved: List<SavedEndpoint> = emptyList()) : SetupStep
 
     data class Key(val provider: ProviderChoice) : SetupStep
 
     /** The provider's models to pick the default from; [keyHeld]: its key is on this phone and can be forgotten. */
     data class Models(val provider: ProviderChoice, val keyHeld: Boolean = false) : SetupStep
 
-    /** A custom OpenAI-compatible endpoint: name, base URL, model and an optional key. */
-    data object Endpoint : SetupStep
+    /**
+     * A custom OpenAI-compatible endpoint (name, base URL, model, optional key): [editing] a saved one (else a new one),
+     * what [probe] found at the typed address, the network search's results ([scan]) and whether one runs ([scanning]).
+     */
+    data class Endpoint(val editing: SavedEndpoint? = null, val probe: ProbeEndpointReply? = null,
+                        val scan: List<FoundEndpoint>? = null, val scanning: Boolean = false) : SetupStep
 
     /** A device-code sign-in waiting for the user to approve [userCode] at [url]. */
     data class SignIn(val provider: ProviderChoice, val loginId: String, val userCode: String, val url: String) : SetupStep
@@ -70,6 +83,7 @@ class ProviderSetup(
     private val session: suspend () -> String,
     private val reopenChat: suspend () -> Unit,
     private val keyNames: KeyNames = KeyNames.InMemory(),
+    private val subnet: suspend () -> String? = { null },
 ) {
     private companion object {
         /** `model.disconnect`'s answer when the provider holds no credential. */
@@ -83,13 +97,14 @@ class ProviderSetup(
     val state: StateFlow<Setup?> = setup.asStateFlow()
 
     private var choices = emptyList<ProviderChoice>()
+    private var saved = emptyList<SavedEndpoint>()
 
     /** True when the core has no provider it could answer with. */
     suspend fun needed(): Boolean = core.call(Methods.SETUP_STATUS, ProfileParams()).providerConfigured != true
 
     suspend fun open() {
         setup.value = Setup()
-        step { SetupStep.Providers(listed(refresh = false).also { choices = it }) }
+        step { providers(refresh = false) }
     }
 
     fun close() {
@@ -128,7 +143,7 @@ class ProviderSetup(
             val polled = try {
                 core.call(Methods.NOUS_LOGIN_POLL, NousLoginParams(loginId = waiting.loginId))
             } catch (refused: CoreError) {
-                setup.update { it?.copy(step = SetupStep.Providers(choices), error = refused.message) }
+                setup.update { it?.copy(step = SetupStep.Providers(choices, saved), error = refused.message) }
                 return
             }
             when (polled.status) {
@@ -139,7 +154,7 @@ class ProviderSetup(
                     models(signedIn)
                 }
                 else -> setup.update {
-                    it?.copy(step = SetupStep.Providers(choices), error = polled.errorMessage ?: "${provider.name} sign-in ${polled.status}.")
+                    it?.copy(step = SetupStep.Providers(choices, saved), error = polled.errorMessage ?: "${provider.name} sign-in ${polled.status}.")
                 }
             }
             return
@@ -181,16 +196,69 @@ class ProviderSetup(
     }
 
     fun addEndpoint() {
-        setup.update { it?.copy(step = SetupStep.Endpoint, error = null) }
+        setup.update { it?.copy(step = SetupStep.Endpoint(), error = null) }
     }
 
-    /** Saves the endpoint, keeps its [key] (when given; the caller's copy is wiped), then makes [model] the default. */
-    suspend fun saveEndpoint(name: String, baseUrl: String, model: String, key: ByteArray?) {
-        if (setup.value?.step != SetupStep.Endpoint) return
-        val hasKey = key != null && key.isNotEmpty()
+    /** Opens the form on the saved endpoint [id]; saving it keeps its id (and its key unless a new one is typed). */
+    fun editEndpoint(id: String) {
+        val endpoint = saved.firstOrNull { it.id == id } ?: return
+        setup.update { it?.copy(step = SetupStep.Endpoint(editing = endpoint), error = null) }
+    }
+
+    /**
+     * Asks for the model server behind [address] (a host, host:port or URL) and its models. [key] is used for this
+     * probe only and wiped after; nothing is stored until [saveEndpoint].
+     */
+    suspend fun findServer(address: String, key: ByteArray?) {
+        val form = setup.value?.step as? SetupStep.Endpoint ?: return
         step {
-            val saved = try {
-                bridge.ask(BridgeCalls.SAVE_CUSTOM_ENDPOINT, SaveCustomEndpointParams(null, name, baseUrl, model, hasKey))
+            val found = try {
+                bridge.ask(BridgeCalls.PROBE_ENDPOINT,
+                           ProbeEndpointParams(address.trim(), key?.takeIf { it.isNotEmpty() }?.decodeToString()))
+            } finally {
+                key?.fill(0)
+            }
+            if (found.outcome != EndpointProbe.FOUND) throw CoreError(0, problem(found.outcome))
+            form.copy(probe = found, scan = null)
+        }
+    }
+
+    /** Looks for model servers on the phone's Wi-Fi network (only when the user asks: it knocks on every host). */
+    suspend fun searchNetwork() {
+        val form = setup.value?.step as? SetupStep.Endpoint ?: return
+        val cidr = subnet() ?: run {
+            setup.update { it?.copy(error = "Connect to a Wi-Fi network to search it.") }
+            return
+        }
+        setup.update { it?.copy(step = form.copy(scanning = true), error = null) }
+        step {
+            val found = bridge.ask(BridgeCalls.DISCOVER_ENDPOINTS, DiscoverEndpointsParams(cidr)).found
+            if (found.isEmpty()) throw CoreError(0, "No model server answered on this network.")
+            form.copy(scan = found, scanning = false)
+        }
+        setup.update { s -> (s?.step as? SetupStep.Endpoint)?.let { s.copy(step = it.copy(scanning = false)) } ?: s }
+    }
+
+    /** Deletes the saved endpoint [id] and forgets its key, on the phone and at the core (L10). */
+    suspend fun deleteEndpoint(id: String) {
+        step {
+            val gone = bridge.ask(BridgeCalls.DELETE_CUSTOM_ENDPOINT, DeleteCustomEndpointParams(id))
+            forget(id, gone.keyEnv)  // always the endpoint's own slot, held or not
+            providers(refresh = true)
+        }
+    }
+
+    /**
+     * Saves the endpoint (the one being edited keeps its id), keeps a newly typed [key] (the caller's copy is wiped;
+     * with none, an edited endpoint keeps the key it had), then makes [model] the default.
+     */
+    suspend fun saveEndpoint(name: String, baseUrl: String, model: String, key: ByteArray?) {
+        val form = setup.value?.step as? SetupStep.Endpoint ?: return
+        // has_key: a NEW key goes to the keystore. Without one, the Python half keeps an edited entry's key_env.
+        val newKey = key != null && key.isNotEmpty()
+        step {
+            val entry = try {
+                bridge.ask(BridgeCalls.SAVE_CUSTOM_ENDPOINT, SaveCustomEndpointParams(form.editing?.id, name, baseUrl, model, newKey))
             } catch (refused: CoreError) {
                 key?.fill(0)
                 throw refused
@@ -198,19 +266,19 @@ class ProviderSetup(
                 key?.fill(0)
                 throw CoreError(0, "Could not save the endpoint (${failed.javaClass.simpleName}).")
             }
-            val keyEnv = saved.keyEnv
-            if (hasKey) {
+            val keyEnv = entry.keyEnv
+            if (newKey) {
                 store(keyEnv, key!!)
                 bridge.secretsChanged()
-                keyNames[saved.id] = keyEnv
+                keyNames[entry.id] = keyEnv
             }
-            models(ProviderChoice(saved.id, name, keyEnv.ifEmpty { null }, true, listOf(model)))
+            models(ProviderChoice(entry.id, name, keyEnv.ifEmpty { null }, true, listOf(model)))
         }
         if (setup.value?.error == null) choose(model)
     }
 
     fun back() {
-        setup.update { it?.copy(step = SetupStep.Providers(choices), error = null, confirm = null) }
+        setup.update { it?.copy(step = SetupStep.Providers(choices, saved), error = null, confirm = null) }
     }
 
     private fun store(name: String, key: ByteArray) {
@@ -244,7 +312,7 @@ class ProviderSetup(
         val name = keyName(shown.provider)?.takeIf { shown.keyHeld } ?: return
         step {
             forget(shown.provider.slug, name)
-            SetupStep.Providers(listed(refresh = false).also { choices = it })
+            providers(refresh = false)
         }
     }
 
@@ -253,6 +321,22 @@ class ProviderSetup(
 
     /** The variable the provider's key is under: the core names it for an unconfigured provider, else the app recorded it. */
     private fun keyName(provider: ProviderChoice): String? = provider.keyEnv ?: keyNames[provider.slug]
+
+    /** The provider list as the core now has it, with the endpoints saved on this phone. */
+    private suspend fun providers(refresh: Boolean): SetupStep.Providers {
+        choices = listed(refresh)
+        saved = savedEndpoints()
+        return SetupStep.Providers(choices, saved)
+    }
+
+    /** The saved endpoints; a list that cannot be read is shown empty rather than blocking provider setup. */
+    private suspend fun savedEndpoints(): List<SavedEndpoint> = try {
+        bridge.ask(BridgeCalls.LIST_CUSTOM_ENDPOINTS).endpoints
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) {
+        emptyList()
+    }
 
     private suspend fun listed(refresh: Boolean): List<ProviderChoice> =
         core.call(Methods.MODEL_OPTIONS, ModelOptionsParams(includeUnconfigured = true, refresh = refresh)).providers.mapNotNull(::offered)
@@ -267,6 +351,16 @@ class ProviderSetup(
             setup.update { it?.copy(busy = false, error = forUser(failed)) }
         }
     }
+}
+
+/** Why the server at the typed address cannot be set up as it is, in words for the user. */
+internal fun problem(outcome: EndpointProbe): String = when (outcome) {
+    EndpointProbe.UNREACHABLE -> "Nothing answered at that address. Check the address and that the server is running."
+    EndpointProbe.NEEDS_KEY -> "This server needs an API key."
+    EndpointProbe.REFUSED ->
+        "The server refused this address. Ollama answers only to its own machine's names: use its short name, e.g. spark-98d1."
+    EndpointProbe.NO_MODELS -> "The server answered but lists no models. Type the model name instead."
+    EndpointProbe.FOUND -> ""
 }
 
 /**

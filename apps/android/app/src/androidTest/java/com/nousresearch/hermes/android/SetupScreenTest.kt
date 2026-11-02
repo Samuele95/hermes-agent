@@ -85,7 +85,7 @@ class SetupScreenTest {
 
     @Test
     fun anEndpointNeedsNameUrlAndModelAndItsBlankKeyIsNoKey() {
-        show(Setup(SetupStep.Endpoint))
+        show(Setup(SetupStep.Endpoint()))
         compose.onNodeWithTag("endpoint-key").assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Password))
 
         compose.onNodeWithTag("endpoint-name").performTextInput(" Host Ollama ")
