@@ -172,3 +172,18 @@ def test_the_bridge_call_answers_its_declared_reply(home, servers):
                                            json.dumps({"address": f"http://127.0.0.1:{server.port}/v1", "api_key": None})))
 
     assert reply["outcome"] == "found"
+
+
+def test_reading_why_a_probe_failed_closes_every_answer(home, servers):
+    import gc
+    import warnings
+
+    from hermes_android.endpoints import _status
+
+    refusing = servers(status=403)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", ResourceWarning)
+        assert _status(f"http://127.0.0.1:{refusing.port}", None, 2.0) == 403
+        gc.collect()
+
+    assert [w for w in caught if issubclass(w.category, ResourceWarning)] == []

@@ -99,6 +99,7 @@ def _status(base_url: str, api_key: str | None, timeout: float) -> int | None:
                                         timeout=timeout) as resp:
                 return resp.status
         except urllib.error.HTTPError as answered:
+            answered.close()  # an HTTPError holds the open response
             status = answered.code
             if answered.code != 404:
                 return status
