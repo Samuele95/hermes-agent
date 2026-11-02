@@ -51,6 +51,13 @@ enum class EndpointProbe {
 }
 
 @Serializable
+data class FoundEndpoint(
+    @SerialName("base_url") val baseUrl: String,
+    val kind: String,
+    val models: List<String>,
+)
+
+@Serializable
 data class RuntimeFactsReply(
     val python: String,
     val sqlite: String,
@@ -99,6 +106,16 @@ data class ProbeEndpointReply(
     @SerialName("base_url") val baseUrl: String?,
     val kind: String?,
     val models: List<String>,
+)
+
+@Serializable
+data class DiscoverEndpointsParams(
+    val cidr: String,
+)
+
+@Serializable
+data class DiscoverEndpointsReply(
+    val found: List<FoundEndpoint>,
 )
 
 @Serializable
@@ -211,6 +228,8 @@ object BridgeCalls {
     val SAVE_CUSTOM_ENDPOINT = BridgeCall("save_custom_endpoint", SaveCustomEndpointParams.serializer(), SaveCustomEndpointReply.serializer())
     /** The server behind an address (URL, host:port or a bare host on the known ports) and its models; the key, if any, is used for this probe only. */
     val PROBE_ENDPOINT = BridgeCall("probe_endpoint", ProbeEndpointParams.serializer(), ProbeEndpointReply.serializer())
+    /** OpenAI-compatible servers on the phone's Wi-Fi network (its /24 at most, the known ports), each with its models. */
+    val DISCOVER_ENDPOINTS = BridgeCall("discover_endpoints", DiscoverEndpointsParams.serializer(), DiscoverEndpointsReply.serializer())
     /** A fresh Ed25519 identity; the app stores private in the keystore at once. */
     val SSH_NEW_KEY = BridgeCall("ssh_new_key", NoParams.serializer(), SshNewKeyReply.serializer())
     /** The public half of the identity the core reads from the keystore. */

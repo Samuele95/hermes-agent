@@ -26,7 +26,13 @@
       "no_models"
     ]
   },
-  "records": {},
+  "records": {
+    "FoundEndpoint": {
+      "base_url": "string",
+      "kind": "string",
+      "models": "[string]"
+    }
+  },
   "calls": {
     "runtime_facts": {
       "summary": "The interpreter facts the app shows.",
@@ -88,6 +94,15 @@
         "base_url": "string?",
         "kind": "string?",
         "models": "[string]"
+      }
+    },
+    "discover_endpoints": {
+      "summary": "OpenAI-compatible servers on the phone's Wi-Fi network (its /24 at most, the known ports), each with its models.",
+      "params": {
+        "cidr": "string"
+      },
+      "reply": {
+        "found": "[FoundEndpoint]"
       }
     },
     "ssh_new_key": {
