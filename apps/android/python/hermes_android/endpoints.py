@@ -80,17 +80,31 @@ def _open(base_url: str, timeout: float) -> bool:
         return False
 
 
+def _toggle_v1(base_url: str) -> str:
+    """The same base with ``/v1`` added or removed (``probe_api_models``'s own heuristic): the base a
+    server answering only the other form would need."""
+    trimmed = base_url.rstrip("/")
+    return trimmed[:-3].rstrip("/") if trimmed.endswith("/v1") else trimmed + "/v1"
+
+
 def _status(base_url: str, api_key: str | None, timeout: float) -> int | None:
-    """The HTTP status of ``<base>/models`` (None when nothing answered): why a probe found no models."""
+    """The HTTP status of ``<base>/models``, or of its ``/v1``-toggled variant when the first is a plain
+    404 (None when neither answered): why a probe found no models, even when the server serves only the
+    other form of the base URL (a bare base given without ``/v1``, or the reverse)."""
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-    try:
-        with urllib.request.urlopen(urllib.request.Request(base_url.rstrip("/") + "/models", headers=headers),
-                                    timeout=timeout) as resp:
-            return resp.status
-    except urllib.error.HTTPError as answered:
-        return answered.code
-    except (urllib.error.URLError, OSError):
-        return None
+    status: int | None = None
+    for candidate in dict.fromkeys((base_url, _toggle_v1(base_url))):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(candidate.rstrip("/") + "/models", headers=headers),
+                                        timeout=timeout) as resp:
+                return resp.status
+        except urllib.error.HTTPError as answered:
+            status = answered.code
+            if answered.code != 404:
+                return status
+        except (urllib.error.URLError, OSError):
+            continue
+    return status
 
 
 def probe(address: str, api_key: str | None = None, ports=KNOWN_PORTS, timeout: float = 5.0) -> dict:

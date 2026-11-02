@@ -134,6 +134,20 @@ def test_a_refusing_server_says_refused_not_needs_key(home, servers):
     assert probe(f"http://127.0.0.1:{server.port}/v1")["outcome"] == "refused"
 
 
+def test_a_full_url_without_v1_against_a_key_protected_server_needs_the_key(home, servers):
+    # The server only answers /v1/models (as real Ollama/LM Studio/llama.cpp/vLLM do); a bare /models 404s.
+    # The address is given without /v1, so the status check must also look at the /v1-toggled variant.
+    server = servers(models=["m1"], key="sk-test-123")
+
+    assert probe(f"http://127.0.0.1:{server.port}")["outcome"] == "needs_key"
+
+
+def test_a_full_url_without_v1_against_a_refusing_server_is_refused(home, servers):
+    server = servers(status=403)
+
+    assert probe(f"http://127.0.0.1:{server.port}")["outcome"] == "refused"
+
+
 def test_nothing_listening_is_unreachable_and_an_empty_list_is_no_models(home, servers):
     empty = servers(models=[])
 
