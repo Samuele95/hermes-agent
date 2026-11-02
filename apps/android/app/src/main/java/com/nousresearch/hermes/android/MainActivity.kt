@@ -96,7 +96,11 @@ class MainActivity : ComponentActivity() {
                                             onBack = state.setup::back, onClose = state.setup::close,
                                             onAddEndpoint = state.setup::addEndpoint, onOpenUrl = ::openInBrowser,
                                             onEndpoint = { name, url, model, key -> app.setup { saveEndpoint(name, url, model, key) } },
-                                            onForget = { app.setup { forgetKey() } })
+                                            onForget = { app.setup { forgetKey() } },
+                                            onFindServer = { address, key -> app.setup { findServer(address, key) } },
+                                            onSearchNetwork = { app.setup { searchNetwork() } },
+                                            onEditEndpoint = state.setup::editEndpoint,
+                                            onDeleteEndpoint = { id -> app.setup { deleteEndpoint(id) } })
                                 return@Surface
                             }
                             val answers = PromptAnswers(approve = { p, choice -> app.chat { approve(p, choice) } },

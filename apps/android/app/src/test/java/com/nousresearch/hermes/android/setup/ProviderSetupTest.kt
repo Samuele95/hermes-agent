@@ -508,6 +508,8 @@ class ProviderSetupTest {
         // The live session keeps the model it was opened with (L11), and the core has detached it.
         assertEquals("reopen_chat", log.last { it == "reopen_chat" })
         assertEquals(emptyList<String>(), (setup.step() as SetupStep.Providers).saved.map { it.id })
+        // No default model is left: the list says so instead of looking as if nothing happened.
+        assertTrue((setup.step() as SetupStep.Providers).defaultGone)
     }
 
     @Test
@@ -519,7 +521,7 @@ class ProviderSetupTest {
         setup.deleteEndpoint("dgx")
 
         assertTrue("reopen_chat" !in log)
-        assertTrue(setup.step() is SetupStep.Providers)
+        assertFalse((setup.step() as SetupStep.Providers).defaultGone)
     }
 
     @Test
@@ -533,6 +535,34 @@ class ProviderSetupTest {
 
         assertEquals("HERMES_CUSTOM_DGX_API_KEY is managed elsewhere", setup.state.value?.error)
         assertEquals(emptyList<String>(), (setup.step() as SetupStep.Providers).saved.map { it.id })
+    }
+
+    @Test
+    fun aDefaultDeletedWhileItsKeyCouldNotBeForgottenStillSaysNoDefaultIsLeft() = runTest {
+        answers["list_custom_endpoints"] = """{"endpoints":[$dgx]}"""
+        answers["delete_custom_endpoint"] = """{"key_env":"HERMES_CUSTOM_DGX_API_KEY","was_default":true}"""
+        disconnect = { throw CoreError(5035, "HERMES_CUSTOM_DGX_API_KEY is managed elsewhere") }
+        setup.open()
+
+        setup.deleteEndpoint("dgx")
+
+        assertTrue((setup.step() as SetupStep.Providers).defaultGone)
+    }
+
+    @Test
+    fun theListKeepsSayingTheDefaultIsGoneUntilSetupIsOpenedAgain() = runTest {
+        answers["list_custom_endpoints"] = """{"endpoints":[$dgx]}"""
+        answers["delete_custom_endpoint"] = """{"key_env":"HERMES_CUSTOM_DGX_API_KEY","was_default":true}"""
+        setup.open()
+        setup.deleteEndpoint("dgx")
+
+        setup.addEndpoint()
+        setup.back()
+        assertTrue((setup.step() as SetupStep.Providers).defaultGone)
+
+        setup.close()
+        setup.open()
+        assertFalse((setup.step() as SetupStep.Providers).defaultGone)
     }
 
     private companion object {

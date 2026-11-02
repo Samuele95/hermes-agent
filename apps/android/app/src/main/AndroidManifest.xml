@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- Providers and endpoints are reached over the network. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Which Wi-Fi network the phone is on, for the endpoint search the user starts (normal permission). -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- A running turn: dataSync foreground service, and its notification on Android 13+. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />

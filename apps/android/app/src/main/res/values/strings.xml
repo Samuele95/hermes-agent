@@ -55,7 +55,20 @@
     <string name="setup_providers">Providers</string>
     <string name="setup_add_endpoint_detail">Any OpenAI-compatible server: Ollama, llama.cpp, vLLM…</string>
     <string name="setup_endpoint_name">Name</string>
-    <string name="setup_endpoint_url">Base URL (e.g. http://127.0.0.1:11434/v1)</string>
+    <string name="setup_endpoint_address">Address (e.g. spark-98d1 or http://host:11434/v1)</string>
+    <string name="setup_find_server">Find server</string>
+    <string name="setup_search_network">Search this network</string>
+    <plurals name="setup_found_models">
+        <item quantity="one">%1$s · %2$d model</item>
+        <item quantity="other">%1$s · %2$d models</item>
+    </plurals>
+    <string name="setup_found_on_network">On this network</string>
+    <string name="setup_your_endpoints">Your endpoints</string>
+    <string name="setup_add">Add</string>
+    <string name="setup_save">Save</string>
+    <string name="setup_delete_endpoint">Delete endpoint</string>
+    <string name="setup_key_keep">API key (leave empty to keep the saved one)</string>
+    <string name="setup_no_default">The endpoint you deleted was your default model. Pick a provider or an endpoint before you chat.</string>
     <string name="setup_endpoint_key">API key (optional)</string>
     <string name="setup_sign_in">Sign in to %1$s</string>
     <string name="setup_sign_in_code">Open the sign-in page and confirm this code:</string>

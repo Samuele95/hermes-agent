@@ -32,10 +32,12 @@ fun installRuntime(context: Context): HermesPaths {
 
 /**
  * The chat process's composition root: starts [runtime]'s core and builds what the screens drive over it. The
- * chat's session is open on return, and setup is showing already when the core has no provider yet.
+ * chat's session is open on return, and setup is showing already when the core has no provider yet. [subnet] names the
+ * phone's Wi-Fi network for the endpoint search.
  */
 suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, secrets: SecretStore, turns: TurnHost,
-                        notifier: Notifier, scope: CoroutineScope, keyNames: KeyNames = KeyNames.InMemory()): CoreState.Ready {
+                        notifier: Notifier, scope: CoroutineScope, keyNames: KeyNames = KeyNames.InMemory(),
+                        subnet: suspend () -> String? = { null }): CoreState.Ready {
     val gateway = runtime.connect(paths, secrets)
     val bridge = runtime.bridge
     val keepSecret: suspend (String, ByteArray) -> Unit = { name, value ->
@@ -43,7 +45,8 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, secrets: Secre
         bridge.secretsChanged()
     }
     val chat = ChatSession(gateway, turns, scope, keepSecret, notifier).apply { open() }
-    val setup = ProviderSetup(gateway, secrets, bridge, session = { chat.sessionId }, reopenChat = chat::open, keyNames = keyNames)
+    val setup = ProviderSetup(gateway, secrets, bridge, session = { chat.sessionId }, reopenChat = chat::open, keyNames = keyNames,
+                              subnet = subnet)
     val history = SessionHistory(list = chat::pastSessions, resume = chat::resume)
     // Undispatched: setup is showing before the core is Ready, so the chat never flashes first.
     if (setup.needed()) scope.launch(start = CoroutineStart.UNDISPATCHED) { setup.open() }

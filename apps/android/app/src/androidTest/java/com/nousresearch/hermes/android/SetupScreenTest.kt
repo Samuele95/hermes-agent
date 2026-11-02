@@ -11,6 +11,7 @@ import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.nousresearch.hermes.android.setup.Confirm
@@ -18,6 +19,10 @@ import com.nousresearch.hermes.android.setup.ProviderChoice
 import com.nousresearch.hermes.android.setup.Setup
 import com.nousresearch.hermes.android.setup.SetupScreen
 import com.nousresearch.hermes.android.setup.SetupStep
+import com.nousresearch.hermes.bridge.contract.EndpointProbe
+import com.nousresearch.hermes.bridge.contract.FoundEndpoint
+import com.nousresearch.hermes.bridge.contract.ProbeEndpointReply
+import com.nousresearch.hermes.bridge.contract.SavedEndpoint
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -37,8 +42,13 @@ class SetupScreenTest {
                     onModel = { model, confirmed -> picked += "model:$model:$confirmed" }, onBack = {}, onClose = {},
                     onAddEndpoint = { picked += "add-endpoint" },
                     onEndpoint = { name, url, model, key -> picked += "endpoint:$name|$url|$model|${key?.let(::String)}" },
-                    onOpenUrl = { picked += "open:$it" }, onForget = { picked += "forget" })
+                    onOpenUrl = { picked += "open:$it" }, onForget = { picked += "forget" },
+                    onFindServer = { address, key -> picked += "find $address" + (key?.let { " key:" + String(it) } ?: "") },
+                    onSearchNetwork = { picked += "search" }, onEditEndpoint = { picked += "edit $it" },
+                    onDeleteEndpoint = { picked += "delete $it" })
     }
+
+    private val dgx = SavedEndpoint("dgx", "DGX", "http://spark-98d1:11434/v1", "gemma4:12b-it-q8_0", true)
 
     @Test
     fun aProviderIsPickedFromTheCoresList() {
@@ -84,18 +94,90 @@ class SetupScreenTest {
     }
 
     @Test
-    fun anEndpointNeedsNameUrlAndModelAndItsBlankKeyIsNoKey() {
+    fun anEndpointNeedsAnAddressAndAModelAndItsBlankKeyIsNoKey() {
         show(Setup(SetupStep.Endpoint()))
         compose.onNodeWithTag("endpoint-key").assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Password))
 
         compose.onNodeWithTag("endpoint-name").performTextInput(" Host Ollama ")
-        compose.onNodeWithTag("endpoint-url").performTextInput("http://127.0.0.1:11434/v1")
-        compose.onNodeWithTag("endpoint-save").assertIsNotEnabled()
+        compose.onNodeWithTag("endpoint-address").performTextInput("http://127.0.0.1:11434/v1")
+        compose.onNodeWithTag("endpoint-save").performScrollTo().assertIsNotEnabled()
         compose.onNodeWithTag("endpoint-model").performTextInput("gemma4")
         compose.onNodeWithTag("endpoint-key").performTextInput("   ")
-        compose.onNodeWithTag("endpoint-save").performClick()
+        compose.onNodeWithTag("endpoint-save").performScrollTo().performClick()
 
         assertEquals(listOf("endpoint:Host Ollama|http://127.0.0.1:11434/v1|gemma4|null"), picked)
+    }
+
+    @Test
+    fun savedEndpointsAreListedAndOpenForEditing() {
+        show(Setup(SetupStep.Providers(emptyList(), listOf(dgx))))
+
+        compose.onNodeWithText("DGX").assertExists()
+        compose.onNodeWithTag("saved-dgx").performClick()
+
+        assertEquals(listOf("edit dgx"), picked)
+    }
+
+    @Test
+    fun aFoundServerOffersItsModelsInADropdown() {
+        val found = ProbeEndpointReply(EndpointProbe.FOUND, "http://spark-98d1:11434/v1", "ollama",
+                                       listOf("gemma4:12b-it-q8_0", "gemma3:12b-it-q8_0"))
+        show(Setup(SetupStep.Endpoint(probe = found)))
+
+        compose.onNodeWithText("ollama · 2 models").assertExists()
+        compose.onNodeWithTag("endpoint-model").performClick()
+        compose.onNodeWithTag("endpoint-model-gemma3:12b-it-q8_0").performClick()
+        compose.onNodeWithTag("endpoint-save").performScrollTo().performClick()
+
+        // No name typed: the server's host names it.
+        assertEquals(listOf("endpoint:spark-98d1|http://spark-98d1:11434/v1|gemma3:12b-it-q8_0|null"), picked)
+    }
+
+    @Test
+    fun findServerSendsTheTypedAddressAndKey() {
+        show(Setup(SetupStep.Endpoint()))
+
+        compose.onNodeWithTag("endpoint-address").performTextInput(" spark-98d1 ")
+        compose.onNodeWithTag("endpoint-key").performTextInput("sk-local")
+        compose.onNodeWithTag("find-server").performScrollTo().performClick()
+
+        assertEquals("find spark-98d1 key:sk-local", picked.last())
+    }
+
+    @Test
+    fun aServerFoundOnTheNetworkIsAskedForItsModels() {
+        val found = FoundEndpoint("http://192.168.1.20:1234/v1", "lmstudio", listOf("qwen3"))
+        show(Setup(SetupStep.Endpoint(scan = listOf(found))))
+
+        compose.onNodeWithTag("search-network").performScrollTo().performClick()
+        compose.onNodeWithTag("found-0").performScrollTo().performClick()
+
+        assertEquals(listOf("search", "find http://192.168.1.20:1234/v1"), picked)
+    }
+
+    @Test
+    fun anEditedEndpointKeepsItsValuesAndCanBeDeleted() {
+        show(Setup(SetupStep.Endpoint(editing = dgx)))
+
+        compose.onNodeWithText("API key (leave empty to keep the saved one)").assertExists()
+        compose.onNodeWithTag("endpoint-save").performScrollTo().performClick()
+        compose.onNodeWithTag("endpoint-delete").performScrollTo().performClick()
+
+        assertEquals(listOf("endpoint:DGX|http://spark-98d1:11434/v1|gemma4:12b-it-q8_0|null", "delete dgx"), picked)
+    }
+
+    @Test
+    fun aNewEndpointHasNoDeleteButton() {
+        show(Setup(SetupStep.Endpoint()))
+
+        compose.onNodeWithTag("endpoint-delete").assertDoesNotExist()
+    }
+
+    @Test
+    fun theListSaysWhenTheDefaultModelWasDeleted() {
+        show(Setup(SetupStep.Providers(listOf(deepseek), defaultGone = true)))
+
+        compose.onNodeWithTag("setup-no-default").assertExists()
     }
 
     @Test

@@ -19,6 +19,7 @@ import com.nousresearch.hermes.android.setup.ApprovalSettings
 import com.nousresearch.hermes.android.setup.PrefsKeyNames
 import com.nousresearch.hermes.android.setup.ProviderSetup
 import com.nousresearch.hermes.android.setup.SshSetup
+import com.nousresearch.hermes.android.setup.wifiSubnet
 import com.nousresearch.hermes.android.turn.ForegroundTurnHost
 import com.nousresearch.hermes.bridge.CoreGateway
 import com.nousresearch.hermes.bridge.CoreRuntime
@@ -180,7 +181,8 @@ class HermesApplication : Application() {
         val began = SystemClock.elapsedRealtime()
         val paths = withContext(Dispatchers.IO) { installRuntime(this@HermesApplication) }
         val ready = composeCore(runtime, paths, secrets, ForegroundTurnHost(this), notifier, scope,
-                                PrefsKeyNames(getSharedPreferences("provider_keys", MODE_PRIVATE)))
+                                PrefsKeyNames(getSharedPreferences("provider_keys", MODE_PRIVATE)),
+                                subnet = { wifiSubnet(this@HermesApplication) })
         return ready.copy(about = "${ready.about} · ready in ${SystemClock.elapsedRealtime() - began} ms")
     }
 }

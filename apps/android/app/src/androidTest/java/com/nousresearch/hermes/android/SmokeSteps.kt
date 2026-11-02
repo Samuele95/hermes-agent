@@ -11,6 +11,7 @@ import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.ComposeTestRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.test.platform.app.InstrumentationRegistry
 import com.nousresearch.hermes.android.chat.Chat
@@ -50,11 +51,12 @@ class SmokeSteps(private val compose: ComposeTestRule) {
         if (!shown("setup")) compose.onNodeWithTag("open-setup").performClick()
         compose.waitUntil(60_000) { shown("add-endpoint") }
         compose.onNodeWithTag("add-endpoint").performClick()
-        compose.onNodeWithTag("endpoint-name").performTextInput(args.getString("name", "Smoke endpoint"))
-        compose.onNodeWithTag("endpoint-url").performTextInput(baseUrl)
-        compose.onNodeWithTag("endpoint-model").performTextInput(requireNotNull(args.getString("model")))
-        args.getString("key")?.let { compose.onNodeWithTag("endpoint-key").performTextInput(it) }
-        compose.onNodeWithTag("endpoint-save").performClick()
+        // The model is typed: the field stays editable beside the list Find server fills.
+        compose.onNodeWithTag("endpoint-address").performScrollTo().performTextInput(baseUrl)
+        args.getString("key")?.let { compose.onNodeWithTag("endpoint-key").performScrollTo().performTextInput(it) }
+        compose.onNodeWithTag("endpoint-model").performScrollTo().performTextInput(requireNotNull(args.getString("model")))
+        compose.onNodeWithTag("endpoint-name").performScrollTo().performTextInput(args.getString("name", "Smoke endpoint"))
+        compose.onNodeWithTag("endpoint-save").performScrollTo().performClick()
         awaitChat()
     }
 
