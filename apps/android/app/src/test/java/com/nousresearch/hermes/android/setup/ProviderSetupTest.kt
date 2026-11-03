@@ -243,12 +243,27 @@ class ProviderSetupTest {
     }
 
     @Test
+    fun aBareHostIsNotSavedButSentToFindServer() = runTest {
+        setup.open()
+        setup.addEndpoint()
+        val key = "sk-x".toByteArray()
+
+        setup.saveEndpoint("DGX", "spark-98d1", "gemma4", key)
+
+        assertTrue(setup.state.value?.error.orEmpty(), setup.state.value?.error.orEmpty().contains("tap Find server"))
+        assertTrue(setup.step() is SetupStep.Endpoint)
+        assertArrayEquals(ByteArray(4), key)
+        assertTrue(held.isEmpty())
+        assertEquals(emptyList<String>(), log.drop(1))
+    }
+
+    @Test
     fun anIncompleteEndpointIsRefusedInTheCoresWords() = runTest {
         endpointSaved = { """{"error":"An endpoint needs a name, a model and an http(s) base URL."}""" }
         setup.open()
         setup.addEndpoint()
 
-        setup.saveEndpoint("Host Ollama", "127.0.0.1", "gemma4", "sk-x".toByteArray())
+        setup.saveEndpoint("", "http://127.0.0.1:11434/v1", "gemma4", "sk-x".toByteArray())
 
         assertEquals("An endpoint needs a name, a model and an http(s) base URL.", setup.state.value?.error)
         assertTrue(setup.step() is SetupStep.Endpoint)

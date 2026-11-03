@@ -95,6 +95,9 @@ class ProviderSetup(
 
         /** How often a waiting sign-in asks the core; the core polls the portal on its own schedule. */
         val POLL_INTERVAL = 1.seconds
+
+        /** What an endpoint's base URL starts with; anything else is a host for Find server. */
+        val WEB_URL = Regex("^https?://", RegexOption.IGNORE_CASE)
     }
 
     private val setup = MutableStateFlow<Setup?>(null)
@@ -283,6 +286,11 @@ class ProviderSetup(
      */
     suspend fun saveEndpoint(name: String, baseUrl: String, model: String, key: ByteArray?) {
         val form = setup.value?.step as? SetupStep.Endpoint ?: return run { key?.fill(0) }
+        if (!WEB_URL.containsMatchIn(baseUrl.trim())) {  // a host (spark-98d1) is not yet a server's URL: Find server makes one
+            key?.fill(0)
+            setup.update { it?.copy(error = "That is a host, not a server's URL: tap Find server to look it up.") }
+            return
+        }
         // has_key: a NEW key goes to the keystore. Without one, the Python half keeps an edited entry's key_env.
         val newKey = key != null && key.isNotEmpty()
         step {

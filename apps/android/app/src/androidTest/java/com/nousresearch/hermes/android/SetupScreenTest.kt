@@ -13,6 +13,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextReplacement
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.nousresearch.hermes.android.setup.Confirm
 import com.nousresearch.hermes.android.setup.ProviderChoice
@@ -37,8 +38,11 @@ class SetupScreenTest {
     private val deepseek = ProviderChoice("deepseek", "DeepSeek", "DEEPSEEK_API_KEY", ready = false, models = emptyList())
     private val picked = mutableListOf<String>()
 
-    private fun show(setup: Setup) = compose.setContent {
-        SetupScreen(setup, onPick = { picked += "pick:$it" }, onKey = { picked += "key:" + String(it) },
+    private fun show(setup: Setup) = show { setup }
+
+    /** [current] is read while composing: a state it reads changes what the screen shows, as the app's flow does. */
+    private fun show(current: () -> Setup) = compose.setContent {
+        SetupScreen(current(), onPick = { picked += "pick:$it" }, onKey = { picked += "key:" + String(it) },
                     onModel = { model, confirmed -> picked += "model:$model:$confirmed" }, onBack = {}, onClose = {},
                     onAddEndpoint = { picked += "add-endpoint" },
                     onEndpoint = { name, url, model, key -> picked += "endpoint:$name|$url|$model|${key?.let(::String)}" },
@@ -131,6 +135,50 @@ class SetupScreenTest {
 
         // No name typed: the server's host names it.
         assertEquals(listOf("endpoint:spark-98d1|http://spark-98d1:11434/v1|gemma3:12b-it-q8_0|null"), picked)
+    }
+
+    @Test
+    fun aServerFoundLaterBringsItsOwnModel() {
+        val a = ProbeEndpointReply(EndpointProbe.FOUND, "http://spark-98d1:11434/v1", "ollama", listOf("gemma4:12b-it-q8_0"))
+        val b = ProbeEndpointReply(EndpointProbe.FOUND, "http://192.168.1.20:1234/v1", "lmstudio", listOf("qwen3", "llama3"))
+        var setup by mutableStateOf(Setup(SetupStep.Endpoint()))
+        show { setup }
+
+        compose.onNodeWithTag("endpoint-model").performTextInput("gemm4")  // a typo before Find
+        setup = Setup(SetupStep.Endpoint(probe = a))
+        compose.waitForIdle()
+        setup = Setup(SetupStep.Endpoint(probe = b))  // then another server is found
+        compose.onNodeWithTag("endpoint-save").performScrollTo().performClick()
+
+        assertEquals(listOf("endpoint:192.168.1.20|http://192.168.1.20:1234/v1|qwen3|null"), picked)
+    }
+
+    @Test
+    fun aModelTheNewServerAlsoListsIsKept() {
+        val a = ProbeEndpointReply(EndpointProbe.FOUND, "http://spark-98d1:11434/v1", "ollama", listOf("gemma4", "qwen3"))
+        val b = ProbeEndpointReply(EndpointProbe.FOUND, "http://spark-98d1:11434/v1", "ollama", listOf("llama3", "qwen3"))
+        var setup by mutableStateOf(Setup(SetupStep.Endpoint(probe = a)))
+        show { setup }
+
+        compose.onNodeWithTag("endpoint-model").performClick()
+        compose.onNodeWithTag("endpoint-model-qwen3").performClick()
+        setup = Setup(SetupStep.Endpoint(probe = b))
+        compose.onNodeWithTag("endpoint-save").performScrollTo().performClick()
+
+        assertEquals(listOf("endpoint:spark-98d1|http://spark-98d1:11434/v1|qwen3|null"), picked)
+    }
+
+    @Test
+    fun anAddressEditedByHandHidesTheServerFoundBefore() {
+        val found = ProbeEndpointReply(EndpointProbe.FOUND, "http://spark-98d1:11434/v1", "ollama", listOf("gemma4:12b-it-q8_0"))
+        show(Setup(SetupStep.Endpoint(probe = found)))
+        compose.onNodeWithTag("endpoint-found").assertExists()
+
+        compose.onNodeWithTag("endpoint-address").performTextReplacement("http://other-host:8080/v1")
+
+        compose.onNodeWithTag("endpoint-found").assertDoesNotExist()
+        compose.onNodeWithTag("endpoint-model").performClick()
+        compose.onNodeWithTag("endpoint-model-gemma4:12b-it-q8_0").assertDoesNotExist()
     }
 
     @Test
