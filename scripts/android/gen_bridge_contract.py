@@ -32,8 +32,11 @@ import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-/** One declared bridge call: its name and the serializers of its request and reply. */
-class BridgeCall<P, R>(val name: String, val params: KSerializer<P>, val reply: KSerializer<R>)
+/**
+ * One declared bridge call: its name and the serializers of its request and reply. `blocking`: it may wait on
+ * the network; the embedded bridge runs it apart from the core's frames.
+ */
+class BridgeCall<P, R>(val name: String, val params: KSerializer<P>, val reply: KSerializer<R>, val blocking: Boolean = false)
 
 /** The request of a call that takes no params. */
 @Serializable
@@ -82,7 +85,13 @@ def render(contract: dict) -> str:
     for record, fields in records.items():
         out.append("\n" + _data_class(record, fields, names))
     descriptors = []
+    blocking_calls = []
     for call, spec in contract["calls"].items():
+        blocking = spec.get("blocking", False)
+        if not isinstance(blocking, bool):
+            raise ValueError(f"{call}: blocking must be true or false")
+        if blocking:
+            blocking_calls.append(call)
         base = _type_name(call)
         params = f"{base}Params" if spec["params"] else "NoParams"
         reply = f"{base}Reply" if spec["reply"] else "NoReply"
@@ -92,9 +101,12 @@ def render(contract: dict) -> str:
             out.append("\n" + _data_class(reply, spec["reply"], names))
         descriptors.append(f"    {_doc(spec.get('summary')).replace(chr(10), chr(10) + '    ')}"
                            f"val {_constant(call)} = BridgeCall({_kotlin_string(call)}, {params}.serializer(), "
-                           f"{reply}.serializer())\n")
+                           f"{reply}.serializer(){', blocking = true' if blocking else ''})\n")
     out.append("\n/** Every call the app may make into its Python half. */\nobject BridgeCalls {\n")
     out.append("".join(descriptors).replace("    \n", "\n"))
+    names_set = f"setOf({', '.join(_kotlin_string(call) for call in blocking_calls)})" if blocking_calls else "emptySet()"
+    out.append("\n    /** The calls that may wait on the network (`blocking` in the contract): EmbeddedPython runs them on their own thread. */\n"
+               f"    val BLOCKING: Set<String> = {names_set}\n")
     out.append("}\n")
     for event, spec in contract.get("events", {}).items():
         out.append("\n" + _doc(spec.get("summary")) + _data_class(f"{_type_name(event)}Event", spec["fields"], names))

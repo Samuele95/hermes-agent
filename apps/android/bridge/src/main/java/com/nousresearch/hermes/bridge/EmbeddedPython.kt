@@ -1,11 +1,9 @@
 package com.nousresearch.hermes.bridge
 
+import com.nousresearch.hermes.bridge.contract.BridgeCalls
 import com.nousresearch.hermes.bridge.protocol.ClientCapabilitiesParams
 import com.nousresearch.hermes.bridge.protocol.Methods
 import java.io.File
-import java.util.concurrent.Callable
-import java.util.concurrent.ExecutionException
-import java.util.concurrent.Executors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -20,11 +18,12 @@ fun interface FrameSink {
 /**
  * The process's one embedded CPython (`libhermes_bridge.so` over python.org's `libpython3.14.so`).
  *
- * Python is entered from one bridge thread only, which is also its main thread: [start], [submit] and
- * [call] run there in order, and the UI thread never enters Python.
+ * [start], the core's frames ([submit]) and non-blocking [call]s run in order on `hermes-python`, the
+ * interpreter's main thread. Blocking calls (`blocking` in the contract: they may wait on the network) run on
+ * `hermes-python-net`, so they never queue a frame ([BridgeThreads]). The UI thread never enters Python.
  */
 object EmbeddedPython : CoreRuntime {
-    private val pythonThread = Executors.newSingleThreadExecutor { Thread(it, "hermes-python") }
+    private val threads = BridgeThreads()
 
     @Volatile
     private var sink: FrameSink? = null
@@ -40,7 +39,7 @@ object EmbeddedPython : CoreRuntime {
         check(this.sink == null) { "the embedded interpreter is already running" }
         this.sink = sink
         listOf(paths.home, paths.hermesHome, paths.tmp).forEach { it.mkdirs() }
-        onBridge {
+        threads.run(blocking = false) {
             System.loadLibrary("hermes_bridge")
             nativeStart(paths.runtime.path, paths.home.path, paths.hermesHome.path, paths.tmp.path, role)
         }
@@ -71,19 +70,15 @@ object EmbeddedPython : CoreRuntime {
 
     /** Sends one JSON-RPC frame to the core; the answer arrives as a frame. */
     fun submit(frame: String) {
-        pythonThread.execute { nativeSubmit(frame.toByteArray(Charsets.UTF_8)) }
+        threads.post { nativeSubmit(frame.toByteArray(Charsets.UTF_8)) }
     }
 
-    /** Makes the bridge call [function] (declared in `hermes_android/bridge_contract.json`, D26) and returns its reply. */
+    /**
+     * Makes the bridge call [function] (declared in `hermes_android/bridge_contract.json`, D26) and returns its
+     * reply; a call in [BridgeCalls.BLOCKING] runs on the network thread, apart from the core's frames.
+     */
     fun call(function: String, arg: String): String =
-        onBridge { String(nativeCall(function, arg.toByteArray(Charsets.UTF_8)), Charsets.UTF_8) }
-
-    private fun <T> onBridge(block: () -> T): T =
-        try {
-            pythonThread.submit(Callable(block)).get()
-        } catch (e: ExecutionException) {
-            throw e.cause ?: e
-        }
+        threads.run(function in BridgeCalls.BLOCKING) { String(nativeCall(function, arg.toByteArray(Charsets.UTF_8)), Charsets.UTF_8) }
 
     @JvmStatic
     private fun onFrame(frame: ByteArray): Boolean {

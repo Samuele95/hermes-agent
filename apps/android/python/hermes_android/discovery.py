@@ -3,7 +3,7 @@
 Only when the user taps it: the phone's /24 at most (254 hosts), the known ports, a short connect check, then
 each open port asked once for its models through the core's ``probe_api_models``, a few side by side. The
 whole scan has one deadline: a port still unanswered then is left out, so a hung server cannot hold the
-scan (or the app's single bridge thread) longer than that.
+scan (or the bridge's network thread, ``blocking`` in the contract) longer than that.
 """
 
 from __future__ import annotations

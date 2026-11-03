@@ -1,5 +1,5 @@
 {
-  "$comment": "The app's calls into its own Python half (hermes_android.call). Each call takes a JSON object with exactly its params and answers either its reply or {\"error\": <words for the user>}. Events are the lines the Python half emits on its own (hermes_android.event_line); secrets are the keystore variable names both halves use. Types: string, integer, boolean, string? (string or null), [T] (a list of T), or an enum or a record below. The Kotlin side is generated from this file (scripts/android/gen_bridge_contract.py).",
+  "$comment": "The app's calls into its own Python half (hermes_android.call). Each call takes a JSON object with exactly its params and answers either its reply or {\"error\": <words for the user>}. Events are the lines the Python half emits on its own (hermes_android.event_line); secrets are the keystore variable names both halves use. Types: string, integer, boolean, string? (string or null), [T] (a list of T), or an enum or a record below. The Kotlin side is generated from this file (scripts/android/gen_bridge_contract.py). `blocking: true` marks a call that may wait on the network; the app runs it apart from the core's frames, so it is not ordered with them or with other calls.",
   "version": 1,
   "enums": {
     "Pinned": [
@@ -110,6 +110,7 @@
     },
     "probe_endpoint": {
       "summary": "The server behind an address (URL, host:port or a bare host on the known ports) and its models; the key, if any, is used for this probe only.",
+      "blocking": true,
       "params": {
         "address": "string",
         "api_key": "string?"
@@ -123,6 +124,7 @@
     },
     "discover_endpoints": {
       "summary": "OpenAI-compatible servers on the phone's Wi-Fi network (its /24 at most, the known ports), each with its models.",
+      "blocking": true,
       "params": {
         "cidr": "string"
       },

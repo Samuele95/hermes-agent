@@ -8,8 +8,11 @@ import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-/** One declared bridge call: its name and the serializers of its request and reply. */
-class BridgeCall<P, R>(val name: String, val params: KSerializer<P>, val reply: KSerializer<R>)
+/**
+ * One declared bridge call: its name and the serializers of its request and reply. `blocking`: it may wait on
+ * the network; the embedded bridge runs it apart from the core's frames.
+ */
+class BridgeCall<P, R>(val name: String, val params: KSerializer<P>, val reply: KSerializer<R>, val blocking: Boolean = false)
 
 /** The request of a call that takes no params. */
 @Serializable
@@ -257,9 +260,9 @@ object BridgeCalls {
     /** Removes a saved custom endpoint from config.yaml; names the keystore variable the app deletes (always the endpoint's own HERMES_CUSTOM_<ID>_API_KEY, never another provider's), and whether the default model was detached from it. */
     val DELETE_CUSTOM_ENDPOINT = BridgeCall("delete_custom_endpoint", DeleteCustomEndpointParams.serializer(), DeleteCustomEndpointReply.serializer())
     /** The server behind an address (URL, host:port or a bare host on the known ports) and its models; the key, if any, is used for this probe only. */
-    val PROBE_ENDPOINT = BridgeCall("probe_endpoint", ProbeEndpointParams.serializer(), ProbeEndpointReply.serializer())
+    val PROBE_ENDPOINT = BridgeCall("probe_endpoint", ProbeEndpointParams.serializer(), ProbeEndpointReply.serializer(), blocking = true)
     /** OpenAI-compatible servers on the phone's Wi-Fi network (its /24 at most, the known ports), each with its models. */
-    val DISCOVER_ENDPOINTS = BridgeCall("discover_endpoints", DiscoverEndpointsParams.serializer(), DiscoverEndpointsReply.serializer())
+    val DISCOVER_ENDPOINTS = BridgeCall("discover_endpoints", DiscoverEndpointsParams.serializer(), DiscoverEndpointsReply.serializer(), blocking = true)
     /** A fresh Ed25519 identity; the app stores private in the keystore at once. */
     val SSH_NEW_KEY = BridgeCall("ssh_new_key", NoParams.serializer(), SshNewKeyReply.serializer())
     /** The public half of the identity the core reads from the keystore. */
@@ -282,6 +285,9 @@ object BridgeCalls {
     val TELEGRAM_STATUS = BridgeCall("telegram_status", NoParams.serializer(), TelegramStatusReply.serializer())
     /** Asks Telegram who the held token belongs to: ok (bot named), refused by Telegram, or Telegram out of reach. */
     val TELEGRAM_CHECK = BridgeCall("telegram_check", NoParams.serializer(), TelegramCheckReply.serializer())
+
+    /** The calls that may wait on the network (`blocking` in the contract): EmbeddedPython runs them on their own thread. */
+    val BLOCKING: Set<String> = setOf("probe_endpoint", "discover_endpoints")
 }
 
 /** One state change of the :gateway process's gateway host, as a JSON line through native.emit; reason only for failed. */

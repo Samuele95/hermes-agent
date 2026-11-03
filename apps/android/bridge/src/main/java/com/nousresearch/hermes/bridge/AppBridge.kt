@@ -9,7 +9,15 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 
-/** The app's calls into its own Python half, as `hermes_android/bridge_contract.json` declares them (D26): JSON in and out. */
+/**
+ * The app's calls into its own Python half, as `hermes_android/bridge_contract.json` declares them (D26): JSON in
+ * and out.
+ *
+ * Calls and the core's frames are ordered with each other, except calls the contract marks `blocking` (they may
+ * wait on the network): a blocking call may run at the same time as frames and other calls. Cancelling the caller
+ * does not stop the Python work: the call runs to its own deadline. Callers serialize their own dependent calls
+ * by awaiting them, as `ProviderSetup` does through its step and busy state.
+ */
 fun interface AppBridge {
     suspend fun call(function: String, arg: String): String
 
@@ -19,7 +27,7 @@ fun interface AppBridge {
     }
 }
 
-/** [AppBridge] over this process's embedded interpreter, called off the caller's thread. */
+/** [AppBridge] over this process's embedded interpreter, called off the caller's thread; it routes by [BridgeCalls.BLOCKING]. */
 object EmbeddedBridge : AppBridge {
     override suspend fun call(function: String, arg: String): String =
         withContext(Dispatchers.IO) { EmbeddedPython.call(function, arg) }

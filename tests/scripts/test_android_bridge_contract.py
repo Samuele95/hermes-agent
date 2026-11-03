@@ -83,3 +83,24 @@ def test_events_become_typed_payloads_and_secrets_named_constants():
 
     assert "data class GatewayStateEvent(\n    val gateway: State,\n    val reason: String?,\n)" in text
     assert 'const val SSH_IDENTITY = "TERMINAL_SSH_PRIVATE_KEY"' in text
+
+
+def test_a_blocking_call_is_flagged_on_its_descriptor_and_named_in_blocking():
+    text = _render({"probe": {"summary": "A probe.", "params": {}, "reply": {}, "blocking": True},
+                    "quick": {"params": {}, "reply": {}}})
+
+    assert 'BridgeCall("probe", NoParams.serializer(), NoReply.serializer(), blocking = true)' in text
+    assert 'BridgeCall("quick", NoParams.serializer(), NoReply.serializer())\n' in text
+    assert '    val BLOCKING: Set<String> = setOf("probe")\n}' in text
+
+
+def test_a_call_without_the_flag_is_not_blocking():
+    text = _render({"quick": {"params": {}, "reply": {}}})
+
+    assert "blocking = " not in text
+    assert "    val BLOCKING: Set<String> = emptySet()\n}" in text
+
+
+def test_a_blocking_flag_that_is_not_a_boolean_fails_generation():
+    with pytest.raises(ValueError, match="blocking"):
+        _render({"probe": {"params": {}, "reply": {}, "blocking": "yes"}})
