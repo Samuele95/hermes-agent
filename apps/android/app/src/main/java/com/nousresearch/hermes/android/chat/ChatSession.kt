@@ -124,37 +124,27 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     /**
      * Opens the chat at process start in the conversation the core says was last (`session.most_recent`), as the
      * desktop's "Reopen last chat on launch" does; a new one when the core's `display.resume_last_session` is
-     * `false`, when it has none, or when that one cannot be resumed. Which conversation is last is the core's to say:
+     * `false`, when it has none, or when that one cannot be resumed or read. Which conversation is last is the core's to say:
      * the app keeps no copy, so a session the gateway process held counts too.
      */
     suspend fun start() {
         val last = lastSession()
-        if (last != null) {
-            try {
-                resumed(last)
-                return
-            } catch (gone: CoreError) {  // deleted or unreadable since it was listed: a new chat, quietly (the TUI's rule)
-            }
-        }
+        // Deleted, unreadable or undecodable since it was listed: a new chat, quietly (the TUI's rule; I1-V1, V3).
+        if (last != null && orElse(false) { resumed(last); true }) return
         opened()
     }
 
     /** The stored id to reopen, or null: the setting is off, or the core has none (D2). An ordinary value (EJ-69). */
     private suspend fun lastSession(): String? {
         if (!reopensLast()) return null
-        return try {
-            core.call(Methods.SESSION_MOST_RECENT, SessionMostRecentParams()).sessionId?.ifBlank { null }
-        } catch (refused: CoreError) {  // a core without the method: nothing to reopen
-            null
-        }
+        // A core without the method, or an answer this app cannot read: nothing to reopen (D2).
+        return orElse(null) { core.call(Methods.SESSION_MOST_RECENT, SessionMostRecentParams()).sessionId?.ifBlank { null } }
     }
 
-    /** `display.resume_last_session` is not `false`: unset means the default (on), as does an unreadable config (D1). */
-    private suspend fun reopensLast(): Boolean = try {
+    /** `display.resume_last_session` is not `false`: unset means the default (on), as does a config that cannot be read or decoded (D1). */
+    private suspend fun reopensLast(): Boolean = orElse(true) {
         val display = core.call(Methods.CONFIG_GET, ConfigGetParams(key = "full")).config?.get("display") as? JsonObject
         display?.get("resume_last_session") != JsonPrimitive(false)
-    } catch (refused: CoreError) {
-        true
     }
 
     /**
@@ -328,6 +318,18 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
             "Rebuild the app so the two match; some features may not work until then."
     }
 
+    /**
+     * [step]'s value, or [fallback] when it fails in any way but cancellation: the core's refusal, a reply this app
+     * cannot decode, a broken bridge. Only for a step whose failure has a documented fallback (start's reopen, retry's
+     * row lookup), so every failure of it is substitutable for that outcome (SOLID-L, as [forUser] is one rule).
+     */
+    private inline fun <T> orElse(fallback: T, step: () -> T): T = try {
+        step()
+    } catch (failed: Exception) {
+        if (failed is CancellationException) throw failed  // not a failure: the caller's scope is ending
+        fallback
+    }
+
     suspend fun send(text: String) {
         val session = sessionId
         change { it.copy(chat = it.chat.sent(text)) }
@@ -381,12 +383,11 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     }
 
     /** The row of [text] in the core's history: the one user row with exactly those words, else null (D6, EJ-62). */
-    private suspend fun rowIdOf(session: String, text: String): Long? = try {
+    // No history to read or decode: a plain resubmit, as the desktop degrades (B5-D1).
+    private suspend fun rowIdOf(session: String, text: String): Long? = orElse(null) {
         core.call(Methods.SESSION_HISTORY, SessionHistoryParams(sessionId = session)).messages
             .filter { it.role == "user" && it.displayKind == null && it.rowId != null }
             .singleOrNull { it.text.orEmpty().trim() == text.trim() }?.rowId
-    } catch (refused: CoreError) {  // no history to read: a plain resubmit, as the desktop degrades
-        null
     }
 
     /** After a refused retry: the core's transcript re-read (invariant 5), else [before] (D5); then [words]. */

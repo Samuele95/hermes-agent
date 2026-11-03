@@ -7,6 +7,10 @@ import com.nousresearch.hermes.android.turn.TurnHost
 import com.nousresearch.hermes.bridge.protocol.BackendContract
 import com.nousresearch.hermes.bridge.protocol.TurnStatus
 import com.nousresearch.hermes.bridge.CoreError
+import com.nousresearch.hermes.bridge.protocol.Methods
+import com.nousresearch.hermes.bridge.protocol.SessionResumeParams
+import kotlinx.serialization.SerializationException
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.runBlocking
@@ -881,6 +885,67 @@ class ChatSessionTest {
     }
 
     @Test
+    fun aLastConversationTheAppCannotReadOrReachLeavesANewChat() = runTest(UnconfinedTestDispatcher()) {
+        mostRecent = { """{"session_id":"db-old","title":"Calendar","source":"cli"}""" }
+        // A stored row without its required role: the reply decodes nowhere, and the core said nothing wrong.
+        val undecodable = { """{"session_id":"s-resumed","message_count":1,"messages":[{"kind":"user","text":"what's on my calendar?"}],"info":{}}""" }
+        resume = undecodable
+        assertTrue("fails as a decode, not as the core's refusal",
+                   runCatching { core.call(Methods.SESSION_RESUME, SessionResumeParams(sessionId = "db-old", source = "android")) }
+                       .exceptionOrNull() is SerializationException)
+        val answers: List<() -> String> = listOf(undecodable, { throw IllegalStateException("bridge gone") })
+        for ((i, answer) in answers.withIndex()) {
+            resume = answer
+            val mark = core.calls.size
+            val chat = openChat()
+
+            chat.start()
+
+            assertEquals("answer $i", listOf("config.get", "session.most_recent", "session.resume", "session.create"),
+                         callsAfter(mark).map { it.first })
+            assertEquals("answer $i: the new chat", "s$sessions", chat.sessionId)
+            assertEquals("answer $i: quietly", emptyList<Entry>(), chat.state.value.entries)
+            assertFalse("answer $i: nothing to close", callsAfter(mark).any { it.first == "session.close" })
+        }
+    }
+
+    @Test
+    fun startStepsTheAppCannotReadTakeTheirFallback() = runTest(UnconfinedTestDispatcher()) {
+        val reopened = listOf("config.get", "session.most_recent", "session.resume")
+        val started = listOf("config.get", "session.most_recent", "session.create")
+        val cases: List<Triple<String, () -> Unit, List<String>>> = listOf(
+            Triple("config undecodable", { config = { """{"config":"display: {}"}""" } }, reopened),  // reopen-on (D1)
+            Triple("config bridge broken", { config = { throw IllegalStateException("bridge gone") } }, reopened),
+            Triple("recent undecodable", { mostRecent = { """{"session_id":["db-old"]}""" } }, started),  // nothing to reopen (D2)
+            Triple("recent bridge broken", { mostRecent = { throw IllegalStateException("bridge gone") } }, started),
+        )
+        for ((name, breakIt, expected) in cases) {
+            config = { """{"config":{"display":{}}}""" }
+            mostRecent = { """{"session_id":"db-old","title":"Calendar","source":"cli"}""" }
+            breakIt()
+            val mark = core.calls.size
+            val chat = openChat()
+
+            chat.start()
+
+            assertEquals(name, expected, callsAfter(mark).map { it.first })
+            assertEquals(name, if (expected == reopened) "s-resumed" else "s$sessions", chat.sessionId)
+        }
+    }
+
+    @Test
+    fun aCancelledStartIsNotANewChat() = runTest(UnconfinedTestDispatcher()) {
+        mostRecent = { """{"session_id":"db-old","title":"Calendar","source":"cli"}""" }
+        resume = { throw CancellationException("the app's scope ended") }
+        val chat = openChat()
+
+        val failed = runCatching { chat.start() }.exceptionOrNull()
+
+        assertTrue("cancellation is not a failure to fall back from: $failed", failed is CancellationException)
+        assertFalse(core.calls.any { it.first == "session.create" })
+    }
+
+    @Test
     fun aSentPromptLearnsItsRowIdFromTheCore() = runTest(UnconfinedTestDispatcher()) {
         val chat = openChat().apply { open() }
         submit = { """{"status":"streaming","user_row_id":41}""" }
@@ -968,6 +1033,30 @@ class ChatSessionTest {
             assertFalse("answer $i: no consent", "confirm_truncate" in sent)
             assertEquals("answer $i: appended (D1)", listOf(Entry.User("ok"), Entry.Reply("done", TurnStatus.COMPLETE), Entry.User("ok")),
                          chat.state.value.entries)
+        }
+    }
+
+    @Test
+    fun aRetryWhoseHistoryCannotBeReadOrReachedIsSentAgainWithoutACut() = runTest(UnconfinedTestDispatcher()) {
+        val answers: List<() -> String> = listOf(
+            { """{"count":1,"messages":{"0":"ok"}}""" },  // an object where the list belongs: undecodable
+            { throw IllegalStateException("bridge gone") },
+        )
+        for ((i, answer) in answers.withIndex()) {
+            val chat = openChat().apply { open() }
+            val session = chat.sessionId
+            chat.send("ok")
+            core.emit("message.start", session)
+            core.emit("message.complete", session, """{"text":"done"}""")
+            history = answer
+
+            chat.retry()
+
+            val sent = lastSubmit()
+            assertFalse("answer $i: no cut", "truncate_before_row_id" in sent)
+            assertFalse("answer $i: no consent", "confirm_truncate" in sent)
+            assertEquals("answer $i: appended (B5-D1), no notice",
+                         listOf(Entry.User("ok"), Entry.Reply("done", TurnStatus.COMPLETE), Entry.User("ok")), chat.state.value.entries)
         }
     }
 

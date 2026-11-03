@@ -22,6 +22,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** The chat process's composition root runs over any [CoreRuntime]: here, a core that is a function. */
@@ -29,6 +30,8 @@ import org.junit.Test
 class CoreCompositionTest {
     private var configured = true
     private var recent: String? = null
+    private var resumeReply: () -> String = { """{"session_id":"s-last","message_count":0,"messages":[],"session_key":"db-last",
+                                   "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}}}""" }
     private val core = FakeCoreGateway { method, _ ->
         when (method) {
             "session.create" -> """{"session_id":"s1","stored_session_id":"db1","message_count":0,"messages":[],
@@ -37,8 +40,7 @@ class CoreCompositionTest {
             "model.options" -> """{"providers":[]}"""
             "config.get" -> """{"config":{}}"""
             "session.most_recent" -> """{"session_id":${recent?.let { "\"$it\"" } ?: "null"}}"""
-            "session.resume" -> """{"session_id":"s-last","message_count":0,"messages":[],"session_key":"db-last",
-                                   "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}}}"""
+            "session.resume" -> resumeReply()
             "session.context_breakdown" -> EMPTY_BREAKDOWN
             else -> error("unexpected $method")
         }
@@ -100,6 +102,17 @@ class CoreCompositionTest {
         assertEquals("s-last", ready.chat.sessionId)
         assertFalse(core.calls.any { it.first == "session.create" })
         assertEquals("db-last", core.calls.single { it.first == "session.resume" }.second.getValue("session_id").jsonPrimitive.content)
+    }
+
+    @Test
+    fun aLastConversationTheAppCannotReadStillComposesAChat() = runTest(UnconfinedTestDispatcher()) {
+        recent = "db-last"
+        resumeReply = { """{"session_id":"s-last","message_count":1,"messages":[{"kind":"user"}],"info":{}}""" }  // no role: undecodable
+
+        val ready = composeCore(runtime, paths, secrets, turns, Notifier.None, backgroundScope)
+
+        assertEquals("s1", ready.chat.sessionId)
+        assertTrue(core.calls.any { it.first == "session.create" })
     }
 
     @Test
