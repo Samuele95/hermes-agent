@@ -93,14 +93,14 @@ class EndpointSetupDeviceTest {
         setup.open()
         setup.addEndpoint()
         setup.findServer("127.0.0.1", null)
-        val probe = (setup.state.value?.step as? SetupStep.Endpoint)?.probe ?: error("nothing found: ${setup.state.value}")
-        assertEquals("http://127.0.0.1:11434/v1", probe.baseUrl)
-        assertTrue("Ollama lists its models", probe.models.isNotEmpty())
-        val model = probe.models.first()
+        val found = (setup.state.value?.step as? SetupStep.Endpoint)?.found ?: error("nothing found: ${setup.state.value}")
+        assertEquals("http://127.0.0.1:11434/v1", found.baseUrl)
+        assertTrue("Ollama lists its models", found.models.isNotEmpty())
+        val model = found.models.first()
 
         // Saved with a key: the endpoint becomes the default model and the chat a new session.
         val first = ready.chat.sessionId
-        setup.saveEndpoint(NAME, probe.baseUrl!!, model, KEY.toByteArray())
+        setup.saveEndpoint(NAME, found.baseUrl, model, KEY.toByteArray())
         assertNull("setup closes: ${setup.state.value}", setup.state.value)
         assertNotEquals(first, ready.chat.sessionId)
         assertArrayEquals(KEY.toByteArray(), app.secrets.get(KEY_ENV))
@@ -110,18 +110,18 @@ class EndpointSetupDeviceTest {
         val answered = withTimeout(300_000) { ready.chat.state.first { !it.running && it.entries.any { e -> e is Entry.Reply } } }
         assertEquals(TurnStatus.COMPLETE, answered.entries.filterIsInstance<Entry.Reply>().last().status)
         setup.open()
-        assertEquals(listOf(SavedEndpoint(ID, NAME, probe.baseUrl!!, model, true)), saved().filter { it.id == ID })
+        assertEquals(listOf(SavedEndpoint(ID, NAME, found.baseUrl, model, true)), saved().filter { it.id == ID })
 
         // Edited: renamed, same id, the key it had kept (none typed), still the default.
         setup.editEndpoint(ID)
         assertEquals(ID, (setup.state.value?.step as? SetupStep.Endpoint)?.editing?.id)
         val second = ready.chat.sessionId
-        setup.saveEndpoint("Hermes Renamed", probe.baseUrl!!, model, null)
+        setup.saveEndpoint("Hermes Renamed", found.baseUrl, model, null)
         assertNull("setup closes: ${setup.state.value}", setup.state.value)
         assertNotEquals(second, ready.chat.sessionId)
         assertArrayEquals(KEY.toByteArray(), app.secrets.get(KEY_ENV))
         setup.open()
-        assertEquals(listOf(SavedEndpoint(ID, "Hermes Renamed", probe.baseUrl!!, model, true)), saved().filter { it.id == ID })
+        assertEquals(listOf(SavedEndpoint(ID, "Hermes Renamed", found.baseUrl, model, true)), saved().filter { it.id == ID })
 
         // Deleted (what the confirm button calls): gone from config.yaml, the keystore and the core's credential rows.
         setup.editEndpoint(ID)
@@ -143,9 +143,9 @@ class EndpointSetupDeviceTest {
         setup.open()
         setup.addEndpoint()
         setup.findServer("127.0.0.1", null)
-        val probe = (setup.state.value?.step as? SetupStep.Endpoint)?.probe ?: error("nothing found: ${setup.state.value}")
-        val baseUrl = probe.baseUrl!!
-        val model = probe.models.first()
+        val found = (setup.state.value?.step as? SetupStep.Endpoint)?.found ?: error("nothing found: ${setup.state.value}")
+        val baseUrl = found.baseUrl
+        val model = found.models.first()
         setup.saveEndpoint(NAME, baseUrl, model, KEY.toByteArray())
         assertNull("setup closes: ${setup.state.value}", setup.state.value)
         assertArrayEquals(KEY.toByteArray(), app.secrets.get(KEY_ENV))
@@ -179,9 +179,9 @@ class EndpointSetupDeviceTest {
         setup.open()
         setup.addEndpoint()
         setup.findServer("127.0.0.1", null)
-        val probe = (setup.state.value?.step as? SetupStep.Endpoint)?.probe ?: error("nothing found: ${setup.state.value}")
-        val baseUrl = probe.baseUrl!!
-        val model = probe.models.first()
+        val found = (setup.state.value?.step as? SetupStep.Endpoint)?.found ?: error("nothing found: ${setup.state.value}")
+        val baseUrl = found.baseUrl
+        val model = found.models.first()
         setup.close()
         val entry = "  4242:\n    name: Numeric Box\n    base_url: $baseUrl\n    model: $model\n"
         val lines = config.takeIf { it.isFile }?.readLines() ?: emptyList()
@@ -237,7 +237,7 @@ class EndpointSetupDeviceTest {
             setup.findServer(address, null)
             assertEquals(address, "That is not a server address: use a host name, host:port or an http(s) URL.",
                          setup.state.value?.error)
-            assertNull(address, (setup.state.value?.step as? SetupStep.Endpoint ?: error("left the form: ${setup.state.value}")).probe)
+            assertNull(address, (setup.state.value?.step as? SetupStep.Endpoint ?: error("left the form: ${setup.state.value}")).found)
             setup.close()
         }
     }

@@ -11,9 +11,8 @@ import com.nousresearch.hermes.bridge.contract.BridgeSecrets
 import com.nousresearch.hermes.bridge.contract.DeleteCustomEndpointParams
 import com.nousresearch.hermes.bridge.contract.DiscoverEndpointsParams
 import com.nousresearch.hermes.bridge.contract.EndpointProbe
+import com.nousresearch.hermes.bridge.contract.FoundServer
 import com.nousresearch.hermes.bridge.contract.ProbeEndpointParams
-import com.nousresearch.hermes.bridge.contract.FoundEndpoint
-import com.nousresearch.hermes.bridge.contract.ProbeEndpointReply
 import com.nousresearch.hermes.bridge.contract.SavedEndpoint
 import com.nousresearch.hermes.bridge.contract.SaveCustomEndpointParams
 import com.nousresearch.hermes.bridge.protocol.ConfigSetParams
@@ -57,10 +56,11 @@ sealed interface SetupStep {
 
     /**
      * A custom OpenAI-compatible endpoint (name, base URL, model, optional key): [editing] a saved one (else a new one),
-     * what [probe] found at the typed address, the network search's results ([scan]) and whether one runs ([scanning]).
+     * the server [found] at the typed address (never a failure: that is the step's error), the network search's results
+     * ([scan]) and whether one runs ([scanning]).
      */
-    data class Endpoint(val editing: SavedEndpoint? = null, val probe: ProbeEndpointReply? = null,
-                        val scan: List<FoundEndpoint>? = null, val scanning: Boolean = false) : SetupStep
+    data class Endpoint(val editing: SavedEndpoint? = null, val found: FoundServer? = null,
+                        val scan: List<FoundServer>? = null, val scanning: Boolean = false) : SetupStep
 
     /** A device-code sign-in waiting for the user to approve [userCode] at [url]. */
     data class SignIn(val provider: ProviderChoice, val loginId: String, val userCode: String, val url: String) : SetupStep
@@ -225,15 +225,17 @@ class ProviderSetup(
         val form = setup.value?.step as? SetupStep.Endpoint ?: return run { key?.fill(0) }
         step {
             // What an earlier probe found belongs to another address: saved with this one, it would name a wrong model.
-            setup.update { it?.copy(step = form.copy(probe = null)) }
-            val found = try {
+            setup.update { it?.copy(step = form.copy(found = null)) }
+            val reply = try {
                 bridge.ask(BridgeCalls.PROBE_ENDPOINT,
                            ProbeEndpointParams(address.trim(), key?.takeIf { it.isNotEmpty() }?.decodeToString()))
             } finally {
                 key?.fill(0)
             }
-            if (found.outcome != EndpointProbe.FOUND) throw CoreError(0, problem(found.outcome))
-            form.copy(probe = found, scan = null)
+            when (val probe = serverProbe(reply)) {
+                is ServerProbe.Found -> form.copy(found = probe.server, scan = null)
+                is ServerProbe.Failed -> throw CoreError(0, problem(probe.failure))
+            }
         }
     }
 
@@ -428,7 +430,6 @@ internal fun problem(outcome: EndpointProbe): String = when (outcome) {
     EndpointProbe.REFUSED ->
         "The server refused this address. Ollama answers only to its own machine's names: use its short name, e.g. spark-98d1."
     EndpointProbe.NO_MODELS -> "The server answered but lists no models. Type the model name instead."
-    EndpointProbe.FOUND -> ""
 }
 
 /**

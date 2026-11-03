@@ -20,9 +20,8 @@ import com.nousresearch.hermes.android.setup.ProviderChoice
 import com.nousresearch.hermes.android.setup.Setup
 import com.nousresearch.hermes.android.setup.SetupScreen
 import com.nousresearch.hermes.android.setup.SetupStep
-import com.nousresearch.hermes.bridge.contract.EndpointProbe
-import com.nousresearch.hermes.bridge.contract.FoundEndpoint
-import com.nousresearch.hermes.bridge.contract.ProbeEndpointReply
+import com.nousresearch.hermes.bridge.contract.FoundServer
+import com.nousresearch.hermes.bridge.contract.ServerKind
 import com.nousresearch.hermes.bridge.contract.SavedEndpoint
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -124,9 +123,8 @@ class SetupScreenTest {
 
     @Test
     fun aFoundServerOffersItsModelsInADropdown() {
-        val found = ProbeEndpointReply(EndpointProbe.FOUND, "http://spark-98d1:11434/v1", "ollama",
-                                       listOf("gemma4:12b-it-q8_0", "gemma3:12b-it-q8_0"))
-        show(Setup(SetupStep.Endpoint(probe = found)))
+        val found = FoundServer("http://spark-98d1:11434/v1", ServerKind.OLLAMA, listOf("gemma4:12b-it-q8_0", "gemma3:12b-it-q8_0"))
+        show(Setup(SetupStep.Endpoint(found = found)))
 
         compose.onNodeWithText("ollama · 2 models").assertExists()
         compose.onNodeWithTag("endpoint-model").performClick()
@@ -139,15 +137,15 @@ class SetupScreenTest {
 
     @Test
     fun aServerFoundLaterBringsItsOwnModel() {
-        val a = ProbeEndpointReply(EndpointProbe.FOUND, "http://spark-98d1:11434/v1", "ollama", listOf("gemma4:12b-it-q8_0"))
-        val b = ProbeEndpointReply(EndpointProbe.FOUND, "http://192.168.1.20:1234/v1", "lmstudio", listOf("qwen3", "llama3"))
+        val a = FoundServer("http://spark-98d1:11434/v1", ServerKind.OLLAMA, listOf("gemma4:12b-it-q8_0"))
+        val b = FoundServer("http://192.168.1.20:1234/v1", ServerKind.LMSTUDIO, listOf("qwen3", "llama3"))
         var setup by mutableStateOf(Setup(SetupStep.Endpoint()))
         show { setup }
 
         compose.onNodeWithTag("endpoint-model").performTextInput("gemm4")  // a typo before Find
-        setup = Setup(SetupStep.Endpoint(probe = a))
+        setup = Setup(SetupStep.Endpoint(found = a))
         compose.waitForIdle()
-        setup = Setup(SetupStep.Endpoint(probe = b))  // then another server is found
+        setup = Setup(SetupStep.Endpoint(found = b))  // then another server is found
         compose.onNodeWithTag("endpoint-save").performScrollTo().performClick()
 
         assertEquals(listOf("endpoint:192.168.1.20|http://192.168.1.20:1234/v1|qwen3|null"), picked)
@@ -155,14 +153,14 @@ class SetupScreenTest {
 
     @Test
     fun aModelTheNewServerAlsoListsIsKept() {
-        val a = ProbeEndpointReply(EndpointProbe.FOUND, "http://spark-98d1:11434/v1", "ollama", listOf("gemma4", "qwen3"))
-        val b = ProbeEndpointReply(EndpointProbe.FOUND, "http://spark-98d1:11434/v1", "ollama", listOf("llama3", "qwen3"))
-        var setup by mutableStateOf(Setup(SetupStep.Endpoint(probe = a)))
+        val a = FoundServer("http://spark-98d1:11434/v1", ServerKind.OLLAMA, listOf("gemma4", "qwen3"))
+        val b = FoundServer("http://spark-98d1:11434/v1", ServerKind.OLLAMA, listOf("llama3", "qwen3"))
+        var setup by mutableStateOf(Setup(SetupStep.Endpoint(found = a)))
         show { setup }
 
         compose.onNodeWithTag("endpoint-model").performClick()
         compose.onNodeWithTag("endpoint-model-qwen3").performClick()
-        setup = Setup(SetupStep.Endpoint(probe = b))
+        setup = Setup(SetupStep.Endpoint(found = b))
         compose.onNodeWithTag("endpoint-save").performScrollTo().performClick()
 
         assertEquals(listOf("endpoint:spark-98d1|http://spark-98d1:11434/v1|qwen3|null"), picked)
@@ -170,8 +168,8 @@ class SetupScreenTest {
 
     @Test
     fun anAddressEditedByHandHidesTheServerFoundBefore() {
-        val found = ProbeEndpointReply(EndpointProbe.FOUND, "http://spark-98d1:11434/v1", "ollama", listOf("gemma4:12b-it-q8_0"))
-        show(Setup(SetupStep.Endpoint(probe = found)))
+        val found = FoundServer("http://spark-98d1:11434/v1", ServerKind.OLLAMA, listOf("gemma4:12b-it-q8_0"))
+        show(Setup(SetupStep.Endpoint(found = found)))
         compose.onNodeWithTag("endpoint-found").assertExists()
 
         compose.onNodeWithTag("endpoint-address").performTextReplacement("http://other-host:8080/v1")
@@ -194,7 +192,7 @@ class SetupScreenTest {
 
     @Test
     fun aServerFoundOnTheNetworkIsAskedForItsModels() {
-        val found = FoundEndpoint("http://192.168.1.20:1234/v1", "lmstudio", listOf("qwen3"))
+        val found = FoundServer("http://192.168.1.20:1234/v1", ServerKind.LMSTUDIO, listOf("qwen3"))
         show(Setup(SetupStep.Endpoint(scan = listOf(found))))
 
         compose.onNodeWithTag("search-network").performScrollTo().performClick()

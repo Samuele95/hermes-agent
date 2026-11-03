@@ -4,6 +4,7 @@ import com.nousresearch.hermes.android.chat.FakeCoreGateway
 import com.nousresearch.hermes.bridge.CoreError
 import com.nousresearch.hermes.bridge.AppBridge
 import com.nousresearch.hermes.bridge.SecretStore
+import com.nousresearch.hermes.bridge.contract.ServerKind
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.awaitCancellation
@@ -410,19 +411,21 @@ class ProviderSetupTest {
 
     @Test
     fun findingAServerFillsItsModels() = runTest {
-        answers["probe_endpoint"] = """{"outcome":"found","base_url":"http://spark-98d1:11434/v1","kind":"ollama","models":["gemma4:12b-it-q8_0","gemma3:12b-it-q8_0"]}"""
+        answers["probe_endpoint"] = """{"found":{"base_url":"http://spark-98d1:11434/v1","kind":"ollama","models":["gemma4:12b-it-q8_0","gemma3:12b-it-q8_0"]},"failure":null}"""
         setup.open(); setup.addEndpoint()
 
         setup.findServer("spark-98d1", null)
 
-        assertEquals(listOf("gemma4:12b-it-q8_0", "gemma3:12b-it-q8_0"), (setup.state.value?.step as SetupStep.Endpoint).probe?.models)
+        val found = (setup.state.value?.step as SetupStep.Endpoint).found
+        assertEquals(listOf("gemma4:12b-it-q8_0", "gemma3:12b-it-q8_0"), found?.models)
+        assertEquals(ServerKind.OLLAMA, found?.kind)
         assertNull(setup.state.value?.error)
         assertEquals("spark-98d1", argOf("probe_endpoint")["address"]!!.jsonPrimitive.content)
     }
 
     @Test
     fun aRefusingServerIsExplainedAndTheTypedKeyIsWiped() = runTest {
-        answers["probe_endpoint"] = """{"outcome":"refused","base_url":null,"kind":null,"models":[]}"""
+        answers["probe_endpoint"] = """{"found":null,"failure":"refused"}"""
         setup.open(); setup.addEndpoint()
         val key = "sk-x".toByteArray()
 
@@ -484,15 +487,26 @@ class ProviderSetupTest {
 
     @Test
     fun aFailedProbeDropsTheModelsAnEarlierAddressListed() = runTest {
-        answers["probe_endpoint"] = """{"outcome":"found","base_url":"http://a:11434/v1","kind":"ollama","models":["a-model"]}"""
+        answers["probe_endpoint"] = """{"found":{"base_url":"http://a:11434/v1","kind":"ollama","models":["a-model"]},"failure":null}"""
         setup.open(); setup.addEndpoint()
         setup.findServer("a", null)
-        answers["probe_endpoint"] = """{"outcome":"unreachable","base_url":null,"kind":null,"models":[]}"""
+        answers["probe_endpoint"] = """{"found":null,"failure":"unreachable"}"""
 
         setup.findServer("b", null)
 
-        assertNull("b could be saved with a's model", (setup.step() as SetupStep.Endpoint).probe)
+        assertNull("b could be saved with a's model", (setup.step() as SetupStep.Endpoint).found)
         assertTrue(setup.state.value?.error!!.startsWith("Nothing answered"))
+    }
+
+    @Test
+    fun aProbeReplyThatIsBothFoundAndFailedIsABugNotAServer() = runTest {
+        answers["probe_endpoint"] = """{"found":{"base_url":"http://a:11434/v1","kind":"ollama","models":["a-model"]},"failure":"refused"}"""
+        setup.open(); setup.addEndpoint()
+
+        setup.findServer("a", null)
+
+        assertEquals("Something went wrong (IllegalStateException).", setup.state.value?.error)
+        assertNull((setup.step() as SetupStep.Endpoint).found)
     }
 
     @Test

@@ -46,7 +46,6 @@ enum class GatewayState {
 
 @Serializable
 enum class EndpointProbe {
-    @SerialName("found") FOUND,
     @SerialName("unreachable") UNREACHABLE,
     @SerialName("needs_key") NEEDS_KEY,
     @SerialName("refused") REFUSED,
@@ -54,9 +53,18 @@ enum class EndpointProbe {
 }
 
 @Serializable
-data class FoundEndpoint(
+enum class ServerKind {
+    @SerialName("ollama") OLLAMA,
+    @SerialName("lmstudio") LMSTUDIO,
+    @SerialName("llamacpp") LLAMACPP,
+    @SerialName("vllm") VLLM,
+    @SerialName("server") SERVER,
+}
+
+@Serializable
+data class FoundServer(
     @SerialName("base_url") val baseUrl: String,
-    val kind: String,
+    val kind: ServerKind,
     val models: List<String>,
 )
 
@@ -133,10 +141,8 @@ data class ProbeEndpointParams(
 
 @Serializable
 data class ProbeEndpointReply(
-    val outcome: EndpointProbe,
-    @SerialName("base_url") val baseUrl: String?,
-    val kind: String?,
-    val models: List<String>,
+    val found: FoundServer?,
+    val failure: EndpointProbe?,
 )
 
 @Serializable
@@ -146,7 +152,7 @@ data class DiscoverEndpointsParams(
 
 @Serializable
 data class DiscoverEndpointsReply(
-    val found: List<FoundEndpoint>,
+    val found: List<FoundServer>,
 )
 
 @Serializable
@@ -261,7 +267,7 @@ object BridgeCalls {
     val LIST_CUSTOM_ENDPOINTS = BridgeCall("list_custom_endpoints", NoParams.serializer(), ListCustomEndpointsReply.serializer())
     /** Removes a saved custom endpoint from config.yaml; names the keystore variable the app deletes (always the endpoint's own HERMES_CUSTOM_<ID>_API_KEY, never another provider's), and whether the default model was detached from it. */
     val DELETE_CUSTOM_ENDPOINT = BridgeCall("delete_custom_endpoint", DeleteCustomEndpointParams.serializer(), DeleteCustomEndpointReply.serializer())
-    /** The server behind an address (URL, host:port or a bare host on the known ports) and its models; the key, if any, is used for this probe only. */
+    /** The server behind an address (URL, host:port or a bare host on the known ports) and its models; the key, if any, is used for this probe only. Exactly one of found (the server and its models) and failure (why none was found) is null. */
     val PROBE_ENDPOINT = BridgeCall("probe_endpoint", ProbeEndpointParams.serializer(), ProbeEndpointReply.serializer(), blocking = true)
     /** OpenAI-compatible servers on the phone's Wi-Fi network (its /24 at most, the known ports), each with its models. */
     val DISCOVER_ENDPOINTS = BridgeCall("discover_endpoints", DiscoverEndpointsParams.serializer(), DiscoverEndpointsReply.serializer(), blocking = true)

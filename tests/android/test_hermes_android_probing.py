@@ -12,7 +12,7 @@ import pytest
 from tests.android.fake_endpoint import closed_port
 
 probing = importlib.import_module("hermes_android.probing")
-from hermes_android.probing import FOUND, NOT_AN_ADDRESS, Outcome
+from hermes_android.probing import NOT_AN_ADDRESS, Outcome
 
 CONTRACT = json.loads((Path(inspect.getfile(probing)).parent / "bridge_contract.json").read_text(encoding="utf-8"))
 
@@ -32,8 +32,8 @@ def test_a_bare_host_is_found_on_the_first_known_port_that_lists_models(home, se
 
     found = probe("127.0.0.1", ports=((closed_port(), "ollama"), (ollama.port, "lmstudio")))
 
-    assert found == {"outcome": "found", "base_url": f"http://127.0.0.1:{ollama.port}/v1", "kind": "lmstudio",
-                     "models": ["gemma4:12b-it-q8_0", "gemma3:12b-it-q8_0"]}
+    assert found == {"found": {"base_url": f"http://127.0.0.1:{ollama.port}/v1", "kind": "lmstudio",
+                               "models": ["gemma4:12b-it-q8_0", "gemma3:12b-it-q8_0"]}, "failure": None}
 
 
 def test_a_full_url_is_probed_as_given_and_its_v1_is_fixed(home, servers):
@@ -41,8 +41,8 @@ def test_a_full_url_is_probed_as_given_and_its_v1_is_fixed(home, servers):
 
     found = probe(f"http://127.0.0.1:{server.port}")  # no /v1: the core's probe tries it
 
-    assert found["outcome"] == "found" and found["models"] == ["m1"]
-    assert found["base_url"].startswith(f"http://127.0.0.1:{server.port}")
+    assert found["failure"] is None and found["found"]["models"] == ["m1"]
+    assert found["found"]["base_url"].startswith(f"http://127.0.0.1:{server.port}")
 
 
 def test_a_host_with_a_port_is_tried_on_that_port_only(home, servers):
@@ -50,22 +50,22 @@ def test_a_host_with_a_port_is_tried_on_that_port_only(home, servers):
 
     found = probe(f"127.0.0.1:{server.port}", ports=((closed_port(), "ollama"),))
 
-    assert found["outcome"] == "found" and found["base_url"] == f"http://127.0.0.1:{server.port}/v1"
+    assert found["failure"] is None and found["found"]["base_url"] == f"http://127.0.0.1:{server.port}/v1"
 
 
 def test_a_server_behind_a_key_needs_it_and_answers_with_it(home, servers):
     server = servers(models=["m1"], key="sk-test-123")
     url = f"http://127.0.0.1:{server.port}/v1"
 
-    assert probe(url)["outcome"] == "needs_key"
-    assert probe(url, api_key="sk-test-123")["models"] == ["m1"]
+    assert probe(url)["failure"] == "needs_key"
+    assert probe(url, api_key="sk-test-123")["found"]["models"] == ["m1"]
     assert "Bearer sk-test-123" in server.seen_auth
 
 
 def test_a_refusing_server_says_refused_not_needs_key(home, servers):
     server = servers(status=403)
 
-    assert probe(f"http://127.0.0.1:{server.port}/v1")["outcome"] == "refused"
+    assert probe(f"http://127.0.0.1:{server.port}/v1")["failure"] == "refused"
 
 
 def test_a_full_url_without_v1_against_a_key_protected_server_needs_the_key(home, servers):
@@ -73,21 +73,20 @@ def test_a_full_url_without_v1_against_a_key_protected_server_needs_the_key(home
     # The address is given without /v1, so the status check must also look at the /v1-toggled variant.
     server = servers(models=["m1"], key="sk-test-123")
 
-    assert probe(f"http://127.0.0.1:{server.port}")["outcome"] == "needs_key"
+    assert probe(f"http://127.0.0.1:{server.port}")["failure"] == "needs_key"
 
 
 def test_a_full_url_without_v1_against_a_refusing_server_is_refused(home, servers):
     server = servers(status=403)
 
-    assert probe(f"http://127.0.0.1:{server.port}")["outcome"] == "refused"
+    assert probe(f"http://127.0.0.1:{server.port}")["failure"] == "refused"
 
 
 def test_nothing_listening_is_unreachable_and_an_empty_list_is_no_models(home, servers):
     empty = servers(models=[])
 
-    assert probe("127.0.0.1", ports=((closed_port(), "ollama"),)) == {
-        "outcome": "unreachable", "base_url": None, "kind": None, "models": []}
-    assert probe(f"http://127.0.0.1:{empty.port}/v1")["outcome"] == "no_models"
+    assert probe("127.0.0.1", ports=((closed_port(), "ollama"),)) == {"found": None, "failure": "unreachable"}
+    assert probe(f"http://127.0.0.1:{empty.port}/v1")["failure"] == "no_models"
 
 
 def test_the_key_never_comes_back_in_the_reply(home, servers):
@@ -105,7 +104,7 @@ def test_the_bridge_call_answers_its_declared_reply(home, servers):
     reply = json.loads(hermes_android.call("probe_endpoint",
                                            json.dumps({"address": f"http://127.0.0.1:{server.port}/v1", "api_key": None})))
 
-    assert reply["outcome"] == "found"
+    assert reply["found"]["models"] == ["m1"] and reply["failure"] is None
 
 
 def test_reading_why_a_probe_failed_closes_every_answer(home, servers):
@@ -124,8 +123,27 @@ def test_reading_why_a_probe_failed_closes_every_answer(home, servers):
 
 
 def test_the_probes_outcomes_are_the_contracts():
-    assert {o.wire for o in Outcome} | {FOUND} == set(CONTRACT["enums"]["EndpointProbe"])
+    assert {o.wire for o in Outcome} == set(CONTRACT["enums"]["EndpointProbe"])
     assert sorted(Outcome) == [Outcome.UNREACHABLE, Outcome.NO_MODELS, Outcome.REFUSED, Outcome.NEEDS_KEY]
+
+
+def test_every_kind_a_probe_names_is_the_contracts():
+    assert {name for _, name in probing.KNOWN_PORTS} | {probing.OTHER_SERVER} == set(CONTRACT["enums"]["ServerKind"])
+    assert probing.kind(65000) == probing.OTHER_SERVER
+
+
+@pytest.mark.parametrize("server", ["listing", "keyed", "refusing", "empty", "closed"])
+def test_a_reply_is_a_server_or_a_failure_never_both(home, servers, server):
+    made = {"listing": lambda: servers(models=["m1"]).port,
+            "keyed": lambda: servers(models=["m1"], key="sk-test-123").port,
+            "refusing": lambda: servers(status=403).port,
+            "empty": lambda: servers(models=[]).port,
+            "closed": closed_port}
+
+    reply = probe(f"http://127.0.0.1:{made[server]()}/v1")
+
+    assert set(reply) == {"found", "failure"}
+    assert (reply["found"] is None) != (reply["failure"] is None), reply
 
 
 # Each row puts its strongest failure before a weaker one, so 'the last failure wins' cannot pass.
@@ -141,7 +159,7 @@ def test_the_most_telling_failure_wins_across_ports(home, servers, ports, expect
             "refusing": lambda: servers(status=403).port,
             "closed": closed_port}
 
-    assert probe("127.0.0.1", ports=tuple((made[name](), "ollama") for name in ports))["outcome"] == expected
+    assert probe("127.0.0.1", ports=tuple((made[name](), "ollama") for name in ports))["failure"] == expected
 
 
 @pytest.fixture
@@ -189,8 +207,8 @@ def test_a_bracketed_ipv6_host_is_probed_there(home, servers):
 
     for address in (f"[::1]:{server.port}", f"http://[::1]:{server.port}/v1", "[::1]"):
         found = probe(address, ports=ports)
-        assert found["outcome"] == "found", address
-        assert found["base_url"] == f"http://[::1]:{server.port}/v1", address
+        assert found["failure"] is None, address
+        assert found["found"]["base_url"] == f"http://[::1]:{server.port}/v1", address
 
 
 def test_the_bridge_call_answers_a_refusal_as_its_error(home):

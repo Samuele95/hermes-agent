@@ -143,16 +143,16 @@ private fun EndpointForm(step: SetupStep.Endpoint, enabled: Boolean, onEndpoint:
     var model by rememberSaveable(editing?.id) { mutableStateOf(editing?.model ?: "") }
     var name by rememberSaveable(editing?.id) { mutableStateOf(editing?.name ?: "") }
     var key by remember(editing?.id) { mutableStateOf("") }  // never saved state, as in KeyField
-    LaunchedEffect(step.probe) {
+    LaunchedEffect(step.found) {
         // What the server answered at becomes the address. A model chosen before stays only if this server lists it:
         // one picked from another server (or a typo) would be saved with this server's address.
-        val found = step.probe ?: return@LaunchedEffect
-        found.baseUrl?.let { address = it }
+        val found = step.found ?: return@LaunchedEffect
+        address = found.baseUrl
         if (model.trim() !in found.models) found.models.firstOrNull()?.let { model = it }
     }
     // The server found belongs to the address it answered at: an address edited by hand since no longer shows its models.
-    val probe = step.probe?.takeIf { it.baseUrl == address.trim() }
-    val models = probe?.models.orEmpty()
+    val found = step.found?.takeIf { it.baseUrl == address.trim() }
+    val models = found?.models.orEmpty()
     fun typedKey() = key.trim().takeIf { it.isNotEmpty() }?.toByteArray()
 
     OutlinedTextField(address, { address = it }, Modifier.fillMaxWidth().testTag("endpoint-address"), singleLine = true,
@@ -169,12 +169,12 @@ private fun EndpointForm(step: SetupStep.Endpoint, enabled: Boolean, onEndpoint:
                         enabled = enabled && !step.scanning)
     }
     if (step.scanning) LinearProgressIndicator(Modifier.fillMaxWidth())
-    probe?.let { Hint(pluralStringResource(R.plurals.setup_found_models, it.models.size, it.kind.orEmpty(), it.models.size), Modifier.testTag("endpoint-found")) }
+    found?.let { Hint(pluralStringResource(R.plurals.setup_found_models, it.models.size, it.kind.name.lowercase(), it.models.size), Modifier.testTag("endpoint-found")) }
     step.scan?.let { found ->
         Column {
             SectionCaption(stringResource(R.string.setup_found_on_network), Modifier.padding(top = 0.dp))
             found.forEachIndexed { i, server ->
-                ListRow(server.baseUrl, Modifier.testTag("found-$i"), detail = pluralStringResource(R.plurals.setup_found_models, server.models.size, server.kind, server.models.size),
+                ListRow(server.baseUrl, Modifier.testTag("found-$i"), detail = pluralStringResource(R.plurals.setup_found_models, server.models.size, server.kind.name.lowercase(), server.models.size),
                         enabled = enabled, trailing = { Chevron() }) { onFindServer(server.baseUrl, null) }
             }
         }

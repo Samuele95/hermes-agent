@@ -17,13 +17,14 @@ import urllib.request
 from typing import NamedTuple
 
 KNOWN_PORTS = ((11434, "ollama"), (1234, "lmstudio"), (8080, "llamacpp"), (8000, "vllm"))
-FOUND = "found"
+OTHER_SERVER = "server"
 NOT_AN_ADDRESS = "That is not a server address: use a host name, host:port or an http(s) URL."
 
 
 class Outcome(enum.IntEnum):
     """Why a probe found no models, ordered so that the most telling failure wins when several candidates
-    fail: a server that answered beats one that did not. ``found`` is no failure, so it is :data:`FOUND`."""
+    fail: a server that answered beats one that did not. Its members are the contract's ``EndpointProbe``,
+    exactly."""
 
     UNREACHABLE = 0
     NO_MODELS = 1
@@ -40,8 +41,9 @@ _BY_STATUS = {401: Outcome.NEEDS_KEY, 403: Outcome.REFUSED, 200: Outcome.NO_MODE
 
 
 def kind(port: int | None) -> str:
-    """The local server a known port names (``"server"`` for any other port)."""
-    return dict(KNOWN_PORTS).get(port or 0, "server")
+    """The local server a known port names (:data:`OTHER_SERVER` for any other port): the contract's
+    ``ServerKind``."""
+    return dict(KNOWN_PORTS).get(port or 0, OTHER_SERVER)
 
 
 def models_at(base_url: str, api_key: str | None, timeout: float) -> tuple[str, list[str]]:
@@ -153,8 +155,10 @@ def status(base_url: str, api_key: str | None, timeout: float) -> int | None:
 
 def probe(address: str, api_key: str | None = None, ports=KNOWN_PORTS, timeout: float = 5.0) -> dict:
     """Finds the OpenAI-compatible server behind ``address`` (a URL, ``host:port`` or a bare host tried on
-    ``ports``) and its models, through the core's own probe. ``api_key`` is used for this probe only. An
-    address that names no server is answered ``{error}`` in words before anything is asked."""
+    ``ports``) and its models, through the core's own probe. ``api_key`` is used for this probe only. The
+    reply is ``{"found": {base_url, kind, models}, "failure": None}`` or ``{"found": None, "failure":
+    <EndpointProbe>}``; an address that names no server is answered ``{error}`` in words before anything
+    is asked."""
     where = parse_address(address)
     if where is None:
         return {"error": NOT_AN_ADDRESS}
@@ -164,6 +168,6 @@ def probe(address: str, api_key: str | None = None, ports=KNOWN_PORTS, timeout: 
             continue
         resolved, models = models_at(base, api_key, timeout)
         if models:
-            return {"outcome": FOUND, "base_url": resolved, "kind": name, "models": models}
+            return {"found": {"base_url": resolved, "kind": name, "models": models}, "failure": None}
         outcome = max(outcome, _BY_STATUS.get(status(resolved, api_key, timeout) or 0, Outcome.UNREACHABLE))
-    return {"outcome": outcome.wire, "base_url": None, "kind": None, "models": []}
+    return {"found": None, "failure": outcome.wire}
