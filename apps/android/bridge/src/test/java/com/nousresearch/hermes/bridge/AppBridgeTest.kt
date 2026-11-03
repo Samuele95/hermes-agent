@@ -17,7 +17,7 @@ class AppBridgeTest {
 
     @Test
     fun aRequestGoesOutUnderTheCallsNameWithTheContractsFieldNames() = runBlocking {
-        answering("""{"id":"lan","key_env":""}""")
+        answering("""{"id":"lan","key_env":"","forget":null}""")
             .ask(BridgeCalls.SAVE_CUSTOM_ENDPOINT, SaveCustomEndpointParams(null, "lan", "http://10.0.0.2/v1", "m", true))
 
         val (function, arg) = sent.single()

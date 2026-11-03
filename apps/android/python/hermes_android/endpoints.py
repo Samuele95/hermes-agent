@@ -13,8 +13,10 @@ import urllib.parse
 
 
 def save(*, id: str | None, name: str, base_url: str, model: str, has_key: bool) -> dict[str, str]:
-    """``{id, key_env}`` (``key_env`` is ``""`` for a keyless endpoint), or ``{error}`` in words the app shows
-    when the request is incomplete. ``id`` names the saved endpoint an edit replaces (None for a new one)."""
+    """``{id, key_env, forget}`` (``key_env`` is ``""`` for a keyless endpoint), or ``{error}`` in words the app
+    shows when the request is incomplete. ``id`` names the saved endpoint an edit replaces (None for a new one).
+    ``forget`` is the endpoint's own keystore slot when config.yaml names it nowhere after this save (a keyless
+    re-save dropped it: the app forgets it, as for a delete), else None."""
     from hermes_cli.config import (coerce_provider_id, custom_endpoint_key_env, find_provider_entry, load_config,
                                    save_config)
 
@@ -61,8 +63,21 @@ def save(*, id: str | None, name: str, base_url: str, model: str, has_key: bool)
         providers.pop(stored)  # re-keyed once under its string spelling, as the Desktop's save does: no twin
     providers[endpoint_id] = entry
     cfg["providers"] = providers
+    own = custom_endpoint_key_env(endpoint_id)
+    forget = None if own in _named_key_vars(cfg) else own
     save_config(cfg)
-    return {"id": endpoint_id, "key_env": key_env}
+    return {"id": endpoint_id, "key_env": key_env, "forget": forget}
+
+
+def _named_key_vars(cfg: object) -> set[str]:
+    """Every variable config names as a key, under ``key_env`` or its alias ``api_key_env`` at any depth (as
+    ``hermes_cli/config_providers.py:199-201`` reads a provider entry's key)."""
+    if isinstance(cfg, list):
+        return set().union(*map(_named_key_vars, cfg))
+    if not isinstance(cfg, dict):
+        return set()
+    named = {v for k, v in cfg.items() if k in ("key_env", "api_key_env") and isinstance(v, str) and v}
+    return named.union(*map(_named_key_vars, cfg.values()))
 
 
 def list_saved() -> list[dict[str, object]]:

@@ -78,7 +78,7 @@
       }
     },
     "save_custom_endpoint": {
-      "summary": "Adds a custom OpenAI-compatible endpoint to config.yaml (Dv20), or replaces the saved one id names (null for a new one); a new key goes to the keystore under key_env, an edit without one keeps the entry's key_env.",
+      "summary": "Adds a custom OpenAI-compatible endpoint to config.yaml (Dv20), or replaces the saved one id names (null for a new one); a new key goes to the keystore under key_env, an edit without one keeps the entry's key_env; forget names the endpoint's own keystore slot when config.yaml no longer names it after this save (the app forgets it, as for a delete), else null.",
       "params": {
         "id": "string?",
         "name": "string",
@@ -88,7 +88,8 @@
       },
       "reply": {
         "id": "string",
-        "key_env": "string"
+        "key_env": "string",
+        "forget": "string?"
       }
     },
     "list_custom_endpoints": {

@@ -282,7 +282,8 @@ class ProviderSetup(
 
     /**
      * Saves the endpoint (the one being edited keeps its id), keeps a newly typed [key] (the caller's copy is wiped;
-     * with none, an edited endpoint keeps the key it had), then makes [model] the default.
+     * with none, an edited endpoint keeps the key it had, and a slot the save left unnamed is forgotten), then makes
+     * [model] the default.
      */
     suspend fun saveEndpoint(name: String, baseUrl: String, model: String, key: ByteArray?) {
         val form = setup.value?.step as? SetupStep.Endpoint ?: return run { key?.fill(0) }
@@ -308,6 +309,8 @@ class ProviderSetup(
                 store(keyEnv, key!!)
                 bridge.secretsChanged()
                 keyNames[entry.id] = keyEnv
+            } else {
+                entry.forget?.let { forget(entry.id, it) }  // a keyless re-save: its old key must not outlive the entry
             }
             models(ProviderChoice(entry.id, name, keyEnv.ifEmpty { null }, true, listOf(model)))
         }

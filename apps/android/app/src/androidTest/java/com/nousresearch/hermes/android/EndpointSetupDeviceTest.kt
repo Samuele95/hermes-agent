@@ -134,6 +134,30 @@ class EndpointSetupDeviceTest {
     }
 
     @Test
+    fun aKeylessReAddUnderASavedNameGivesItsKeyBack() = runBlocking {
+        // Added again (not edited) under the saved name with no key: config.yaml calls it keyless, so no key is left.
+        setup.open()
+        setup.addEndpoint()
+        setup.findServer("127.0.0.1", null)
+        val probe = (setup.state.value?.step as? SetupStep.Endpoint)?.probe ?: error("nothing found: ${setup.state.value}")
+        val baseUrl = probe.baseUrl!!
+        val model = probe.models.first()
+        setup.saveEndpoint(NAME, baseUrl, model, KEY.toByteArray())
+        assertNull("setup closes: ${setup.state.value}", setup.state.value)
+        assertArrayEquals(KEY.toByteArray(), app.secrets.get(KEY_ENV))
+
+        setup.open()
+        setup.addEndpoint()
+        setup.saveEndpoint(NAME, baseUrl, model, null)
+        assertNull("setup closes: ${setup.state.value}", setup.state.value)
+
+        assertNull("the key its entry no longer names is gone", app.secrets.get(KEY_ENV))
+        assertEquals(0, pooled())
+        setup.open()
+        assertEquals(listOf(SavedEndpoint(ID, NAME, baseUrl, model, false)), saved().filter { it.id == ID })
+    }
+
+    @Test
     fun aHandWrittenNumericEntryIsEditedAndDeletedInPlace() = runBlocking {
         // An entry typed by hand (or by another client) under an unquoted number loads with an int key; the app finds
         // it by the core's provider-key rule, so it is edited and deleted in place, not saved again beside itself.

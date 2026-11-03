@@ -36,7 +36,7 @@ def save(**fields) -> dict:
 def test_a_saved_endpoint_resolves_to_its_url_with_the_key_from_the_environment(home, monkeypatch):
     saved = save()
 
-    assert saved == {"id": "host-ollama", "key_env": KEY_ENV}
+    assert saved == {"id": "host-ollama", "key_env": KEY_ENV, "forget": None}
     # Stored as the Desktop stores it: paths such as /models are joined onto it.
     assert load_config()["providers"]["host-ollama"]["base_url"] == "http://127.0.0.1:11434/v1"
     monkeypatch.setenv(KEY_ENV, "sk-from-the-keystore")  # what the android_keystore source does
@@ -102,7 +102,7 @@ def test_an_id_no_longer_saved_is_a_new_endpoint_named_by_the_id_rule(home):
     # e.g. deleted on another screen while this form was open: the stale id is not written as given.
     saved = save(id="Gone Away")
 
-    assert saved == {"id": "host-ollama", "key_env": KEY_ENV}
+    assert saved == {"id": "host-ollama", "key_env": KEY_ENV, "forget": None}
     assert [e["id"] for e in listed()] == ["host-ollama"]
 
 
@@ -110,8 +110,31 @@ def test_adding_again_under_a_saved_name_without_a_key_is_keyless(home):
     # Only an edit (id given) keeps the key variable; the add form's "no key" means no key.
     save()
 
-    assert save(has_key=False) == {"id": "host-ollama", "key_env": ""}
+    assert save(has_key=False) == {"id": "host-ollama", "key_env": "", "forget": KEY_ENV}
     assert "key_env" not in load_config()["providers"]["host-ollama"]
+
+
+def test_a_keyless_save_over_a_saved_name_gives_back_its_slot(home):
+    # The key stored for the first save is no longer named by config.yaml: the reply says which slot to forget.
+    save()
+
+    assert save(has_key=False) == {"id": "host-ollama", "key_env": "", "forget": KEY_ENV}
+
+
+def test_a_save_that_keeps_its_slot_named_gives_nothing_back(home):
+    assert save()["forget"] is None
+
+    assert save(id="host-ollama", has_key=False)["forget"] is None  # the edit keeps its key_env
+
+
+def test_a_slot_another_entry_names_is_not_given_back(home):
+    from hermes_cli.config import save_config
+    save()
+    cfg = load_config()
+    cfg["providers"]["twin"] = {"name": "Twin", "base_url": "http://10.0.0.5/v1", "model": "m", "key_env": KEY_ENV}
+    save_config(cfg)
+
+    assert save(has_key=False)["forget"] is None
 
 
 def test_a_deleted_default_endpoint_no_longer_routes_the_main_model(home, servers):
@@ -217,7 +240,7 @@ def test_an_edit_without_a_new_key_keeps_the_entrys_key_variable(home):
 
     saved = save(id="proxy", name="Proxy", base_url="http://10.0.0.4/v1", model="m", has_key=False)
 
-    assert saved == {"id": "proxy", "key_env": "OPENROUTER_API_KEY"}
+    assert saved == {"id": "proxy", "key_env": "OPENROUTER_API_KEY", "forget": "HERMES_CUSTOM_PROXY_API_KEY"}
     assert load_config()["providers"]["proxy"]["key_env"] == "OPENROUTER_API_KEY"
 
 
@@ -244,7 +267,7 @@ def test_the_save_bridge_call_answers_its_declared_reply(home):
     saved = json.loads(hermes_android.call("save_custom_endpoint", json.dumps(request)))
     refused = json.loads(hermes_android.call("save_custom_endpoint", json.dumps({**request, "model": " "})))
 
-    assert saved == {"id": "host-ollama", "key_env": KEY_ENV}
+    assert saved == {"id": "host-ollama", "key_env": KEY_ENV, "forget": None}
     assert refused == {"error": "An endpoint needs a name, a model and an http(s) base URL."}
 
 
@@ -254,7 +277,7 @@ def test_an_entry_under_a_numeric_key_is_edited_in_place(home):
 
     saved = save(id="2070", name="Box Renamed", base_url="http://10.0.0.2:11434/v1", model="m1", has_key=False)
 
-    assert saved == {"id": "2070", "key_env": "BOX_KEY"}
+    assert saved == {"id": "2070", "key_env": "BOX_KEY", "forget": "HERMES_CUSTOM_2070_API_KEY"}
     assert list(load_config()["providers"]) == ["2070"]  # re-keyed once under its string spelling, no twin
     assert [(e["id"], e["name"]) for e in listed()] == [("2070", "Box Renamed")]
 
@@ -288,5 +311,5 @@ def test_the_numeric_entry_bridge_calls_answer_their_declared_replies(home):
     _hand_written_numeric(home, default=True)
     gone = json.loads(hermes_android.call("delete_custom_endpoint", json.dumps({"id": "2070"})))
 
-    assert saved == {"id": "2070", "key_env": "BOX_KEY"}
+    assert saved == {"id": "2070", "key_env": "BOX_KEY", "forget": "HERMES_CUSTOM_2070_API_KEY"}
     assert gone == {"key_env": "HERMES_CUSTOM_2070_API_KEY", "was_default": True}

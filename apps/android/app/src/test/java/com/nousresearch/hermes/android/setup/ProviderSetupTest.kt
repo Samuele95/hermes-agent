@@ -58,7 +58,7 @@ class ProviderSetupTest {
             else -> error("unexpected $method")
         }
     }
-    private var endpointSaved: (JsonObject) -> String = { """{"id":"host-ollama","key_env":"HERMES_CUSTOM_HOST_OLLAMA_API_KEY"}""" }
+    private var endpointSaved: (JsonObject) -> String = { """{"id":"host-ollama","key_env":"HERMES_CUSTOM_HOST_OLLAMA_API_KEY","forget":null}""" }
     private var secretsChanged: () -> Unit = { log += "secrets_changed" }
     private val bridge = AppBridge { function, request ->
         if (function == "delete_custom_endpoint") dropListed(Json.parseToJsonElement(request).jsonObject.getValue("id").jsonPrimitive.content)
@@ -214,7 +214,7 @@ class ProviderSetupTest {
     @Test
     fun anEndpointIsSavedItsKeyKeptAndItsModelBecomesTheDefault() = runTest {
         var request: JsonObject? = null
-        endpointSaved = { request = it; """{"id":"host-ollama","key_env":"HERMES_CUSTOM_HOST_OLLAMA_API_KEY"}""" }
+        endpointSaved = { request = it; """{"id":"host-ollama","key_env":"HERMES_CUSTOM_HOST_OLLAMA_API_KEY","forget":null}""" }
         setup.open()
         setup.addEndpoint()
         val key = "sk-x".toByteArray()
@@ -232,14 +232,47 @@ class ProviderSetupTest {
 
     @Test
     fun anEndpointWithoutAKeyTouchesNoSecret() = runTest {
-        endpointSaved = { """{"id":"host-ollama","key_env":""}""" }
+        endpointSaved = { """{"id":"host-ollama","key_env":"","forget":"HERMES_CUSTOM_HOST_OLLAMA_API_KEY"}""" }
+        disconnect = { throw CoreError(4005, "no credentials found for host-ollama") }
         setup.open()
         setup.addEndpoint()
 
         setup.saveEndpoint("Host Ollama", "http://127.0.0.1:11434/v1", "gemma4", null)
 
         assertTrue(held.isEmpty())
-        assertEquals(listOf("save_endpoint", "config.set", "reopen_chat"), log.drop(1))
+        assertEquals(listOf("save_endpoint", "secrets_changed", "model.disconnect", "config.set", "reopen_chat"), log.drop(1))
+    }
+
+    @Test
+    fun aKeylessSaveGivesBackTheSlotItsEntryNoLongerNames() = runTest {
+        held["HERMES_CUSTOM_HOST_OLLAMA_API_KEY"] = "sk-old".toByteArray()
+        val names = KeyNames.InMemory().apply { this["host-ollama"] = "HERMES_CUSTOM_HOST_OLLAMA_API_KEY" }
+        val setup = ProviderSetup(core, secrets, bridge, session = { "s1" }, reopenChat = { log += "reopen_chat" }, keyNames = names)
+        endpointSaved = { """{"id":"host-ollama","key_env":"","forget":"HERMES_CUSTOM_HOST_OLLAMA_API_KEY"}""" }
+        var disconnected: String? = null
+        disconnect = { params -> disconnected = params["slug"]?.jsonPrimitive?.content; throw CoreError(4005, "no credentials found for host-ollama") }
+        configSet = { """{"key":"model","confirm_required":true,"confirm_message":"gemma4 costs $$$"}""" }  // stops on Models
+        setup.open()
+        setup.addEndpoint()
+
+        setup.saveEndpoint("Host Ollama", "http://127.0.0.1:11434/v1", "gemma4", null)
+
+        assertFalse(held.containsKey("HERMES_CUSTOM_HOST_OLLAMA_API_KEY"))
+        assertNull(names["host-ollama"])
+        assertEquals(listOf("save_endpoint", "secrets_changed", "model.disconnect", "config.set"), log.drop(1))
+        assertEquals("host-ollama", disconnected)
+        assertFalse("no Forget offered for a keyless endpoint", (setup.state.value?.step as SetupStep.Models).keyHeld)
+    }
+
+    @Test
+    fun aSaveWithANewKeyForgetsNothing() = runTest {
+        setup.open()
+        setup.addEndpoint()
+
+        setup.saveEndpoint("Host Ollama", "http://127.0.0.1:11434/v1", "gemma4", "sk-new".toByteArray())
+
+        assertTrue(log.none { it == "model.disconnect" })
+        assertArrayEquals("sk-new".toByteArray(), held["HERMES_CUSTOM_HOST_OLLAMA_API_KEY"])
     }
 
     @Test
@@ -406,7 +439,7 @@ class ProviderSetupTest {
     fun anEditKeepsItsIdAndItsKeyWhenNoNewKeyIsTyped() = runTest {
         answers["list_custom_endpoints"] = """{"endpoints":[$dgx]}"""
         held["HERMES_CUSTOM_DGX_API_KEY"] = "k".toByteArray()
-        endpointSaved = { """{"id":"dgx","key_env":"HERMES_CUSTOM_DGX_API_KEY"}""" }
+        endpointSaved = { """{"id":"dgx","key_env":"HERMES_CUSTOM_DGX_API_KEY","forget":null}""" }
         setup.open()
         setup.editEndpoint("dgx")
 

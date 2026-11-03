@@ -105,6 +105,7 @@ data class SaveCustomEndpointParams(
 data class SaveCustomEndpointReply(
     val id: String,
     @SerialName("key_env") val keyEnv: String,
+    val forget: String?,
 )
 
 @Serializable
@@ -253,7 +254,7 @@ object BridgeCalls {
     val GATEWAY_STOP = BridgeCall("gateway_stop", NoParams.serializer(), GatewayStopReply.serializer())
     /** The gateway host's state in this process. */
     val GATEWAY_STATE = BridgeCall("gateway_state", NoParams.serializer(), GatewayStateReply.serializer())
-    /** Adds a custom OpenAI-compatible endpoint to config.yaml (Dv20), or replaces the saved one id names (null for a new one); a new key goes to the keystore under key_env, an edit without one keeps the entry's key_env. */
+    /** Adds a custom OpenAI-compatible endpoint to config.yaml (Dv20), or replaces the saved one id names (null for a new one); a new key goes to the keystore under key_env, an edit without one keeps the entry's key_env; forget names the endpoint's own keystore slot when config.yaml no longer names it after this save (the app forgets it, as for a delete), else null. */
     val SAVE_CUSTOM_ENDPOINT = BridgeCall("save_custom_endpoint", SaveCustomEndpointParams.serializer(), SaveCustomEndpointReply.serializer())
     /** The custom endpoints saved in config.yaml (providers.*), without keys: has_key says whether one is in the keystore under the entry's key_env. */
     val LIST_CUSTOM_ENDPOINTS = BridgeCall("list_custom_endpoints", NoParams.serializer(), ListCustomEndpointsReply.serializer())
