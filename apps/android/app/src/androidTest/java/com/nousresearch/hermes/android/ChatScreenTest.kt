@@ -29,6 +29,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.semantics.ScrollAxisRange
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -526,5 +527,70 @@ class ChatScreenTest {
         compose.waitForIdle()
         assertTrue("a picked conversation is shown from its end", atTheEnd())
         compose.onNodeWithTag("jump-latest").assertDoesNotExist()
+    }
+
+    @Test
+    fun aFinishedAnswerIsCopiedWholeAsItsMarkdown() {
+        val copies = mutableListOf<String>()
+        compose.setContent {
+            ChatScreen(Chat(listOf(Entry.User("hi"), Entry.Reply("**Bold** and `code`", TurnStatus.COMPLETE))), onSend = {},
+                       onCopy = { copies += it })
+        }
+        compose.waitForIdle()
+
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithTag("copy-reply").performClick()
+        compose.mainClock.advanceTimeByFrame()
+
+        assertEquals(listOf("**Bold** and `code`"), copies)
+        compose.onNodeWithContentDescription("Copied").assertExists()
+        compose.mainClock.advanceTimeBy(1_600)
+        compose.onNodeWithContentDescription("Copy").assertExists()
+    }
+
+    @Test
+    fun theLastAnswersCopyAndRetrySitInOneRow() {
+        compose.setContent {
+            ChatScreen(Chat(listOf(Entry.User("a", 1), Entry.Reply("One", TurnStatus.COMPLETE), Entry.User("b", 2),
+                                   Entry.Reply("Two", TurnStatus.COMPLETE))), onSend = {}, onRetry = {}, onCopy = {})
+        }
+
+        compose.onAllNodesWithTag("copy-reply").assertCountEquals(2)
+        compose.onAllNodesWithTag("retry").assertCountEquals(1)
+        val c = compose.onAllNodesWithTag("copy-reply")[1].getUnclippedBoundsInRoot()
+        val r = compose.onNodeWithTag("retry").getUnclippedBoundsInRoot()
+        assertEquals(c.top, r.top)
+        assertTrue("Copy left of Retry", c.right <= r.left)
+    }
+
+    @Test
+    fun noCopyWhileAReplyStreamsForAnEmptyAnswerOrWithoutAHandler() {
+        var chat by mutableStateOf(Chat(listOf(Entry.User("hi")), streaming = "He"))
+        var onCopy by mutableStateOf<((String) -> Unit)?>({})
+        compose.setContent { ChatScreen(chat, onSend = {}, onRetry = {}, onCopy = onCopy) }
+        compose.waitForIdle()
+        compose.onNodeWithTag("copy-reply").assertDoesNotExist()
+
+        chat = Chat(listOf(Entry.User("hi"), Entry.Reply("", TurnStatus.ERROR, error = "timed out")))
+        compose.waitForIdle()
+        compose.onNodeWithTag("copy-reply").assertDoesNotExist()
+        compose.onNodeWithTag("retry").assertExists()
+
+        chat = Chat(listOf(Entry.User("hi"), Entry.Reply("Hello", TurnStatus.COMPLETE)))
+        onCopy = null
+        compose.waitForIdle()
+        compose.onNodeWithTag("copy-reply").assertDoesNotExist()
+    }
+
+    @Test
+    fun aLongPressOnYourMessageCopiesIt() {
+        val copies = mutableListOf<String>()
+        compose.setContent { ChatScreen(Chat(listOf(Entry.User("ls -la ~/notes"))), onSend = {}, onCopy = { copies += it }) }
+
+        compose.onNodeWithText("ls -la ~/notes").performTouchInput { longClick() }
+        compose.onNodeWithTag("copy-message").performClick()
+
+        assertEquals(listOf("ls -la ~/notes"), copies)
+        compose.onNodeWithTag("copy-message").assertDoesNotExist()
     }
 }

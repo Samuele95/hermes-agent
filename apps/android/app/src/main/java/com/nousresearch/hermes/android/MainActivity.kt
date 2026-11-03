@@ -88,7 +88,7 @@ class MainActivity : ComponentActivity() {
                             }
                             ssh?.let {
                                 SshScreen(it, onLook = { target -> app.ssh { look(target) } }, onTrust = { app.ssh { trust() } },
-                                          onCheck = { app.ssh { checkLogin() } }, onCopy = ::copyPublicKey, onClose = state.ssh::close,
+                                          onCheck = { app.ssh { checkLogin() } }, onCopy = { copy("SSH public key", it) }, onClose = state.ssh::close,
                                           onRunOnPhone = { app.ssh { runOnPhone() } })
                                 return@Surface
                             }
@@ -110,7 +110,7 @@ class MainActivity : ComponentActivity() {
                                                         secret = { p, value -> app.chat { secret(p, value) } })
                             ChatScreen(chat, about = state.about, onSetup = { app.setup { open() } }, answers = answers,
                                        onTerminal = { app.ssh { open() } }, onGateway = app::openGateway, onStop = { app.chat { cancel() } },
-                                       onRetry = { app.chat { retry() } },
+                                       onRetry = { app.chat { retry() } }, onCopy = { copy("Hermes", it) },
                                        onSettings = { app.settings { open() } }, onNewChat = { app.chat { open() } },
                                        // The drawer's sessions load as it opens; a tap continues one.
                                        sessions = history, onSessions = { open -> if (open) app.history { open() } else state.history.close() },
@@ -181,9 +181,9 @@ class MainActivity : ComponentActivity() {
                       onRestart = app::restartGateway)
     }
 
-    /** The public key goes on the clipboard so the user can paste it into the host's authorized_keys. */
-    private fun copyPublicKey(publicKey: String) {
-        getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("SSH public key", publicKey))
+    /** Text onto the clipboard: the SSH public key for the host's authorized_keys, or what the user copied in the chat (F10). */
+    private fun copy(label: String, text: String) {
+        getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText(label, text))
     }
 
     private fun openInBrowser(url: String) {

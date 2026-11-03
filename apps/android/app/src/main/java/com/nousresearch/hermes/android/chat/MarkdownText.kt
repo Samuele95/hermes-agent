@@ -45,7 +45,8 @@ import com.nousresearch.hermes.android.ui.Hermes
 
 /** A reply's Markdown, drawn flat like the desktop's: prose in the body face, code in JetBrains Mono on the widget surface. */
 @Composable
-fun MarkdownText(text: String, modifier: Modifier = Modifier, style: TextStyle = MaterialTheme.typography.bodyLarge) {
+fun MarkdownText(text: String, modifier: Modifier = Modifier, style: TextStyle = MaterialTheme.typography.bodyLarge,
+                 onCopy: ((String) -> Unit)? = null) {
     val blocks = remember(text) { Markdown.parse(text) }
     val typography = MaterialTheme.typography
     val muted = MaterialTheme.colorScheme.onSurfaceVariant

@@ -5,6 +5,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -24,7 +25,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -33,6 +34,8 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -79,6 +82,7 @@ import com.nousresearch.hermes.android.ui.Hermes
 import com.nousresearch.hermes.android.ui.HermesIcons
 import com.nousresearch.hermes.android.ui.Wordmark
 import com.nousresearch.hermes.bridge.protocol.TurnStatus
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
@@ -90,12 +94,14 @@ import kotlin.random.Random
  * It holds only the draft; [onSend] gets the trimmed text, [onRetry] runs the last prompt again. [onSessions] hears the drawer open (load the sessions)
  * and close; [sessionActions] is the rows' menu (rename, delete). [onContext] opens the context sheet from the meter;
  * [context] is that sheet while it is open. The transcript follows a streaming reply only while the reader is at its end;
- * Jump brings it back (chat-17).
+ * Jump brings it back (chat-17). [onCopy] puts an answer, one of the user's messages or a code block on the clipboard
+ * (chat-09, chat-10); without it nothing offers Copy.
  */
 @Composable
 fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifier, about: String? = null,
                onSetup: (() -> Unit)? = null, answers: PromptAnswers? = null, onTerminal: (() -> Unit)? = null,
-               onGateway: (() -> Unit)? = null, onStop: () -> Unit = {}, onRetry: (() -> Unit)? = null, onSettings: (() -> Unit)? = null,
+               onGateway: (() -> Unit)? = null, onStop: () -> Unit = {}, onRetry: (() -> Unit)? = null, onCopy: ((String) -> Unit)? = null,
+               onSettings: (() -> Unit)? = null,
                onNewChat: (() -> Unit)? = null, sessions: HistoryUi? = null, onSessions: (open: Boolean) -> Unit = {},
                onPickSession: (String) -> Unit = {}, sessionActions: SessionActions? = null, context: ContextUi? = null, onContext: (() -> Unit)? = null,
                onCompress: (String?) -> Unit = {}, onCloseContext: () -> Unit = {}) {
@@ -125,7 +131,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
         Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).safeDrawingPadding()) {
             TopBar(onMenu = if (hasDrawer) ({ scope.launch { drawer.open() } }) else null, onNewChat)
             if (chat.entries.isEmpty() && !chat.running && chat.prompts.isEmpty()) Intro(Modifier.weight(1f))
-            else Transcript(chat, onRetry, picked, Modifier.weight(1f))
+            else Transcript(chat, onRetry, onCopy, picked, Modifier.weight(1f))
             // One question at a time, the oldest first: the turn waits on it.
             if (answers != null) chat.prompts.firstOrNull()?.let { PromptCard(it, answers) }
             // The agent's plan while it works through it (D1: a turn that ended leaves no stale plan pinned).
@@ -165,7 +171,7 @@ private fun Intro(modifier: Modifier) {
 }
 
 @Composable
-private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, picked: Int, modifier: Modifier) {
+private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, onCopy: ((String) -> Unit)?, picked: Int, modifier: Modifier) {
     val list = rememberLazyListState()
     // chat-17 (F9, DC-B16): whether the list follows its newest row belongs to the view, never to the conversation.
     var following by rememberSaveable { mutableStateOf(true) }
@@ -187,11 +193,15 @@ private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, picked: Int, modifier
     Box(modifier.fillMaxWidth()) {
         LazyColumn(Modifier.fillMaxSize().testTag("transcript"), list, PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                    verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            items(chat.entries) { EntryRow(it) }
-            retry?.let { item { RetryAction(failed = (chat.entries.last() as? Entry.Reply)?.status != TurnStatus.COMPLETE, it) } }
+            // The last answer carries Retry in its own action row, beside Copy (F10); after a turn that ended in a notice or a
+            // tool row, Retry stands alone in words, as before.
+            itemsIndexed(chat.entries) { i, entry ->
+                EntryRow(entry, onCopy, retry.takeIf { i == chat.entries.lastIndex && entry is Entry.Reply })
+            }
+            retry?.takeIf { chat.entries.last() !is Entry.Reply }?.let { item { RetryAction(failed = true, it) } }
             chat.reasoning?.takeIf { chat.running && it.isNotBlank() }?.let { text -> item { Reasoning(text, Modifier.testTag("reasoning-streaming")) } }
             chat.streaming?.let { text ->
-                item { if (text.isEmpty()) Text("…", color = MaterialTheme.colorScheme.onSurfaceVariant) else Reply(text) }
+                item { if (text.isEmpty()) Text("…", color = MaterialTheme.colorScheme.onSurfaceVariant) else Reply(text, onCopy) }
             }
             chat.activity?.let { text ->
                 item {
@@ -234,6 +244,30 @@ private fun RetryAction(failed: Boolean, onRetry: () -> Unit) {
     }
 }
 
+/** Under a finished answer: Copy (its Markdown, DC-B13), and Retry when it is the last (the desktop's action bar). */
+@Composable
+private fun ReplyActions(reply: Entry.Reply, onCopy: ((String) -> Unit)?, onRetry: (() -> Unit)?) {
+    Row(Modifier.testTag("reply-actions"), verticalAlignment = Alignment.CenterVertically) {
+        onCopy?.let { CopyButton(reply.text, it, stringResource(R.string.chat_copy), Modifier.testTag("copy-reply")) }
+        onRetry?.let { RetryAction(failed = reply.status != TurnStatus.COMPLETE, it) }
+    }
+}
+
+/**
+ * Copy, as the desktop's control: one tap hands [text] to [onCopy], and the icon reads "Copied" for 1.5 s
+ * (copy-button.tsx:15,119-124,142). Which control was just used is this view's own state (§2.5, V5).
+ */
+@Composable
+internal fun CopyButton(text: String, onCopy: (String) -> Unit, label: String, modifier: Modifier = Modifier) {
+    var copied by remember(text) { mutableStateOf(false) }
+    LaunchedEffect(copied) { if (copied) { delay(1_500); copied = false } }
+    Row(modifier.clip(CircleShape).clickable(onClickLabel = label) { onCopy(text); copied = true }.heightIn(min = 48.dp)
+            .padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(if (copied) HermesIcons.Check else HermesIcons.Copy, if (copied) stringResource(R.string.chat_copied) else label,
+             Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
 /** Back to the newest row, following it again (chat-17): Desktop's jump control, made round for a phone. */
 @Composable
 private fun JumpToLatest(modifier: Modifier, onClick: () -> Unit) {
@@ -247,9 +281,9 @@ private fun JumpToLatest(modifier: Modifier, onClick: () -> Unit) {
 }
 
 @Composable
-private fun EntryRow(entry: Entry) {
+private fun EntryRow(entry: Entry, onCopy: ((String) -> Unit)?, retry: (() -> Unit)?) {
     when (entry) {
-        is Entry.User -> UserBubble(entry.text)
+        is Entry.User -> UserBubble(entry.text, onCopy)
         is Entry.Reply -> Column(Modifier.fillMaxWidth().testTag("entry-reply")) {
             entry.reasoning?.let { reasoning ->
                 var shown by rememberSaveable { mutableStateOf(false) }
@@ -262,12 +296,14 @@ private fun EntryRow(entry: Entry) {
                 }
                 if (shown) Reasoning(reasoning, Modifier.padding(bottom = 8.dp))
             }
-            if (entry.text.isNotEmpty()) Reply(entry.text)
+            if (entry.text.isNotEmpty()) Reply(entry.text, onCopy)
             // The core often words the error into the reply itself; show it apart only when it did not.
             entry.error?.takeUnless { it in entry.text }?.let { Problem(it) }
+            val copy = onCopy?.takeIf { entry.text.isNotBlank() }
+            if (copy != null || retry != null) ReplyActions(entry, copy, retry)
         }
         // Commentary reads like the agent's words, without the reply's reasoning fold (and, later, its actions).
-        is Entry.Interim -> Column(Modifier.fillMaxWidth().testTag("entry-interim")) { Reply(entry.text) }
+        is Entry.Interim -> Column(Modifier.fillMaxWidth().testTag("entry-interim")) { Reply(entry.text, onCopy) }
         is Entry.Tool -> ToolRow(entry)
         is Entry.Notice -> Problem(entry.text, Modifier.testTag("entry-notice"))
     }
@@ -275,8 +311,8 @@ private fun EntryRow(entry: Entry) {
 
 /** The agent's words: Markdown drawn flat across the column, selectable like the desktop's. */
 @Composable
-private fun Reply(text: String) {
-    SelectionContainer { MarkdownText(text, Modifier.fillMaxWidth()) }
+private fun Reply(text: String, onCopy: ((String) -> Unit)? = null) {
+    SelectionContainer { MarkdownText(text, Modifier.fillMaxWidth(), onCopy = onCopy) }
 }
 
 /** The model's reasoning: set apart from the reply by a rule, quieter than it. */
@@ -289,12 +325,24 @@ private fun Reasoning(text: String, modifier: Modifier = Modifier) {
     }
 }
 
+/** The user's words in a bubble; a long press offers Copy (V6: the drawer row's menu, a phone has no hover bar). */
 @Composable
-private fun UserBubble(text: String) {
+private fun UserBubble(text: String, onCopy: ((String) -> Unit)?) {
     val shape = RoundedCornerShape(14.dp)
+    var menu by remember { mutableStateOf(false) }
+    val press = onCopy?.let {
+        Modifier.combinedClickable(onClick = {}, onLongClickLabel = stringResource(R.string.chat_message_actions), onLongClick = { menu = true })
+    } ?: Modifier
     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
-        Text(text, Modifier.widthIn(max = 320.dp).background(Hermes.colors.userBubble, shape).border(1.dp, Hermes.colors.userBubbleBorder, shape)
-                 .padding(horizontal = 14.dp, vertical = 10.dp), style = MaterialTheme.typography.bodyLarge)
+        Box {
+            Text(text, Modifier.widthIn(max = 320.dp).clip(shape).then(press).background(Hermes.colors.userBubble, shape)
+                     .border(1.dp, Hermes.colors.userBubbleBorder, shape).padding(horizontal = 14.dp, vertical = 10.dp),
+                 style = MaterialTheme.typography.bodyLarge)
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                DropdownMenuItem(text = { Text(stringResource(R.string.chat_copy)) }, onClick = { menu = false; onCopy?.invoke(text) },
+                                 Modifier.testTag("copy-message"), leadingIcon = { Icon(HermesIcons.Copy, null, Modifier.size(16.dp)) })
+            }
+        }
     }
 }
 
