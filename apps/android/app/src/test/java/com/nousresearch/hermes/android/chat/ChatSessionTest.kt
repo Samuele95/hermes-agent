@@ -47,6 +47,7 @@ class ChatSessionTest {
     private var history: () -> String = { """{"count":0,"messages":[]}""" }
     private var compressReply: (JsonObject) -> String = { """{"status":"compressed","removed":0,"messages":[]}""" }
     private var breakdownReply: () -> String = { BREAKDOWN }
+    private var title: (JsonObject) -> String = { p -> """{"title":${p.getValue("title")},"pending":false}""" }
     // The core continues a compressed conversation at its tip and answers that key (no top-level stored id).
     private var resume: () -> String = { """{"session_id":"s-resumed","message_count":2,"session_key":"db-old-tip",
                                    "messages":[{"role":"user","text":"what's on my calendar?"},{"role":"assistant","text":"Two meetings."}],
@@ -66,6 +67,7 @@ class ChatSessionTest {
             "session.history" -> history()
             "session.compress" -> compressReply(params)
             "session.context_breakdown" -> breakdownReply()
+            "session.title" -> title(params)
             else -> error("unexpected $method")
         }
     }
@@ -88,6 +90,13 @@ class ChatSessionTest {
 
     /** The params of the last prompt.submit; a field the app left unset is absent. */
     private fun lastSubmit() = core.calls.last { it.first == "prompt.submit" }.second
+
+    /** `_resume_lazy`'s reply: an agent-less read-only mount of a stored row, no transcript. */
+    private val sideResume = { """{"session_id":"s-side","message_count":0,"messages":[],"session_key":"db-old",
+                                   "running":false,"info":{"lazy":true}}""" }
+
+    /** The params of the last call of [method]. */
+    private fun lastOf(method: String) = core.calls.last { it.first == method }.second
 
     private fun TestScope.openChat() =
         ChatSession(core, host, backgroundScope, keepSecret = { name, value -> keepSecret(name, value) }, notifier = notifier)
@@ -1097,6 +1106,95 @@ class ChatSessionTest {
         assertEquals(ChatSession.STILL_REPLYING, refused?.message)
         assertFalse(core.calls.any { it.first == "session.compress" })
         assertEquals(listOf("begin:s1"), turns)
+    }
+
+    @Test
+    fun renamingTheChatsOwnSessionTitlesItInPlace() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+
+        chat.rename("db1", "Trip plans")
+
+        assertEquals(listOf("session.title" to "s1"), callsAfter(1))
+        assertEquals("Trip plans", lastOf("session.title").getValue("title").jsonPrimitive.content)
+        assertEquals(emptyList<String>(), closed())
+        assertEquals("s1", chat.sessionId)
+    }
+
+    @Test
+    fun renamingAnotherRowAttachesItAsideAndLetsItGo() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        resume = sideResume
+        val shown = chat.state.value
+
+        chat.rename("db-old", "Calendar 2")
+
+        assertEquals(listOf("session.resume" to "db-old", "session.title" to "s-side", "session.close" to "s-side"), callsAfter(1))
+        val resumed = lastOf("session.resume")
+        assertEquals(Triple("true", "true", "android"),
+                     Triple(resumed["lazy"]?.jsonPrimitive?.content, resumed["omit_messages"]?.jsonPrimitive?.content,
+                            resumed["source"]?.jsonPrimitive?.content))
+        assertEquals("Calendar 2", lastOf("session.title").getValue("title").jsonPrimitive.content)
+        assertEquals("s1", chat.sessionId)
+        assertEquals(shown, chat.state.value)  // the row was never shown
+    }
+
+    @Test
+    fun aRowStillWritingIsTitledButNotClosed() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        resume = { """{"session_id":"s-busy","message_count":0,"messages":[],"session_key":"db-old","running":true,"info":{}}""" }
+
+        chat.rename("db-old", "Calendar 2")
+
+        assertEquals(listOf("session.resume" to "db-old", "session.title" to "s-busy"), callsAfter(1))
+        assertEquals(emptyList<String>(), closed())  // its turn runs on (invariant 3)
+    }
+
+    @Test
+    fun aRowTheCoreAnswersWithTheChatsOwnSessionIsNotClosed() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        // Another key of the chat's lineage: the core follows it and hands back the live session it has.
+        resume = { """{"session_id":"s1","message_count":0,"messages":[],"session_key":"db1","running":false,"info":{}}""" }
+
+        chat.rename("db1-root", "Trip plans")
+
+        assertEquals(listOf("session.resume" to "db1-root", "session.title" to "s1"), callsAfter(1))
+        assertEquals(emptyList<String>(), closed())
+        assertEquals("s1", chat.sessionId)
+    }
+
+    @Test
+    fun aRefusedTitleIsThrownInTheCoresWordsAndTheRowStillGoes() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        resume = sideResume
+        title = { throw CoreError(4022, "Title 'Trip' is already in use by session db-x") }
+
+        val refused = runCatching { chat.rename("db-old", "Trip") }.exceptionOrNull()
+
+        assertTrue("$refused", refused is CoreError)
+        assertEquals(4022 to "Title 'Trip' is already in use by session db-x", (refused as CoreError).code to refused.message)
+        assertEquals(listOf("s-side"), closed())
+    }
+
+    @Test
+    fun aRenameWaitsForTheChatsSwitch() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        val asked = resume
+        var renaming = false
+        // The user renames the row the chat is switching to while its resume is still being answered.
+        resume = {
+            if (!renaming) {
+                renaming = true
+                backgroundScope.launch { chat.rename("db-old-tip", "Calendar 2") }
+            }
+            asked()
+        }
+
+        chat.resume("db-old")
+
+        // After the switch the row is the chat's own: titled where it is, never attached aside and closed under the chat.
+        assertEquals(listOf("session.resume" to "db-old", "session.title" to "s-resumed"), callsAfter(1))
+        assertEquals(emptyList<String>(), closed())
+        assertEquals("s-resumed", chat.sessionId)
     }
 
     private companion object {

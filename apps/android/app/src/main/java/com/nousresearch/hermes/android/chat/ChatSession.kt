@@ -27,6 +27,7 @@ import com.nousresearch.hermes.bridge.protocol.SessionResumeParams
 import com.nousresearch.hermes.bridge.protocol.SessionListRow
 import com.nousresearch.hermes.bridge.protocol.SessionListParams
 import com.nousresearch.hermes.bridge.protocol.SessionMostRecentParams
+import com.nousresearch.hermes.bridge.protocol.SessionTitleParams
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -201,6 +202,30 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     }
 
     /**
+     * Renames stored session [storedId] (a drawer row's id) to [title]. The core titles live sessions only
+     * (`session.title`): the chat's own is titled where it is; any other row is attached aside — resumed lazily, never
+     * shown — titled, and let go again (DC-B7). A refusal (a title in use, too long) is thrown in the core's words; a
+     * row attached aside is let go either way.
+     */
+    suspend fun rename(storedId: String, title: String): Unit = switching.withLock {  // D3: no switch interleaves
+        val own = synchronized(lock) { live.ref }
+        if (own?.stored == storedId) {  // D4: the listing's id is the tip, which SessionRef follows
+            core.call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = own.runtime, title = title))
+            return@withLock
+        }
+        // D1: an agent-less read-only mount: no build to wait for, no transcript, no auto-continue.
+        val side = core.call(Methods.SESSION_RESUME,
+                             SessionResumeParams(sessionId = storedId, source = SOURCE, lazy = true, omitMessages = true))
+        try {
+            core.call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = side.sessionId, title = title))
+        } finally {
+            // D2: only what this rename attached is let go. The core answers a session live here as it is: one still
+            // writing, or the chat's own reached by another key of its lineage, runs on (invariant 3).
+            if (side.running != true && side.sessionId != synchronized(lock) { live.ref?.runtime }) closeAside(side.sessionId)
+        }
+    }
+
+    /**
      * Continues stored session [sessionId]: the chat shows its transcript and sends to it from now on. A session still
      * in a turn comes back running (the reply so far, Stop, the foreground service), with the questions it waits on.
      */
@@ -278,6 +303,16 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
             } catch (failed: Exception) {
                 if (failed is CancellationException) throw failed  // a failed close leaves it live, as before (D5)
             }
+        }
+    }
+
+    /** Closes [runtime], attached aside by [rename], at once: a lazy mount builds no agent, so nothing settles (D2). Best-effort (B3's D5). */
+    private suspend fun closeAside(runtime: String) {
+        try {
+            core.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = runtime))
+            settled.update { it - runtime }  // a session.info the title emitted marked it; it is gone now
+        } catch (failed: Exception) {
+            if (failed is CancellationException) throw failed  // a failed close leaves it live, as before
         }
     }
 

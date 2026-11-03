@@ -10,6 +10,7 @@ import com.nousresearch.hermes.bridge.CoreGateway
 import com.nousresearch.hermes.bridge.protocol.Methods
 import com.nousresearch.hermes.bridge.protocol.SessionCloseParams
 import com.nousresearch.hermes.bridge.protocol.SessionDeleteParams
+import com.nousresearch.hermes.bridge.protocol.SessionListParams
 import com.nousresearch.hermes.bridge.protocol.SessionTitleParams
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -124,6 +125,57 @@ class SessionLivenessDeviceTest {
             }
             Log.i("SessionLiveness", "other session deleted after ${(System.nanoTime() - since) / 1_000_000} ms")
             assertEquals(4007, refusalOf(other))
+        } finally {
+            // A failed run leaves no session or row behind on the shared phone.
+            runtimes.forEach { runCatching { gateway.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = it)) } }
+            rows.forEach { runCatching { gateway.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = it)) } }
+            scope.cancel()
+        }
+    }
+
+    /** The stored row the core lists under exactly [title]. */
+    private suspend fun rowTitled(title: String): String =
+        gateway.call(Methods.SESSION_LIST, SessionListParams(title = title)).sessions.single().let { it.resolvedId ?: it.id }
+
+    @Test
+    fun aStoredRowIsRenamedAsideAndLetGo() = runBlocking<Unit> {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val chat = ChatSession(gateway, noTurns, scope, keepSecret = { _, _ -> })
+        val runtimes = mutableListOf<String>()
+        val rows = mutableListOf<String>()
+        try {
+            chat.open()
+            val left = chat.sessionId.also(runtimes::add)
+            val stored = persisted(left).also(rows::add)
+            chat.open()  // leaves `left` idle
+            runtimes += chat.sessionId
+
+            // The left session's own close first, so the rename meets a fresh lazy mount, not a reuse.
+            withTimeout(120_000) {
+                while (true) {
+                    try {
+                        gateway.call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = left))
+                        delay(200)
+                    } catch (gone: CoreError) {
+                        assertEquals(4001, gone.code)  // the runtime is gone
+                        break
+                    }
+                }
+            }
+
+            val named = "b8 renamed ${System.nanoTime()}"
+            chat.rename(stored, named)
+
+            assertEquals(stored, rowTitled(named))
+            // Let go after the title: the first delete is not refused as live (4023).
+            assertEquals(stored, gateway.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = stored)).deleted)
+
+            val running = chat.sessionId
+            val own = persisted(running).also(rows::add)
+            val mine = "b8 own ${System.nanoTime()}"
+            chat.rename(own, mine)
+            assertEquals(own, rowTitled(mine))
+            assertEquals(running, chat.sessionId)
         } finally {
             // A failed run leaves no session or row behind on the shared phone.
             runtimes.forEach { runCatching { gateway.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = it)) } }
