@@ -101,12 +101,12 @@ _CONTRACT = json.loads(Path(__file__).with_name("bridge_contract.json").read_tex
 def _conforms(kind: str, value: object) -> bool:
     if kind.startswith("[") and kind.endswith("]"):
         return isinstance(value, list) and all(_conforms(kind[1:-1], item) for item in value)
+    if kind.endswith("?"):
+        return value is None or _conforms(kind[:-1], value)
     if kind in _CONTRACT.get("records", {}):
         return _mismatch(_CONTRACT["records"][kind], value) is None
     if kind in _CONTRACT["enums"]:
         return value in _CONTRACT["enums"][kind]
-    if kind == "string?":
-        return value is None or isinstance(value, str)
     if kind == "integer":
         return isinstance(value, int) and not isinstance(value, bool)
     return isinstance(value, {"string": str, "boolean": bool}[kind])

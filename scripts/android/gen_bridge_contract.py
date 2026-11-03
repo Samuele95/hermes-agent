@@ -4,8 +4,8 @@
 Python half, each with its request and reply; ``hermes_android.call`` holds the Python side to it at run
 time. This renders the same declaration into kotlinx serialization types and one typed descriptor per call,
 so the app cannot name an undeclared call or build a request the Python side would refuse. Types: string,
-integer, boolean, ``string?`` (present, may be null), ``[T]`` (a list of T), and the contract's enums and
-records; anything else is a generation error.
+integer, boolean, ``T?`` (present, may be null) for any type T, ``[T]`` (a list of T), and the contract's
+enums and records; anything else is a generation error.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ data object NoParams
 data object NoReply
 """
 
-_PRIMITIVES = {"string": "String", "integer": "Int", "boolean": "Boolean", "string?": "String?"}
+_PRIMITIVES = {"string": "String", "integer": "Int", "boolean": "Boolean"}
 
 
 def _type_name(call: str) -> str:
@@ -58,6 +58,8 @@ def _type_name(call: str) -> str:
 def _kotlin_type(kind: str, names: set, where: str) -> str:
     if kind.startswith("[") and kind.endswith("]"):
         return f"List<{_kotlin_type(kind[1:-1], names, where)}>"
+    if kind.endswith("?") and not kind.endswith("??"):
+        return f"{_kotlin_type(kind[:-1], names, where)}?"
     if kind in _PRIMITIVES:
         return _PRIMITIVES[kind]
     if kind in names:

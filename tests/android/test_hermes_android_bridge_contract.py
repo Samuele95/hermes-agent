@@ -52,7 +52,7 @@ def test_only_the_network_bound_calls_are_declared_blocking():
 def _known(kind: str) -> bool:
     if kind.startswith("[") and kind.endswith("]"):
         return _known(kind[1:-1])
-    return kind in {"string", "integer", "boolean", "string?"} | set(CONTRACT["enums"]) | set(CONTRACT.get("records", {}))
+    return kind.removesuffix("?") in {"string", "integer", "boolean"} | set(CONTRACT["enums"]) | set(CONTRACT.get("records", {}))
 
 
 def test_the_contract_uses_only_known_types():
@@ -73,6 +73,20 @@ def test_a_list_holds_every_item_to_its_type(monkeypatch):
     assert hermes_android._conforms("[Item]", [{"id": "x", "n": 1}])
     assert not hermes_android._conforms("[Item]", [{"id": "x"}])  # a missing field
     assert not hermes_android._conforms("[Item]", [{"id": "x", "n": 1, "extra": 2}])  # an undeclared field
+
+
+def test_a_nullable_type_is_its_type_or_null(monkeypatch):
+    monkeypatch.setitem(hermes_android._CONTRACT["enums"], "S", ["a"])
+    monkeypatch.setitem(hermes_android._CONTRACT["records"], "Item", {"id": "string"})
+    assert hermes_android._conforms("S?", None)
+    assert hermes_android._conforms("S?", "a")
+    assert not hermes_android._conforms("S?", "b")
+    assert hermes_android._conforms("Item?", None)
+    assert hermes_android._conforms("Item?", {"id": "x"})
+    assert not hermes_android._conforms("Item?", {})
+    assert hermes_android._conforms("string?", None)
+    assert hermes_android._conforms("string?", "x")
+    assert not hermes_android._conforms("string?", 1)
 
 
 def test_a_record_is_an_object_with_exactly_its_fields(monkeypatch):

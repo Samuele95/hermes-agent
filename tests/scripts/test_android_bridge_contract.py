@@ -50,6 +50,19 @@ def test_a_nullable_string_must_be_present_but_may_be_null():
     assert '@SerialName("allowed_user") val allowedUser: String?,' in text  # no default: the field is always sent
 
 
+def test_a_nullable_enum_or_record_must_be_present_but_may_be_null():
+    text = gen.render({"version": 1, "enums": {"State": ["up"]}, "records": {"Item": {"id": "string"}},
+                       "calls": {"look": {"params": {}, "reply": {"state": "State?", "item": "Item?"}}}})
+
+    assert "    val state: State?," in text
+    assert "    val item: Item?," in text
+
+
+def test_a_doubly_nullable_type_fails_generation():
+    with pytest.raises(ValueError, match="unknown type"):
+        _render({"look": {"params": {}, "reply": {"a": "string??"}}})
+
+
 def test_enums_keep_their_wire_values():
     text = _render({"look": {"params": {}, "reply": {"pinned": "Pinned"}}}, enums={"Pinned": ["no", "yes"]})
 
