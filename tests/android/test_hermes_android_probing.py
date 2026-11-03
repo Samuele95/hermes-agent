@@ -12,7 +12,7 @@ import pytest
 from tests.android.fake_endpoint import closed_port
 
 probing = importlib.import_module("hermes_android.probing")
-from hermes_android.probing import FOUND, Outcome
+from hermes_android.probing import FOUND, NOT_AN_ADDRESS, Outcome
 
 CONTRACT = json.loads((Path(inspect.getfile(probing)).parent / "bridge_contract.json").read_text(encoding="utf-8"))
 
@@ -142,3 +142,59 @@ def test_the_most_telling_failure_wins_across_ports(home, servers, ports, expect
             "closed": closed_port}
 
     assert probe("127.0.0.1", ports=tuple((made[name](), "ollama") for name in ports))["outcome"] == expected
+
+
+@pytest.fixture
+def reached(monkeypatch):
+    """Records every connection and every core probe a probe makes (connections still go through)."""
+    import hermes_cli.models
+
+    seen = {"connections": [], "probes": []}
+    connect, core_probe = probing.socket.create_connection, hermes_cli.models.probe_api_models
+
+    def connection(where, *args, **kw):
+        seen["connections"].append(where)
+        return connect(where, *args, **kw)
+
+    def probed(*args, **kw):
+        seen["probes"].append(args)
+        return core_probe(*args, **kw)
+
+    monkeypatch.setattr(probing.socket, "create_connection", connection)
+    monkeypatch.setattr(hermes_cli.models, "probe_api_models", probed)
+    return seen
+
+
+@pytest.mark.parametrize("address", ["", "http://", "file:///x", "ftp://127.0.0.1", "::1", "fe80::1", "host:",
+                                     "127.0.0.1:0", "http://127.0.0.1:99999", "http://[::1", "a b", "user@host"])
+def test_an_address_that_names_no_server_is_refused_in_words(home, reached, address):
+    assert probe(address, ports=((closed_port(), "ollama"),)) == {"error": NOT_AN_ADDRESS}
+    assert reached == {"connections": [], "probes": []}
+
+
+def test_an_empty_address_never_reaches_a_server_on_the_phone(home, servers, reached):
+    # An empty host resolves to the loopback: on the phone (adb reverse) that is the host's Ollama.
+    server = servers(models=["m1"])
+
+    assert probing.probe("", ports=((server.port, "ollama"),), timeout=2.0) == {"error": NOT_AN_ADDRESS}
+    assert server.seen_auth == [] and reached["connections"] == []
+
+
+def test_a_bracketed_ipv6_host_is_probed_there(home, servers):
+    try:
+        server = servers(models=["m1"], host="::1")
+    except OSError as unbound:
+        pytest.skip(f"this host cannot bind ::1 ({unbound}): the brackets are not proven here")
+    ports = ((server.port, "ollama"),)
+
+    for address in (f"[::1]:{server.port}", f"http://[::1]:{server.port}/v1", "[::1]"):
+        found = probe(address, ports=ports)
+        assert found["outcome"] == "found", address
+        assert found["base_url"] == f"http://[::1]:{server.port}/v1", address
+
+
+def test_the_bridge_call_answers_a_refusal_as_its_error(home):
+    import hermes_android
+
+    assert json.loads(hermes_android.call("probe_endpoint", '{"address":"http://","api_key":null}')) == {
+        "error": NOT_AN_ADDRESS}

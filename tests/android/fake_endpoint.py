@@ -6,12 +6,14 @@ or not a key is held, since routing (not auth) decides the path."""
 from __future__ import annotations
 
 import json
+import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 class FakeEndpoint:
-    def __init__(self, models: list[str] | None = None, key: str | None = None, status: int | None = None):
+    def __init__(self, models: list[str] | None = None, key: str | None = None, status: int | None = None,
+                 host: str = "127.0.0.1"):
         self.models, self.key, self.status, self.seen_auth = models or [], key, status, []
         owner = self
 
@@ -37,7 +39,7 @@ class FakeEndpoint:
             def log_message(self, *_args):
                 pass
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server = (_ThreadingHTTPServer6 if ":" in host else ThreadingHTTPServer)((host, 0), Handler)
         self.port = self.server.server_address[1]
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
@@ -46,9 +48,12 @@ class FakeEndpoint:
         self.server.server_close()
 
 
+class _ThreadingHTTPServer6(ThreadingHTTPServer):
+    address_family = socket.AF_INET6  # an IPv6 host such as ::1
+
+
 def closed_port() -> int:
     """A port nothing listens on (bound, then released)."""
-    import socket
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
@@ -57,7 +62,6 @@ def closed_port() -> int:
 def silent_listener():
     """A listening socket that never accepts: the kernel completes each connection, nothing ever answers
     (a port that is open but whose server hangs). Close it when done."""
-    import socket
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     sock.listen(16)

@@ -132,4 +132,19 @@ class EndpointSetupDeviceTest {
         assertEquals(0, pooled())
         assertNotEquals("the chat, whose default it was, starts afresh", third, ready.chat.sessionId)
     }
+
+    @Test
+    fun anAddressThatNamesNoServerIsAnsweredInWords() = runBlocking {
+        // Each names no server: no host at all (on the phone that reached its own loopback, here the host's Ollama
+        // through adb reverse), an unbracketed IPv6 literal, a port out of range (a crash in the bridge call before).
+        for (address in listOf("http://", "::1", "http://127.0.0.1:99999")) {
+            setup.open()
+            setup.addEndpoint()
+            setup.findServer(address, null)
+            assertEquals(address, "That is not a server address: use a host name, host:port or an http(s) URL.",
+                         setup.state.value?.error)
+            assertNull(address, (setup.state.value?.step as? SetupStep.Endpoint ?: error("left the form: ${setup.state.value}")).probe)
+            setup.close()
+        }
+    }
 }
