@@ -38,13 +38,18 @@ object Methods {
     val PING = Method("ping", PingParams.serializer(), PingResult.serializer())
     val PROMPT_SUBMIT = Method("prompt.submit", PromptSubmitParams.serializer(), PromptSubmitResult.serializer())
     val REQUEST_ANSWER = Method("request.answer", RequestAnswerParams.serializer(), RequestAnswerResult.serializer())
+    val SESSION_CLOSE = Method("session.close", SessionCloseParams.serializer(), SessionCloseResult.serializer())
+    val SESSION_COMPRESS = Method("session.compress", SessionCompressParams.serializer(), SessionCompressResult.serializer())
+    val SESSION_CONTEXT_BREAKDOWN = Method("session.context_breakdown", SessionContextBreakdownParams.serializer(), SessionContextBreakdownResult.serializer())
     val SESSION_CREATE = Method("session.create", SessionCreateParams.serializer(), SessionCreateResult.serializer())
+    val SESSION_DELETE = Method("session.delete", SessionDeleteParams.serializer(), SessionDeleteResult.serializer())
     val SESSION_HISTORY = Method("session.history", SessionHistoryParams.serializer(), SessionHistoryResult.serializer())
     val SESSION_INTERRUPT = Method("session.interrupt", SessionInterruptParams.serializer(), SessionInterruptResult.serializer())
     val SESSION_LIST = Method("session.list", SessionListParams.serializer(), SessionListResult.serializer())
     val SESSION_MOST_RECENT = Method("session.most_recent", SessionMostRecentParams.serializer(), SessionMostRecentResult.serializer())
     val SESSION_RESUME = Method("session.resume", SessionResumeParams.serializer(), SessionResumeResult.serializer())
     val SESSION_SAVE = Method("session.save", SessionSaveParams.serializer(), SessionSaveResult.serializer())
+    val SESSION_TITLE = Method("session.title", SessionTitleParams.serializer(), SessionTitleResult.serializer())
     val SETUP_STATUS = Method("setup.status", ProfileParams.serializer(), SetupStatusResult.serializer())
     val SKILLS_MANAGE = Method("skills.manage", SkillsManageParams.serializer(), SkillsManageResult.serializer())
 }
@@ -70,6 +75,7 @@ object Events {
     val REQUEST_CANCEL = Event("request.cancel", RequestCancelPayload.serializer())
     val STATUS_UPDATE = Event("status.update", StatusUpdatePayload.serializer())
     val THINKING_DELTA = Event("thinking.delta", StreamDeltaPayload.serializer())
+    val TODO_UPDATED = Event("todo.updated", TodoUpdatedPayload.serializer())
     val TOOL_COMPLETE = Event("tool.complete", ToolCompletePayload.serializer())
     val TOOL_GENERATING = Event("tool.generating", ToolGeneratingPayload.serializer())
     val TOOL_START = Event("tool.start", ToolStartPayload.serializer())
@@ -214,6 +220,18 @@ data class ClientCapabilitiesParams(
 data class ClientCapabilitiesResult(
     @SerialName("server_requests") val serverRequests: List<String>,
     @SerialName("declines_not_shown") val declinesNotShown: Boolean = false,
+)
+
+/** ``agent.manual_compression_feedback.summarize_manual_compression``. */
+@Serializable
+data class CompressionSummary(
+    @SerialName("noop") val noop: Boolean = false,
+    @SerialName("aborted") val aborted: Boolean = false,
+    @SerialName("refused_would_grow") val refusedWouldGrow: Boolean? = null,
+    @SerialName("fallback_used") val fallbackUsed: Boolean? = null,
+    @SerialName("headline") val headline: String = "",
+    @SerialName("token_line") val tokenLine: String = "",
+    @SerialName("note") val note: String? = null,
 )
 
 /** ``key`` selects one getter from ``_CONFIG_GETTERS``; ``cwd`` feeds the ``project`` getter, */
@@ -375,6 +393,25 @@ enum class ConnectionTargetState {
     @SerialName("expired") EXPIRED,
     @SerialName("not_connected") NOT_CONNECTED,
 }
+
+@Serializable
+data class ContextCategory(
+    @SerialName("color") val color: String,
+    @SerialName("id") val id: String,
+    @SerialName("label") val label: String,
+    @SerialName("tokens") val tokens: Long,
+)
+
+/** One row of ``agent.context_file_sources.list_context_file_sources``. */
+@Serializable
+data class ContextFileSource(
+    @SerialName("label") val label: String,
+    @SerialName("path") val path: String,
+    @SerialName("chars") val chars: Long,
+    @SerialName("est_tokens") val estTokens: Long,
+    @SerialName("loaded") val loaded: Boolean,
+    @SerialName("status") val status: String,
+)
 
 /** Every ``_emit("error", …)`` site sets exactly ``message``. */
 @Serializable
@@ -749,6 +786,65 @@ data class SeedMessage(
 )
 
 @Serializable
+data class SessionCloseParams(
+    @SerialName("session_id") val sessionId: String,
+    @SerialName("profile") val profile: String? = null,
+)
+
+@Serializable
+data class SessionCloseResult(
+    @SerialName("closed") val closed: Boolean,
+    @SerialName("messages") val messages: List<String>? = null,
+)
+
+@Serializable
+data class SessionCompressParams(
+    @SerialName("session_id") val sessionId: String,
+    @SerialName("profile") val profile: String? = null,
+    @SerialName("focus_topic") val focusTopic: String? = null,
+)
+
+/** In-process: the before/after summary + replacement transcript. Compute host: its result passes */
+@Serializable
+data class SessionCompressResult(
+    @SerialName("status") val status: String? = null,
+    @SerialName("removed") val removed: Long? = null,
+    @SerialName("before_messages") val beforeMessages: Long? = null,
+    @SerialName("after_messages") val afterMessages: Long? = null,
+    @SerialName("before_tokens") val beforeTokens: Long? = null,
+    @SerialName("after_tokens") val afterTokens: Long? = null,
+    @SerialName("summary") val summary: CompressionSummary? = null,
+    @SerialName("usage") val usage: Usage? = null,
+    @SerialName("info") val info: SessionLiveInfo? = null,
+    @SerialName("messages") val messages: List<TranscriptMessage>? = null,
+    @SerialName("compressed") val compressed: Boolean? = null,
+    @SerialName("lock_held") val lockHeld: Boolean? = null,
+    @SerialName("message") val message: String? = null,
+    @SerialName("turn_isolation") val turnIsolation: Boolean? = null,
+    @SerialName("host_ack") val hostAck: JsonObject? = null,
+)
+
+@Serializable
+data class SessionContextBreakdownParams(
+    @SerialName("session_id") val sessionId: String,
+    @SerialName("profile") val profile: String? = null,
+)
+
+/** ``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds) */
+@Serializable
+data class SessionContextBreakdownResult(
+    @SerialName("categories") val categories: List<ContextCategory>,
+    @SerialName("context_max") val contextMax: Long,
+    @SerialName("context_percent") val contextPercent: Long,
+    @SerialName("context_used") val contextUsed: Long,
+    @SerialName("estimated_total") val estimatedTotal: Long,
+    @SerialName("context_estimated") val contextEstimated: Boolean,
+    @SerialName("context_source") val contextSource: String,
+    @SerialName("model") val model: String,
+    @SerialName("context_files") val contextFiles: List<ContextFileSource> = emptyList(),
+)
+
+@Serializable
 data class SessionCreateParams(
     @SerialName("profile") val profile: String? = null,
     @SerialName("cols") val cols: Long? = null,
@@ -777,6 +873,18 @@ data class SessionCreateResult(
     @SerialName("message_count") val messageCount: Long,
     @SerialName("messages") val messages: List<TranscriptMessage>,
     @SerialName("info") val info: SessionLiveInfo,
+)
+
+/** ``session_id`` is the STORED id. */
+@Serializable
+data class SessionDeleteParams(
+    @SerialName("session_id") val sessionId: String,
+    @SerialName("profile") val profile: String? = null,
+)
+
+@Serializable
+data class SessionDeleteResult(
+    @SerialName("deleted") val deleted: String,
 )
 
 @Serializable
@@ -931,11 +1039,25 @@ data class SessionSaveResult(
     @SerialName("file") val file: String? = null,
 )
 
+@Serializable
+data class SessionTitleParams(
+    @SerialName("session_id") val sessionId: String,
+    @SerialName("profile") val profile: String? = null,
+    @SerialName("title") val title: String? = null,
+)
+
 /** ``prompt_turn._invoke_agent`` ``_on_session_title`` hook. */
 @Serializable
 data class SessionTitlePayload(
     @SerialName("session_id") val sessionId: String,
     @SerialName("title") val title: String,
+)
+
+@Serializable
+data class SessionTitleResult(
+    @SerialName("title") val title: String,
+    @SerialName("session_key") val sessionKey: String? = null,
+    @SerialName("pending") val pending: Boolean? = null,
 )
 
 /** ``server._start_usage_ticker``. */
@@ -1040,6 +1162,13 @@ data class StreamDeltaPayload(
 @Serializable
 data class TodoState(
     @SerialName("todos") val todos: List<JsonObject>,
+    @SerialName("revision") val revision: Long,
+)
+
+/** ``tool_progress._normalize_todo_state`` — full task snapshot. */
+@Serializable
+data class TodoUpdatedPayload(
+    @SerialName("todos") val todos: List<JsonElement>,
     @SerialName("revision") val revision: Long,
 )
 

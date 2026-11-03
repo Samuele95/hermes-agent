@@ -10,10 +10,19 @@ import com.nousresearch.hermes.bridge.protocol.Method
 import com.nousresearch.hermes.bridge.protocol.Methods
 import com.nousresearch.hermes.bridge.protocol.PingParams
 import com.nousresearch.hermes.bridge.protocol.PingResult
+import com.nousresearch.hermes.bridge.protocol.SessionCloseParams
+import com.nousresearch.hermes.bridge.protocol.SessionContextBreakdownParams
+import com.nousresearch.hermes.bridge.protocol.SessionCreateParams
+import com.nousresearch.hermes.bridge.protocol.SessionDeleteParams
+import com.nousresearch.hermes.bridge.protocol.SessionTitleParams
 import java.net.InetAddress
 import java.net.ServerSocket
 import kotlin.concurrent.thread
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
@@ -76,6 +85,48 @@ class EmbeddedPythonTest {
 
         assertTrue(refused.message, refused.message!!.contains("not a bridge call"))
         assertEquals(PingResult(pong = true), runBlocking { core.call(Methods.PING, PingParams) })
+    }
+
+    @Test
+    fun aSessionIsTitledClosedAndDeletedThroughTheGeneratedCalls() = runBlocking {
+        // session.create pre-warms the session's agent; its outcome (session.info, or error without a provider)
+        // goes to python.stdout once the session is closed, so the session is closed only after it settled.
+        val settled = Channel<String>(Channel.UNLIMITED)
+        val watcher = launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
+            core.events.collect { if (it.type == "session.info" || it.type == "error") it.sessionId?.let(settled::trySend) }
+        }
+        // A second session beside the chat's own; "android" = ChatSession.SOURCE (Dv16).
+        val created = core.call(Methods.SESSION_CREATE, SessionCreateParams(source = "android"))
+        val stored = created.storedSessionId
+        try {
+            withTimeout(120_000) { while (settled.receive() != created.sessionId) Unit }
+            val title = "b1 probe ${System.nanoTime()}"
+
+            val titled = core.call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = created.sessionId, title = title))
+
+            assertEquals(title, titled.title)
+            assertEquals(false, titled.pending)
+            // A set answers title + pending; the read also names the session's key: the stored id session.delete takes.
+            val read = core.call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = created.sessionId))
+            assertEquals(title, read.title)
+            assertEquals(stored, read.sessionKey)
+
+            val breakdown = core.call(Methods.SESSION_CONTEXT_BREAKDOWN, SessionContextBreakdownParams(sessionId = created.sessionId))
+            assertTrue("${breakdown.contextUsed}", breakdown.contextUsed >= 0)
+
+            val live = assertThrows(CoreError::class.java) {
+                runBlocking { core.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = stored)) }
+            }
+            assertEquals(live.message, 4023, live.code)
+
+            assertTrue(core.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = created.sessionId)).closed)
+            assertEquals(stored, core.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = stored)).deleted)
+        } finally {
+            watcher.cancel()
+            // A failed run leaves no session or row behind on the shared phone.
+            runCatching { core.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = created.sessionId)) }
+            runCatching { core.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = stored)) }
+        }
     }
 
     @Test
