@@ -18,6 +18,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeFalse
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -25,7 +26,8 @@ import org.junit.runner.RunWith
 /**
  * The optional always-on gateway (D12, D23) runs in its own `:gateway` process: its own interpreter, the
  * app's home, a specialUse foreground service with a notification. A planned stop drains it and ends the
- * process; a killed process comes back by itself (sticky service).
+ * process; a killed process comes back by itself (sticky service). On Samsung, Freecess can hold the sticky
+ * restart (L21): that test then skips with the reason.
  */
 @RunWith(AndroidJUnit4::class)
 class GatewayServiceTest {
@@ -50,6 +52,11 @@ class GatewayServiceTest {
     private fun shell(command: String): String =
         ParcelFileDescriptor.AutoCloseInputStream(InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(command))
             .use { it.readBytes().decodeToString() }
+
+    /** The package's last Freecess record, when it holds sticky restarts (L21); never more arguments to the dump. */
+    private fun freecessHold(): FreecessRecord? =
+        FreecessHistory.lastRecord(shell("dumpsys activity mars"), context.packageName, context.applicationInfo.uid)
+            ?.takeIf { it.holdsStickyRestarts }
 
     /** Clears the log the system writes about the gateway's service, just before a planned stop. */
     private fun beforePlannedStop() {
@@ -155,10 +162,17 @@ class GatewayServiceTest {
         control.close()
     }
 
+    /** START_STICKY brings `:gateway` back; skipped while Samsung's Freecess holds it (D38). */
     @Test
     fun aKilledGatewayProcessComesBackByItself() {
         context.startForegroundService(GatewayService.start(context))
         val first = waitFor("the gateway to run") { gatewayPid()?.takeIf(::runningIn) }
+        val hold = freecessHold()
+        assumeFalse(
+            "Samsung Freecess holds sticky restarts for ${context.packageName} until it is next unfrozen for another " +
+                "reason (last record: ${hold?.line}); wake the phone and open the app once (L21)",
+            hold != null,
+        )
 
         Process.killProcess(first)
 
