@@ -11,6 +11,8 @@
     <string name="chat_new">New chat</string>
     <string name="chat_menu">Menu</string>
     <string name="chat_retry">Retry</string>
+    <string name="chat_tasks">Tasks %1$d/%2$d</string>
+    <string name="chat_context">Context %1$s full, %2$s / %3$s tokens</string>
     <string name="sessions_title">Sessions</string>
     <string name="sessions_today">Today</string>
     <string name="sessions_yesterday">Yesterday</string>

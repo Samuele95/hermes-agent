@@ -6,6 +6,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.height
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -20,6 +21,10 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.nousresearch.hermes.android.chat.Chat
 import com.nousresearch.hermes.android.chat.ChatScreen
 import com.nousresearch.hermes.android.chat.Entry
+import com.nousresearch.hermes.android.chat.ContextMeter
+import com.nousresearch.hermes.android.chat.Todo
+import com.nousresearch.hermes.android.chat.TodoList
+import com.nousresearch.hermes.android.chat.TodoStatus
 import com.nousresearch.hermes.bridge.protocol.TurnStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -212,6 +217,57 @@ class ChatScreenTest {
         chat = Chat(listOf(Entry.User("hi")))
 
         compose.onNodeWithTag("intro").assertDoesNotExist()
+    }
+
+    @Test
+    fun theAgentsUnfinishedPlanShowsAboveTheComposerWhileItWorks() {
+        val plan = TodoList(listOf(Todo("1", "Read the repo", TodoStatus.COMPLETED), Todo("2", "Run the tests", TodoStatus.IN_PROGRESS),
+                                   Todo("3", "Fix failures", TodoStatus.PENDING, "2")), 5)
+        val chat by mutableStateOf(Chat(listOf(Entry.User("tidy up")), streaming = "", todos = plan))
+        compose.setContent { ChatScreen(chat, onSend = {}) }
+
+        compose.onNodeWithTag("todo-strip").assertExists()
+        compose.onNodeWithText("Tasks 1/3").assertExists()
+        compose.onNodeWithText("Run the tests").assertExists()  // the item the agent is on
+        compose.onAllNodesWithTag("todo-item").assertCountEquals(0)  // collapsed to a count
+
+        compose.onNodeWithTag("todo-toggle").performClick()
+
+        compose.onAllNodesWithTag("todo-item").assertCountEquals(3)
+        compose.onNodeWithText("Fix failures").assertExists()
+    }
+
+    @Test
+    fun thePlanLeavesWhenTheTurnEndsOrNothingIsLeftToDo() {
+        val active = TodoList(listOf(Todo("1", "Boil", TodoStatus.COMPLETED), Todo("2", "Pour", TodoStatus.PENDING)), 2)
+        val resolved = TodoList(listOf(Todo("1", "Boil", TodoStatus.COMPLETED), Todo("2", "Pour", TodoStatus.CANCELLED)), 3)
+        var chat by mutableStateOf(Chat(listOf(Entry.User("tea")), streaming = "", todos = resolved))
+        compose.setContent { ChatScreen(chat, onSend = {}) }
+        compose.onNodeWithTag("todo-strip").assertDoesNotExist()  // running, nothing left to do
+
+        chat = Chat(listOf(Entry.User("tea"), Entry.Reply("ok", TurnStatus.COMPLETE)), todos = active)
+        compose.onNodeWithTag("todo-strip").assertDoesNotExist()  // the turn ended on an unfinished plan (D1)
+
+        chat = Chat(listOf(Entry.User("tea")), streaming = "")
+        compose.onNodeWithTag("todo-strip").assertDoesNotExist()  // running, no plan
+
+        chat = Chat(listOf(Entry.User("tea")), streaming = "", todos = active)
+        compose.onNodeWithTag("todo-strip").assertExists()
+    }
+
+    @Test
+    fun theComposerShowsHowFullTheContextIs() {
+        var chat by mutableStateOf(Chat(meter = ContextMeter(53_800, 128_000, 42, true)))
+        compose.setContent { ChatScreen(chat, onSend = {}) }
+
+        compose.onNodeWithTag("context-meter").assert(hasText("~42%"))
+            .assert(hasContentDescription("Context ~42% full, ~53.8k / 128k tokens"))
+
+        chat = Chat()
+        compose.onNodeWithTag("context-meter").assertDoesNotExist()
+
+        chat = Chat(meter = ContextMeter(7000, 8000, 88, false))
+        compose.onNodeWithTag("context-meter").assert(hasText("88%"))
     }
 
     @Test

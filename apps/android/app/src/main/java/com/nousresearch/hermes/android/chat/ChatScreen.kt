@@ -22,9 +22,11 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.FilledIconButton
@@ -54,6 +56,8 @@ import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringArrayResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextAlign
@@ -112,6 +116,8 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
             else Transcript(chat, onRetry, Modifier.weight(1f))
             // One question at a time, the oldest first: the turn waits on it.
             if (answers != null) chat.prompts.firstOrNull()?.let { PromptCard(it, answers) }
+            // The agent's plan while it works through it (D1: a turn that ended leaves no stale plan pinned).
+            chat.todos?.takeIf { chat.running && it.active }?.let { TodoStrip(it) }
             Composer(chat, onSend, onStop, onSetup)
         }
     }
@@ -282,6 +288,7 @@ private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, o
                     }
                 }
             }
+            chat.meter?.let { ContextChip(it) }
             if (chat.running) {
                 FilledIconButton(onStop, Modifier.size(36.dp).testTag("stop"),
                                  colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.onSurface,
@@ -294,5 +301,66 @@ private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, o
                 }
             }
         }
+    }
+}
+
+/** The agent's plan above the composer: "Tasks 2/5" and the item it is on, the whole list one tap away. */
+@Composable
+private fun TodoStrip(todos: TodoList) {
+    val shape = RoundedCornerShape(14.dp)
+    var open by rememberSaveable { mutableStateOf(false) }  // collapsed to a count by default (DC-B15)
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 4.dp)
+               .background(MaterialTheme.colorScheme.surfaceContainer, shape).border(1.dp, Hermes.colors.stroke, shape).testTag("todo-strip")) {
+        Row(Modifier.fillMaxWidth().clickable { open = !open }.testTag("todo-toggle").heightIn(min = 44.dp).padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Icon(HermesIcons.Checklist, null, Modifier.size(15.dp), tint = muted)
+            Text(stringResource(R.string.chat_tasks, todos.done, todos.items.size), Modifier.padding(start = 8.dp),
+                 style = MaterialTheme.typography.labelLarge)
+            if (!open) {
+                Text(todos.current?.content.orEmpty(), Modifier.weight(1f).padding(start = 8.dp), style = MaterialTheme.typography.bodySmall,
+                     color = muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            } else Spacer(Modifier.weight(1f))
+            Icon(if (open) HermesIcons.ChevronDown else HermesIcons.ChevronRight, null, Modifier.size(14.dp), tint = muted)
+        }
+        if (open) {
+            Column(Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState()).padding(start = 12.dp, end = 12.dp, bottom = 8.dp)) {
+                todos.tree().forEach { (todo, depth) -> TodoRow(todo, depth) }
+            }
+        }
+    }
+}
+
+/** One item of the plan, indented under its parent; resolved items are quieter (the desktop's status-row). */
+@Composable
+private fun TodoRow(todo: Todo, depth: Int) {
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    Row(Modifier.testTag("todo-item").padding(start = (depth * 16).dp, top = 3.dp, bottom = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(14.dp), contentAlignment = Alignment.Center) {
+            when (todo.status) {
+                TodoStatus.PENDING -> Icon(HermesIcons.Circle, null, Modifier.size(14.dp), tint = Hermes.colors.textTertiary)
+                TodoStatus.IN_PROGRESS -> CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp, color = muted)
+                TodoStatus.COMPLETED -> Icon(HermesIcons.CircleCheck, null, Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
+                TodoStatus.CANCELLED -> Icon(HermesIcons.Ban, null, Modifier.size(14.dp), tint = Hermes.colors.textTertiary)
+            }
+        }
+        val resolved = todo.status == TodoStatus.COMPLETED || todo.status == TodoStatus.CANCELLED
+        Text(todo.content, Modifier.padding(start = 8.dp), style = MaterialTheme.typography.bodyMedium,
+             color = if (resolved) muted else MaterialTheme.colorScheme.onSurface, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** How full the context is: a small ring and the percent; the error colour near the window's end. */
+@Composable
+private fun ContextChip(meter: ContextMeter) {
+    val tint = if (meter.warns) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+    val approx = if (meter.estimated) "~" else ""
+    val percent = "$approx${meter.percent}%"
+    val said = stringResource(R.string.chat_context, percent, approx + compactTokens(meter.used), compactTokens(meter.max))
+    Row(Modifier.padding(end = 8.dp).testTag("context-meter").semantics(mergeDescendants = true) { contentDescription = said },
+        verticalAlignment = Alignment.CenterVertically) {
+        CircularProgressIndicator(progress = { meter.percent / 100f }, Modifier.size(14.dp), color = tint, strokeWidth = 2.dp,
+                                  trackColor = Hermes.colors.stroke)
+        Text(percent, Modifier.padding(start = 5.dp), style = MaterialTheme.typography.labelMedium, color = tint)
     }
 }
