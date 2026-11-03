@@ -62,6 +62,11 @@
         <item quantity="one">%1$s · %2$d model</item>
         <item quantity="other">%1$s · %2$d models</item>
     </plurals>
+    <string name="setup_kind_ollama">Ollama</string>
+    <string name="setup_kind_lmstudio">LM Studio</string>
+    <string name="setup_kind_llamacpp">llama.cpp</string>
+    <string name="setup_kind_vllm">vLLM</string>
+    <string name="setup_kind_server">OpenAI-compatible server</string>
     <string name="setup_found_on_network">On this network</string>
     <string name="setup_your_endpoints">Your endpoints</string>
     <string name="setup_add">Add</string>

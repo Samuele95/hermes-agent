@@ -126,7 +126,7 @@ class SetupScreenTest {
         val found = FoundServer("http://spark-98d1:11434/v1", ServerKind.OLLAMA, listOf("gemma4:12b-it-q8_0", "gemma3:12b-it-q8_0"))
         show(Setup(SetupStep.Endpoint(found = found)))
 
-        compose.onNodeWithText("ollama · 2 models").assertExists()
+        compose.onNodeWithText("Ollama · 2 models").assertExists()
         compose.onNodeWithTag("endpoint-model").performClick()
         compose.onNodeWithTag("endpoint-model-gemma3:12b-it-q8_0").performClick()
         compose.onNodeWithTag("endpoint-save").performScrollTo().performClick()
@@ -194,6 +194,7 @@ class SetupScreenTest {
     fun aServerFoundOnTheNetworkIsAskedForItsModels() {
         val found = FoundServer("http://192.168.1.20:1234/v1", ServerKind.LMSTUDIO, listOf("qwen3"))
         show(Setup(SetupStep.Endpoint(scan = listOf(found))))
+        compose.onNodeWithText("LM Studio · 1 model").assertExists()
 
         compose.onNodeWithTag("search-network").performScrollTo().performClick()
         compose.onNodeWithTag("found-0").performScrollTo().performClick()

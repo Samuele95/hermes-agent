@@ -43,6 +43,7 @@ import com.nousresearch.hermes.android.ui.ListRow
 import com.nousresearch.hermes.android.ui.Hint
 import com.nousresearch.hermes.android.ui.CodeFont
 import com.nousresearch.hermes.android.ui.Chevron
+import com.nousresearch.hermes.bridge.contract.ServerKind
 
 /**
  * Provider setup: pick a provider, paste its key when it needs one, pick a model; or find a model server by its address
@@ -169,12 +170,12 @@ private fun EndpointForm(step: SetupStep.Endpoint, enabled: Boolean, onEndpoint:
                         enabled = enabled && !step.scanning)
     }
     if (step.scanning) LinearProgressIndicator(Modifier.fillMaxWidth())
-    found?.let { Hint(pluralStringResource(R.plurals.setup_found_models, it.models.size, it.kind.name.lowercase(), it.models.size), Modifier.testTag("endpoint-found")) }
+    found?.let { Hint(pluralStringResource(R.plurals.setup_found_models, it.models.size, kindLabel(it.kind), it.models.size), Modifier.testTag("endpoint-found")) }
     step.scan?.let { found ->
         Column {
             SectionCaption(stringResource(R.string.setup_found_on_network), Modifier.padding(top = 0.dp))
             found.forEachIndexed { i, server ->
-                ListRow(server.baseUrl, Modifier.testTag("found-$i"), detail = pluralStringResource(R.plurals.setup_found_models, server.models.size, server.kind.name.lowercase(), server.models.size),
+                ListRow(server.baseUrl, Modifier.testTag("found-$i"), detail = pluralStringResource(R.plurals.setup_found_models, server.models.size, kindLabel(server.kind), server.models.size),
                         enabled = enabled, trailing = { Chevron() }) { onFindServer(server.baseUrl, null) }
             }
         }
@@ -216,6 +217,16 @@ private fun EndpointForm(step: SetupStep.Endpoint, enabled: Boolean, onEndpoint:
         }
     }
 }
+
+/** A server's kind in words, as Desktop spells them; a kind added to the contract fails compilation until it has words. */
+@Composable
+private fun kindLabel(kind: ServerKind): String = stringResource(when (kind) {
+    ServerKind.OLLAMA -> R.string.setup_kind_ollama
+    ServerKind.LMSTUDIO -> R.string.setup_kind_lmstudio
+    ServerKind.LLAMACPP -> R.string.setup_kind_llamacpp
+    ServerKind.VLLM -> R.string.setup_kind_vllm
+    ServerKind.SERVER -> R.string.setup_kind_server
+})
 
 @Composable
 private fun ModelPicker(provider: ProviderChoice, setup: Setup, onModel: (String, Boolean) -> Unit, modifier: Modifier) {
