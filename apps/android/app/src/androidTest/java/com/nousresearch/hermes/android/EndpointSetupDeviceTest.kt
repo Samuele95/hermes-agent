@@ -134,6 +134,45 @@ class EndpointSetupDeviceTest {
     }
 
     @Test
+    fun aHandWrittenNumericEntryIsEditedAndDeletedInPlace() = runBlocking {
+        // An entry typed by hand (or by another client) under an unquoted number loads with an int key; the app finds
+        // it by the core's provider-key rule, so it is edited and deleted in place, not saved again beside itself.
+        setup.open()
+        setup.addEndpoint()
+        setup.findServer("127.0.0.1", null)
+        val probe = (setup.state.value?.step as? SetupStep.Endpoint)?.probe ?: error("nothing found: ${setup.state.value}")
+        val baseUrl = probe.baseUrl!!
+        val model = probe.models.first()
+        setup.close()
+        val entry = "  4242:\n    name: Numeric Box\n    base_url: $baseUrl\n    model: $model\n"
+        val lines = config.takeIf { it.isFile }?.readLines() ?: emptyList()
+        config.writeText(when {
+            "providers: {}" in lines -> lines.joinToString("\n") { if (it == "providers: {}") "providers:\n" + entry.trimEnd() else it } + "\n"
+            "providers:" in lines -> lines.joinToString("\n") { if (it == "providers:") "providers:\n" + entry.trimEnd() else it } + "\n"
+            else -> lines.joinToString("\n", postfix = if (lines.isEmpty()) "" else "\n") + "providers:\n" + entry
+        })
+        try {
+            setup.open()
+            assertEquals(listOf("Numeric Box"), saved().filter { it.id == "4242" }.map { it.name })
+
+            setup.editEndpoint("4242")
+            setup.saveEndpoint("Numeric Renamed", baseUrl, model, null)
+            setup.open()
+            assertEquals(listOf(SavedEndpoint("4242", "Numeric Renamed", baseUrl, model, false)),
+                         saved().filter { it.baseUrl == baseUrl && (it.id == "4242" || "numeric" in it.id) })
+
+            setup.editEndpoint("4242")
+            setup.deleteEndpoint("4242")
+            assertNull("deleted without an error: ${setup.state.value?.error}", setup.state.value?.error)
+            assertEquals(emptyList<SavedEndpoint>(), saved().filter { it.id == "4242" })
+            val written = config.readText()
+            assertFalse(written, written.contains("4242") || written.contains("numeric-renamed"))
+        } finally {
+            runCatching { ready.gateway.call(Methods.MODEL_DISCONNECT, ModelDisconnectParams("4242")) }
+        }
+    }
+
+    @Test
     fun anAddressThatNamesNoServerIsAnsweredInWords() = runBlocking {
         // Each names no server: no host at all (on the phone that reached its own loopback, here the host's Ollama
         // through adb reverse), an unbracketed IPv6 literal, a port out of range (a crash in the bridge call before).

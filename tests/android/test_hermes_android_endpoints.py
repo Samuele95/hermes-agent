@@ -185,6 +185,15 @@ def _hand_written_proxy(home):
     save_config(cfg)
 
 
+def _hand_written_numeric(home, *, default=False):
+    # Written as text, as a person or another client types it: the unquoted key 2070 loads as an int.
+    text = ("providers:\n  2070:\n    name: Box\n    base_url: http://10.0.0.2:11434/v1\n    model: m1\n"
+            "    key_env: BOX_KEY\n")
+    if default:
+        text += "model:\n  default: m1\n  provider: 2070\n"
+    (home / "config.yaml").write_text(text, encoding="utf-8")
+
+
 def test_deleting_an_entry_keyed_by_another_variable_names_only_its_own_slot(home):
     _hand_written_proxy(home)
 
@@ -237,3 +246,47 @@ def test_the_save_bridge_call_answers_its_declared_reply(home):
 
     assert saved == {"id": "host-ollama", "key_env": KEY_ENV}
     assert refused == {"error": "An endpoint needs a name, a model and an http(s) base URL."}
+
+
+def test_an_entry_under_a_numeric_key_is_edited_in_place(home):
+    _hand_written_numeric(home)
+    assert [e["id"] for e in listed()] == ["2070"]
+
+    saved = save(id="2070", name="Box Renamed", base_url="http://10.0.0.2:11434/v1", model="m1", has_key=False)
+
+    assert saved == {"id": "2070", "key_env": "BOX_KEY"}
+    assert list(load_config()["providers"]) == ["2070"]  # re-keyed once under its string spelling, no twin
+    assert [(e["id"], e["name"]) for e in listed()] == [("2070", "Box Renamed")]
+
+
+def test_an_entry_under_a_numeric_key_is_deleted_and_detaches_the_main_model(home):
+    _hand_written_numeric(home, default=True)
+
+    gone = endpoints.delete("2070")
+
+    assert gone == {"key_env": "HERMES_CUSTOM_2070_API_KEY", "was_default": True}
+    assert listed() == []
+    assert load_config()["model"] == {"default": "m1"}
+
+
+def test_two_keys_with_one_identity_list_once_as_the_entry_the_lookup_finds(home):
+    (home / "config.yaml").write_text(
+        "providers:\n  2070:\n    name: Int\n    base_url: http://10.0.0.2/v1\n"
+        "  '2070':\n    name: Str\n    base_url: http://10.0.0.3/v1\n", encoding="utf-8")
+
+    assert [(e["id"], e["name"]) for e in listed()] == [("2070", "Str")]
+
+
+def test_the_numeric_entry_bridge_calls_answer_their_declared_replies(home):
+    # Each on a freshly hand-written entry, so the delete meets the int key too (not the edit's re-keyed one).
+    import hermes_android
+    edit = {"id": "2070", "name": "Box Renamed", "base_url": "http://10.0.0.2:11434/v1", "model": "m1",
+            "has_key": False}
+
+    _hand_written_numeric(home)
+    saved = json.loads(hermes_android.call("save_custom_endpoint", json.dumps(edit)))
+    _hand_written_numeric(home, default=True)
+    gone = json.loads(hermes_android.call("delete_custom_endpoint", json.dumps({"id": "2070"})))
+
+    assert saved == {"id": "2070", "key_env": "BOX_KEY"}
+    assert gone == {"key_env": "HERMES_CUSTOM_2070_API_KEY", "was_default": True}
