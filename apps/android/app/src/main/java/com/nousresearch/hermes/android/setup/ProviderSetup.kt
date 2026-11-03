@@ -70,8 +70,12 @@ sealed interface SetupStep {
 /** A model the core will only use once the user confirms (an expensive one), with the core's own wording. */
 data class Confirm(val model: String, val message: String)
 
+/**
+ * What setup shows. [list]: the provider list Back returns to: the core's choices, the endpoints saved on this phone,
+ * and whether the default model's endpoint was deleted since setup opened. Setup keeps no list outside this value.
+ */
 data class Setup(val step: SetupStep = SetupStep.Loading, val busy: Boolean = false, val error: String? = null,
-                 val confirm: Confirm? = null)
+                 val confirm: Confirm? = null, val list: SetupStep.Providers = SetupStep.Providers(emptyList()))
 
 /**
  * Provider setup driven by the core (D17): the core lists the providers and their models, a pasted key
@@ -105,18 +109,11 @@ class ProviderSetup(
     private val setup = MutableStateFlow<Setup?>(null)
     val state: StateFlow<Setup?> = setup.asStateFlow()
 
-    private var choices = emptyList<ProviderChoice>()
-    private var saved = emptyList<SavedEndpoint>()
-
-    /** The default model's endpoint was deleted since setup opened: every provider list says so. */
-    private var defaultGone = false
-
     /** True when the core has no provider it could answer with. */
     suspend fun needed(): Boolean = core.call(Methods.SETUP_STATUS, ProfileParams()).providerConfigured != true
 
     suspend fun open() {
         setup.value = Setup()
-        defaultGone = false
         step { providers(refresh = false) }
     }
 
@@ -125,7 +122,7 @@ class ProviderSetup(
     }
 
     suspend fun pick(slug: String) {
-        val provider = choices.first { it.slug == slug }
+        val provider = setup.value?.list?.choices?.firstOrNull { it.slug == slug } ?: return
         when {
             provider.ready -> setup.update { it?.copy(step = models(provider), error = null) }
             provider.signIn -> signIn(provider)
@@ -156,7 +153,7 @@ class ProviderSetup(
             val polled = try {
                 core.call(Methods.NOUS_LOGIN_POLL, NousLoginParams(loginId = waiting.loginId))
             } catch (refused: CoreError) {
-                setup.update { it?.copy(step = listing(), error = refused.message) }
+                setup.update { it?.copy(step = it.list, error = refused.message) }
                 return
             }
             when (polled.status) {
@@ -167,7 +164,7 @@ class ProviderSetup(
                     models(signedIn)
                 }
                 else -> setup.update {
-                    it?.copy(step = listing(), error = polled.errorMessage ?: "${provider.name} sign-in ${polled.status}.")
+                    it?.copy(step = it.list, error = polled.errorMessage ?: "${provider.name} sign-in ${polled.status}.")
                 }
             }
             return
@@ -214,7 +211,7 @@ class ProviderSetup(
 
     /** Opens the form on the saved endpoint [id]; saving it keeps its id (and its key unless a new one is typed). */
     fun editEndpoint(id: String) {
-        val endpoint = saved.firstOrNull { it.id == id } ?: return
+        val endpoint = setup.value?.list?.saved?.firstOrNull { it.id == id } ?: return
         setup.update { it?.copy(step = SetupStep.Endpoint(editing = endpoint), error = null) }
     }
 
@@ -271,16 +268,15 @@ class ProviderSetup(
             } catch (failed: Exception) {
                 failed
             }
-            if (gone.wasDefault) {
-                defaultGone = true
-                reopenChat()
-            }
+            val defaultGone = gone.wasDefault || setup.value?.list?.defaultGone == true
+            if (gone.wasDefault) reopenChat()
             if (notForgotten != null) {  // the endpoint is gone all the same: the list must not offer it
-                saved = savedEndpoints()
-                setup.update { it?.copy(step = listing()) }
+                val list = (setup.value?.list ?: SetupStep.Providers(emptyList()))
+                    .copy(saved = savedEndpoints(), defaultGone = defaultGone)
+                setup.update { it?.copy(step = list, list = list) }
                 throw notForgotten
             }
-            providers(refresh = true)
+            providers(refresh = true, defaultGone = defaultGone)
         }
     }
 
@@ -321,7 +317,7 @@ class ProviderSetup(
     }
 
     fun back() {
-        setup.update { it?.copy(step = listing(), error = null, confirm = null) }
+        setup.update { it?.copy(step = it.list, error = null, confirm = null) }
     }
 
     private fun store(name: String, key: ByteArray) {
@@ -366,13 +362,8 @@ class ProviderSetup(
     private fun keyName(provider: ProviderChoice): String? = provider.keyEnv ?: keyNames[provider.slug]
 
     /** The provider list as the core now has it, with the endpoints saved on this phone. */
-    private suspend fun providers(refresh: Boolean): SetupStep.Providers {
-        choices = listed(refresh)
-        saved = savedEndpoints()
-        return listing()
-    }
-
-    private fun listing() = SetupStep.Providers(choices, saved, defaultGone)
+    private suspend fun providers(refresh: Boolean, defaultGone: Boolean = setup.value?.list?.defaultGone == true) =
+        SetupStep.Providers(listed(refresh), savedEndpoints(), defaultGone)
 
     /** The saved endpoints; a list that cannot be read is shown empty (rather than blocking setup) and forgets nothing. */
     private suspend fun savedEndpoints(): List<SavedEndpoint> {
@@ -419,7 +410,8 @@ class ProviderSetup(
         setup.update { it?.copy(busy = true, error = null, confirm = null) }
         try {
             val next = exchange()
-            setup.update { it?.copy(step = next, busy = false) }
+            // A provider list that is shown is also the one Back returns to.
+            setup.update { it?.copy(step = next, list = next as? SetupStep.Providers ?: it.list, busy = false) }
             return true
         } catch (failed: Exception) {
             setup.update { it?.copy(busy = false, error = forUser(failed)) }

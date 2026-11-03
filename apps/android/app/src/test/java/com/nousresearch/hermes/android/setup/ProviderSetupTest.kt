@@ -397,6 +397,19 @@ class ProviderSetupTest {
     }
 
     @Test
+    fun openingSetupStartsFromAFreshList() = runTest {
+        answers["list_custom_endpoints"] = listing(dgx, keyEnvs = listOf("HERMES_CUSTOM_DGX_API_KEY"))
+        answers["delete_custom_endpoint"] = """{"key_env":"HERMES_CUSTOM_DGX_API_KEY","was_default":true}"""
+        setup.open()
+        setup.deleteEndpoint("dgx")
+        assertTrue((setup.step() as SetupStep.Providers).defaultGone)
+
+        setup.open()  // again, without closing: nothing of the last list is kept
+
+        assertFalse((setup.step() as SetupStep.Providers).defaultGone)
+    }
+
+    @Test
     fun aKeyHeldOnThePhoneCanBeForgottenFromItsProvidersModels() = runTest {
         setup.open()
         setup.pick("deepseek")
