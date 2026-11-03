@@ -40,8 +40,13 @@ class AppTest {
         if (compose.onAllNodes(hasTestTag("setup")).fetchSemanticsNodes().isNotEmpty()) compose.onNodeWithTag("setup-close").performClick()
         compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("draft")).fetchSemanticsNodes().isNotEmpty() }
         // The app may have reopened a conversation with replies in it: ask in a new one, so the reply awaited is this one's.
+        // New chat opens on the app's scope without waiting, and the chat it leaves may already be empty (a fresh
+        // install, nothing to reopen, a reopened 0-message row): wait for the session itself to change, or "hello"
+        // could go to the one being left and its reply be filtered out once the chat moves.
+        val chat = (app().core.value as CoreState.Ready).chat
+        val before = chat.sessionId
         compose.onNodeWithTag("new-chat").performClick()
-        compose.waitUntil(30_000) { ((app().core.value as? CoreState.Ready)?.chat?.state?.value?.entries).isNullOrEmpty() }
+        compose.waitUntil(30_000) { chat.sessionId != before && chat.state.value.entries.isEmpty() }
 
         compose.onNodeWithTag("draft").performTextInput("hello")
         compose.onNodeWithTag("send").performClick()
