@@ -119,6 +119,51 @@ class ChatSessionTest {
     }
 
     @Test
+    fun aNewSessionShowsTheContextItsCoreReports() = runTest(UnconfinedTestDispatcher()) {
+        contract = """"desktop_contract":${BackendContract.BACKEND_CONTRACT},"usage":{"context_used":3000,"context_max":32000,"context_percent":9,"context_estimated":true}"""
+        val chat = openChat().apply { open() }
+
+        assertEquals(ContextMeter(3000, 32000, 9, true), chat.state.value.meter)
+        assertEquals(null, chat.state.value.todos)
+    }
+
+    @Test
+    fun aResumedSessionBringsBackItsPlanAndItsMeter() = runTest(UnconfinedTestDispatcher()) {
+        resume = { """{"session_id":"s-resumed","message_count":2,"session_key":"db-old-tip",
+                      "messages":[{"role":"user","text":"what's on my calendar?"},{"role":"assistant","text":"Two meetings."}],
+                      "todo_state":{"todos":[{"id":"1","content":"Read the calendar","status":"completed"},
+                                             {"id":"2","content":"Answer","status":"in_progress"}],"revision":4},
+                      "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT},"model":"kimi-k2",
+                              "usage":{"context_used":6000,"context_max":32000,"context_percent":19}}}""" }
+        val chat = openChat().apply { open() }
+
+        chat.resume("db-old")
+
+        assertEquals(TodoList(listOf(Todo("1", "Read the calendar", TodoStatus.COMPLETED), Todo("2", "Answer", TodoStatus.IN_PROGRESS)), 4),
+                     chat.state.value.todos)
+        assertEquals(ContextMeter(6000, 32000, 19, false), chat.state.value.meter)
+    }
+
+    @Test
+    fun aNewChatLeavesTheOldSessionsPlanAndMeterBehind() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        core.emit("message.start", "s1")
+        core.emit("todo.updated", "s1", """{"todos":[{"id":"1","content":"Boil","status":"pending"}],"revision":1}""")
+        core.emit("session.usage", "s1", """{"usage":{"context_used":1000,"context_max":8000,"context_percent":13}}""")
+        val plan = TodoList(listOf(Todo("1", "Boil", TodoStatus.PENDING)), 1)
+        assertEquals(plan, chat.state.value.todos)
+        assertEquals(ContextMeter(1000, 8000, 13, false), chat.state.value.meter)
+
+        core.emit("todo.updated", "s9", """{"todos":[{"id":"9","content":"Other","status":"pending"}],"revision":7}""")  // another session's
+        assertEquals(plan, chat.state.value.todos)
+
+        chat.open()
+
+        assertEquals(null, chat.state.value.todos)
+        assertEquals(null, chat.state.value.meter)
+    }
+
+    @Test
     fun aCoreOnTheContractTheAppWasBuiltForOpensQuietly() = runTest(UnconfinedTestDispatcher()) {
         val chat = openChat().apply { open() }
 

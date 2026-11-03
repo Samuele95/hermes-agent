@@ -141,7 +141,63 @@ class ChatTest {
     fun eventsTheChatDoesNotShowLeaveItUnchanged() {
         val chat = Chat().sent("hi")
 
-        assertEquals(chat, chat.reduce(event("session.usage", """{"input":1}""")))
+        assertEquals(chat, chat.reduce(event("session.title", """{"session_id":"s1","title":"Plans"}""")))
+    }
+
+    @Test
+    fun theAgentsTodoListFollowsTheCoresSnapshotsByRevision() {
+        val working = Chat().sent("plan it").after(event("message.start"))
+        val one = """[{"id":"1","content":"Boil","status":"pending"}]"""
+
+        // An unversioned list is not taken (D3): on a chat with no list it would otherwise show.
+        val unversioned = working.reduce(event("tool.complete", """{"tool_id":"t0","name":"todo_list","todos":$one}"""))
+        assertEquals(null, unversioned.todos)
+
+        val planned = unversioned.reduce(event("todo.updated", """{"todos":[{"id":"1","content":"Boil","status":"in_progress"},
+                                                                          {"id":"2","content":"Pour","status":"pending"}],"revision":2}"""))
+        val two = TodoList(listOf(Todo("1", "Boil", TodoStatus.IN_PROGRESS), Todo("2", "Pour", TodoStatus.PENDING)), 2)
+        assertEquals(two, planned.todos)
+
+        val older = planned.reduce(event("tool.complete", """{"tool_id":"t","name":"todo_list","todos":$one,"revision":1}"""))
+        assertEquals(two, older.todos)
+
+        val equal = older.reduce(event("todo.updated", """{"todos":[{"id":"1","content":"Boil","status":"completed"},
+                                                                 {"id":"2","content":"Pour","status":"pending"}],"revision":2}"""))
+        assertEquals(TodoList(listOf(Todo("1", "Boil", TodoStatus.COMPLETED), Todo("2", "Pour", TodoStatus.PENDING)), 2), equal.todos)
+
+        val newer = equal.reduce(event("tool.complete", """{"tool_id":"t2","name":"todo_list","todos":[{"id":"1","content":"Boil","status":"completed"},
+                                                                 {"id":"2","content":"Pour","status":"completed"}],"revision":3}"""))
+        assertEquals(TodoList(listOf(Todo("1", "Boil", TodoStatus.COMPLETED), Todo("2", "Pour", TodoStatus.COMPLETED)), 3), newer.todos)
+
+        // A mirror: the turn's end leaves the plan as the core last sent it (the screen hides it, D1).
+        assertEquals(newer.todos, newer.reduce(event("message.complete", """{"text":"ok"}""")).todos)
+    }
+
+    @Test
+    fun theContextMeterFollowsEveryUsageTheCoreReports() {
+        val ticked = Chat().sent("hi").after(event("message.start"),
+                                            event("session.usage", """{"usage":{"context_used":1000,"context_max":8000,"context_percent":13}}"""))
+        assertEquals(ContextMeter(1000, 8000, 13, false), ticked.meter)
+
+        val done = ticked.reduce(event("message.complete", """{"text":"ok","usage":{"context_used":2000,"context_max":8000,
+                                                               "context_percent":25,"context_estimated":true}}"""))
+        assertEquals(ContextMeter(2000, 8000, 25, true), done.meter)
+
+        val elsewhere = done.reduce(event("session.info", """{"cwd":"/tmp"}"""))  // no usage: the meter stays (D5)
+        assertEquals(ContextMeter(2000, 8000, 25, true), elsewhere.meter)
+
+        val info = elsewhere.reduce(event("session.info", """{"model":"m","usage":{"context_used":4000,"context_max":8000,"context_percent":50}}"""))
+        assertEquals(50, info.meter?.percent)
+        assertEquals("m", info.model)
+
+        assertEquals(null, info.reduce(event("session.info", """{"usage":{}}""")).meter)  // a reading of nothing: no meter
+    }
+
+    @Test
+    fun aUsageTickFromANewerCoreLeavesTheMeter() {
+        val metered = Chat().reduce(event("session.usage", """{"usage":{"context_used":1000,"context_max":8000,"context_percent":13}}"""))
+
+        assertEquals(metered, metered.reduce(event("session.usage", """{"input":1,"context_max":9}""")))
     }
 
     @Test

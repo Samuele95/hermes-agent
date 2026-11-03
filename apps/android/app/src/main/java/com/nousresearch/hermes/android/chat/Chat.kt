@@ -4,6 +4,7 @@ import com.nousresearch.hermes.bridge.CoreEvent
 import com.nousresearch.hermes.bridge.protocol.Events
 import com.nousresearch.hermes.bridge.protocol.MessageCompletePayload
 import com.nousresearch.hermes.bridge.protocol.TurnStatus
+import com.nousresearch.hermes.bridge.protocol.Usage
 import kotlinx.serialization.json.JsonPrimitive
 
 /** One item of a chat's transcript. */
@@ -29,9 +30,11 @@ data class Retry(val index: Int, val text: String, val rowId: Long?)
  * A chat's transcript. While a turn runs, [streaming] is the reply written since the turn began or since its last
  * sealed commentary, [reasoning] the model's reasoning so far (when the core shows it), [activity] what the agent is
  * doing, and [prompts] what it is waiting on the user for. [model] is the model the session runs, as the core last named it.
+ * [todos] is the agent's plan and [meter] how full the context is, both as the core last sent them.
  */
 data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? = null, val activity: String? = null,
-                val prompts: List<Prompt> = emptyList(), val reasoning: String? = null, val model: String? = null) {
+                val prompts: List<Prompt> = emptyList(), val reasoning: String? = null, val model: String? = null,
+                val todos: TodoList? = null, val meter: ContextMeter? = null) {
     val running: Boolean get() = streaming != null
 
     fun sent(text: String): Chat = copy(entries = entries + Entry.User(text))
@@ -77,9 +80,14 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
         Events.TOOL_START.name -> event.decode(Events.TOOL_START)!!.let { copy(entries = entries + Entry.Tool(it.toolId, it.name)) }
         Events.TOOL_COMPLETE.name -> event.decode(Events.TOOL_COMPLETE)!!.let { done ->
             copy(entries = entries.map { if (it is Entry.Tool && it.id == done.toolId) it.copy(summary = done.summary, done = true) else it })
+                .planned(done.revision?.let { revision -> done.todos?.let { TodoList.of(it, revision) } })  // an unversioned list is not taken (D3)
         }
+        Events.TODO_UPDATED.name -> event.decode(Events.TODO_UPDATED)!!.let { planned(TodoList.of(it.todos, it.revision)) }
+        Events.SESSION_USAGE.name -> measured(event.decode(Events.SESSION_USAGE)!!.usage)
         Events.STATUS_UPDATE.name -> copy(activity = event.decode(Events.STATUS_UPDATE)!!.text)
-        Events.SESSION_INFO.name -> event.decode(Events.SESSION_INFO)!!.model.takeIf { it.isNotBlank() }?.let { copy(model = it) } ?: this
+        Events.SESSION_INFO.name -> event.decode(Events.SESSION_INFO)!!.let { info ->
+            (info.model.takeIf { it.isNotBlank() }?.let { copy(model = it) } ?: this).measured(info.usage)
+        }
         // The core may end a turn with `error` alone (a refused @-reference, an ownership refusal, a crash), and the
         // TUI treats every `error` as the end of the turn: so does the chat, keeping the message as a notice.
         Events.ERROR.name -> notice(event.decode(Events.ERROR)!!.message).copy(streaming = null, activity = null, reasoning = null)
@@ -95,7 +103,13 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
         val text = (done.text as? JsonPrimitive)?.takeIf { it.isString }?.content ?: streaming.orEmpty()
         val thought = done.reasoning?.takeIf { it.isNotBlank() } ?: reasoning?.takeIf { it.isNotBlank() }
         val ended = copy(entries = entries + Entry.Reply(text, done.status ?: TurnStatus.COMPLETE, done.error, thought),
-                         streaming = null, activity = null, reasoning = null)
+                         streaming = null, activity = null, reasoning = null).measured(done.usage)
         return done.persistedTurn?.userRowId?.let(ended::boundUser) ?: ended
     }
+
+    /** The core's newer plan, when [next] is one (invariant 2); an unreadable or absent one changes nothing. */
+    private fun planned(next: TodoList?): Chat = if (next == null) this else copy(todos = todos?.after(next) ?: next)
+
+    /** The core's usage reading replaces the meter, none included (D5); no usage at all leaves it. */
+    private fun measured(usage: Usage?): Chat = if (usage == null) this else copy(meter = ContextMeter.of(usage))
 }

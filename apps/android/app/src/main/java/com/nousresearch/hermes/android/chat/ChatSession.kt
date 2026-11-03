@@ -162,7 +162,8 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     /** [open]'s work; returns the close of the session it left, if any, which the screen does not wait for. */
     private suspend fun opened(): Job? = switching.withLock {
         val created = core.call(Methods.SESSION_CREATE, SessionCreateParams(source = SOURCE))
-        switchTo(SessionRef(created.sessionId, created.storedSessionId), Chat(model = created.info.model.ifBlank { null }), created.info.desktopContract)
+        val chat = Chat(model = created.info.model.ifBlank { null }, meter = created.info.usage?.let(ContextMeter::of))
+        switchTo(SessionRef(created.sessionId, created.storedSessionId), chat, created.info.desktopContract)
     }
 
     /** Past conversations with something in them, as the core lists them (newest first). */
@@ -203,7 +204,8 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         val resumed = core.call(Methods.SESSION_RESUME, SessionResumeParams(sessionId = sessionId, source = SOURCE))
         val inTurn = resumed.running == true
         val chat = Chat(entries = transcriptOf(resumed.messages),
-                        streaming = if (inTurn) resumed.inflight?.assistant.orEmpty() else null, model = resumed.info.model.ifBlank { null })
+                        streaming = if (inTurn) resumed.inflight?.assistant.orEmpty() else null, model = resumed.info.model.ifBlank { null },
+                        todos = resumed.todoState?.let { TodoList.of(it.todos, it.revision) }, meter = resumed.info.usage?.let(ContextMeter::of))
         val open = resumed.openRequests.orEmpty().map { InTurnPrompt(it.id, it.method, it.params) }
         // The live info's key first (the core's own); the reply's session_key next; the caller's id as the last resort.
         val stored = resumed.info.storedSessionId.ifBlank { null } ?: resumed.sessionKey ?: resumed.storedSessionId ?: sessionId
