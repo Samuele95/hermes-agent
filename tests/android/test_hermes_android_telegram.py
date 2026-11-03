@@ -169,3 +169,9 @@ def test_check_without_a_token_says_so(home, monkeypatch):
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
 
     assert "error" in json.loads(telegram.check(""))
+
+
+def test_allowing_a_user_keeps_the_sections_other_keys_on_a_plain_mapping():
+    telegram._allow(cfg := {"telegram": {"require_mention": True}}, "42")
+
+    assert cfg == {"telegram": {"require_mention": True, "allow_from": ["42"]}}

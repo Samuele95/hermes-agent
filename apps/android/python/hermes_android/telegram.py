@@ -13,6 +13,8 @@ import json
 import urllib.error
 import urllib.request
 
+from hermes_android import _config
+
 API = "https://api.telegram.org"
 
 
@@ -21,13 +23,14 @@ def configure(arg: str) -> str:
     user = str(json.loads(arg).get("allowed_user", "")).strip()
     if not user.isdigit() or int(user) <= 0:
         return json.dumps({"error": "Enter your numeric Telegram user id (@userinfobot shows it)."})
-    from hermes_cli.config import load_config, save_config
-
-    config = load_config()
-    section = config.get("telegram")
-    config["telegram"] = {**(section if isinstance(section, dict) else {}), "allow_from": [user]}
-    save_config(config)
+    _config.mutate(lambda cfg: _allow(cfg, user))
     return json.dumps({"allowed_user": user})
+
+
+def _allow(cfg: dict, user: str) -> None:
+    """The edit itself, on a loaded config (no I/O): the section's other keys are kept."""
+    section = cfg.get("telegram")
+    cfg["telegram"] = {**(section if isinstance(section, dict) else {}), "allow_from": [user]}
 
 
 def status(_arg: str) -> str:

@@ -212,6 +212,22 @@ class EndpointSetupDeviceTest {
     }
 
     @Test
+    fun theAppsConfigWritesTakeTheLockBesideConfigYaml() {
+        // The file the core's plugin-setting writer locks; the kernel lock comes back with the file on demand.
+        val lock = File(app.filesDir, ".hermes/.config.yaml.lock")
+        lock.delete()
+
+        val reply = EmbeddedPython.call("save_custom_endpoint",
+            """{"id":null,"name":"$NAME","base_url":"http://127.0.0.1:9/v1","model":"m","has_key":false}""")
+        assertEquals(reply, ID, JSONObject(reply).optString("id"))
+        assertTrue("the write took the flock beside config.yaml", lock.isFile)
+        assertTrue(config.readText(), config.readText().contains(ID))
+
+        EmbeddedPython.call("delete_custom_endpoint", """{"id":"$ID"}""")
+        assertFalse(config.readText(), config.readText().contains(ID))
+    }
+
+    @Test
     fun anAddressThatNamesNoServerIsAnsweredInWords() = runBlocking {
         // Each names no server: no host at all (on the phone that reached its own loopback, here the host's Ollama
         // through adb reverse), an unbracketed IPv6 literal, a port out of range (a crash in the bridge call before).

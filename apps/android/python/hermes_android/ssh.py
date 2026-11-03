@@ -16,6 +16,7 @@ import os
 
 import asyncssh
 
+from hermes_android import _config
 from tools.environments.asyncssh_env import PRIVATE_KEY_ENV, known_hosts_path, pin_host_key, pinned_host_keys
 
 _LOOK_TIMEOUT = 15
@@ -105,7 +106,7 @@ def trust_host(arg: str) -> str:
 
 def configure(arg: str) -> str:
     """``{host, user, port}`` -> ``{backend: "ssh"}``: the terminal runs on that host from now on."""
-    from hermes_cli.config import apply_terminal_config_to_env, load_config, save_config
+    from hermes_cli.config import apply_terminal_config_to_env
 
     request = json.loads(arg)
     try:
@@ -115,10 +116,7 @@ def configure(arg: str) -> str:
     user = str(request.get("user") or "").strip()
     if not user:
         return json.dumps({"error": _BAD_TARGET})
-    # config.yaml only: the CLI's `config set` also mirrors terminal.* into .env, which the app never writes.
-    config = load_config()
-    config.setdefault("terminal", {}).update({"backend": "ssh", "ssh_host": host, "ssh_user": user, "ssh_port": port})
-    save_config(config)
+    _config.mutate(lambda cfg: _point_terminal(cfg, host, user, port))
     # The core's own bridge puts terminal.* into this process's environment, which terminal tools read.
     apply_terminal_config_to_env()
     return json.dumps({"backend": "ssh"})
@@ -138,13 +136,23 @@ def status(_arg: str) -> str:
 def local(_arg: str) -> str:
     """``{}`` -> ``{backend: "local"}``: the terminal runs on the phone again. The host stays pinned and the
     identity stays in the keystore, so choosing the host again needs no new confirmation."""
-    from hermes_cli.config import apply_terminal_config_to_env, load_config, save_config
+    from hermes_cli.config import apply_terminal_config_to_env
 
-    config = load_config()
-    config.setdefault("terminal", {})["backend"] = "local"
-    save_config(config)
+    _config.mutate(_terminal_on_phone)
     apply_terminal_config_to_env()
     return json.dumps({"backend": "local"})
+
+
+def _point_terminal(cfg: dict, host: str, user: str, port: int) -> None:
+    """The edit itself, on a loaded config (no I/O). config.yaml only: the CLI's `config set` also mirrors
+    terminal.* into .env, which the app never writes."""
+    cfg.setdefault("terminal", {}).update({"backend": "ssh", "ssh_host": host, "ssh_user": user, "ssh_port": port})
+
+
+def _terminal_on_phone(cfg: dict) -> None:
+    """The edit itself, on a loaded config (no I/O)."""
+    cfg.setdefault("terminal", {})["backend"] = "local"
+
 
 def check_login(arg: str) -> str:
     """``{host, user, port}`` -> ``{ok: true}`` once the pinned host accepts the app's key, else ``{error}``.

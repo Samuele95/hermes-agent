@@ -184,3 +184,11 @@ def test_the_terminal_comes_back_to_the_phone_in_config_yaml_and_the_running_cor
     import os
     assert os.environ["TERMINAL_ENV"] == "local"  # the next terminal call runs on the phone
     assert call("terminal_status") == {"ssh_host": None}
+
+
+def test_the_terminal_comes_back_to_the_phone_on_a_plain_mapping():
+    cfg = {"terminal": {"backend": "ssh", "ssh_host": "h"}}
+
+    importlib.import_module("hermes_android.ssh")._terminal_on_phone(cfg)
+
+    assert cfg == {"terminal": {"backend": "local", "ssh_host": "h"}}

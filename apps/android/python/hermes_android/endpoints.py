@@ -11,23 +11,29 @@ from __future__ import annotations
 import re
 import urllib.parse
 
+from hermes_android import _config
+
 
 def save(*, id: str | None, name: str, base_url: str, model: str, has_key: bool) -> dict[str, str]:
     """``{id, key_env, forget}`` (``key_env`` is ``""`` for a keyless endpoint), or ``{error}`` in words the app
     shows when the request is incomplete. ``id`` names the saved endpoint an edit replaces (None for a new one).
     ``forget`` is the endpoint's own keystore slot when config.yaml names it nowhere after this save (a keyless
     re-save dropped it: the app forgets it, as for a delete), else None."""
-    from hermes_cli.config import (coerce_provider_id, custom_endpoint_key_env, find_provider_entry, load_config,
-                                   save_config)
-
     name = name.strip()
     base_url = base_url.strip().rstrip("/")
     model = model.strip()
     parsed = urllib.parse.urlparse(base_url)
     if not name or not model or parsed.scheme not in ("http", "https") or not parsed.netloc:
         return {"error": "An endpoint needs a name, a model and an http(s) base URL."}
+    return _config.mutate(lambda cfg: _apply_save(cfg, id=id, name=name, base_url=base_url, model=model,
+                                                  has_key=has_key))
 
-    cfg = load_config()
+
+def _apply_save(cfg: dict, *, id: str | None, name: str, base_url: str, model: str,
+                has_key: bool) -> dict[str, str]:
+    """The edit itself, on a loaded config (no I/O)."""
+    from hermes_cli.config import coerce_provider_id, custom_endpoint_key_env, find_provider_entry
+
     current = cfg.get("providers")
     providers = current if isinstance(current, dict) else {}
     given_id = (id or "").strip()
@@ -65,7 +71,6 @@ def save(*, id: str | None, name: str, base_url: str, model: str, has_key: bool)
     cfg["providers"] = providers
     own = custom_endpoint_key_env(endpoint_id)
     forget = None if own in _named_key_vars(cfg) else own
-    save_config(cfg)
     return {"id": endpoint_id, "key_env": key_env, "forget": forget}
 
 
@@ -127,10 +132,13 @@ def delete(endpoint_id: str) -> dict[str, object]:
     the Desktop's delete removes only ``custom_endpoint_key_env(id)``. A default model that
     used the endpoint loses its provider, base URL and key fields, as the Desktop's
     ``_detach_main_model_from_provider`` does, so the core no longer routes to the deleted URL."""
-    from hermes_cli.config import (coerce_provider_id, custom_endpoint_key_env, find_provider_entry, load_config,
-                                   save_config)
+    return _config.mutate(lambda cfg: _apply_delete(cfg, endpoint_id))
 
-    cfg = load_config()
+
+def _apply_delete(cfg: dict, endpoint_id: str) -> dict[str, object]:
+    """The edit itself, on a loaded config (no I/O)."""
+    from hermes_cli.config import coerce_provider_id, custom_endpoint_key_env, find_provider_entry
+
     providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
     stored, entry = find_provider_entry(providers, endpoint_id)  # the core's provider-key rule, as for an edit
     if entry is None:
@@ -144,7 +152,6 @@ def delete(endpoint_id: str) -> dict[str, object]:
             model.pop(field, None)
         cfg["model"] = model
     cfg["providers"] = providers
-    save_config(cfg)
     # Only the endpoint's own slot is named for deletion, whatever key_env the entry held (as Desktop's delete):
     # another provider's variable is never this endpoint's, and its own slot may outlive a keyless re-save.
     return {"key_env": custom_endpoint_key_env(provider_key), "was_default": was_default}

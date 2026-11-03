@@ -329,3 +329,23 @@ def test_the_numeric_entry_bridge_calls_answer_their_declared_replies(home):
 
     assert saved == {"id": "2070", "key_env": "BOX_KEY", "forget": "HERMES_CUSTOM_2070_API_KEY"}
     assert gone == {"key_env": "HERMES_CUSTOM_2070_API_KEY", "was_default": True}
+
+
+def test_deleting_an_unknown_endpoint_writes_nothing(home):
+    save()
+    ino = (home / "config.yaml").stat().st_ino
+
+    assert "error" in endpoints.delete("nope")
+
+    assert (home / "config.yaml").stat().st_ino == ino
+
+
+def test_a_delete_detaches_the_default_on_a_plain_mapping():
+    cfg = {"providers": {"dgx": {"name": "DGX", "base_url": "http://10.0.0.2/v1", "model": "m",
+                                 "key_env": "HERMES_CUSTOM_DGX_API_KEY"}},
+           "model": {"provider": "dgx", "default": "m", "base_url": "http://10.0.0.2/v1"}}
+
+    assert endpoints._apply_delete(cfg, "dgx") == {"key_env": "HERMES_CUSTOM_DGX_API_KEY", "was_default": True}
+
+    assert cfg["providers"] == {}
+    assert cfg["model"] == {"default": "m"}
