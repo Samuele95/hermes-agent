@@ -13,7 +13,7 @@ import contextvars
 import ipaddress
 from concurrent.futures import ThreadPoolExecutor
 
-from hermes_android.endpoints import KNOWN_PORTS
+from hermes_android.probing import KNOWN_PORTS, models_at
 
 
 def hosts(cidr: str) -> list[str]:
@@ -24,14 +24,6 @@ def hosts(cidr: str) -> list[str]:
         raise ValueError(f"not an IPv4 network: {cidr}")
     network = iface.network if iface.network.prefixlen >= 24 else ipaddress.ip_interface(f"{iface.ip}/24").network
     return [str(h) for h in network.hosts()]
-
-
-def _models(base_url: str, timeout: float) -> tuple[str, list[str]]:
-    """The models a server at ``base_url`` lists, asked once with no key (a scan never sends one)."""
-    from hermes_cli.models import probe_api_models
-
-    result = probe_api_models(None, base_url, timeout=timeout)
-    return result.get("resolved_base_url") or base_url, [m for m in result.get("models") or [] if m]
 
 
 async def _scan(addresses: list[str], ports, connect_timeout: float, at_once: int, probe_timeout: float,
@@ -48,7 +40,8 @@ async def _scan(addresses: list[str], ports, connect_timeout: float, at_once: in
             writer.close()
         # The probe runs in the caller's context (profile scope), on the scan's own small pool.
         call = contextvars.copy_context().run
-        base_url, models = await loop.run_in_executor(probes, call, _models, f"http://{host}:{port}/v1", probe_timeout)
+        base_url, models = await loop.run_in_executor(probes, call, models_at, f"http://{host}:{port}/v1", None,
+                                                       probe_timeout)
         if models:
             found[order] = {"base_url": base_url, "kind": kind, "models": models}
 

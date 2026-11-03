@@ -215,11 +215,11 @@ def delete_custom_endpoint(arg: str) -> str:
 
 
 def probe_endpoint(arg: str) -> str:
-    """The app's call into :func:`hermes_android.endpoints.probe`."""
-    from hermes_android import endpoints
+    """The app's call into :func:`hermes_android.probing.probe`."""
+    from hermes_android import probing
 
     request = json.loads(arg)
-    return json.dumps(endpoints.probe(request["address"], request.get("api_key")))
+    return json.dumps(probing.probe(request["address"], request.get("api_key")))
 
 
 def discover_endpoints(arg: str) -> str:
