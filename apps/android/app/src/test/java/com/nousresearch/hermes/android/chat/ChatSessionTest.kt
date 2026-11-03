@@ -13,6 +13,8 @@ import kotlinx.serialization.SerializationException
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.withTimeout
+import kotlin.time.Duration.Companion.minutes
+import org.junit.Assert.assertNotEquals
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.joinAll
@@ -882,6 +884,99 @@ class ChatSessionTest {
         assertEquals(5036, (failed as? CoreError)?.code)
     }
 
+    /** The core's reuse-live answer to `session.resume("db1")`: the live s1 back, no build, no new `session.info`. */
+    private val backToS1 = { """{"session_id":"s1","message_count":0,"messages":[],"session_key":"db1","info":{$contract}}""" }
+
+    @Test
+    fun aConversationLeftComeBackToAndDeletedBeforeItSettledIsClosedOnce() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }  // s1, its build not yet announced
+        chat.open()  // s2: s1 left, its close waits for the build
+        resume = backToS1
+        chat.resume("db1")  // back on s1 before it settled
+
+        val deleting = launch { withTimeout(5.minutes) { chat.delete("db1") } }  // own: s3 opens, s1 left again
+        core.emit("session.info", "s1", "{}")
+        deleting.join()
+
+        assertEquals(1, closed().count { it == "s1" })
+        val closedAt = core.calls.indexOfFirst { it.first == "session.close" && it.second["session_id"]?.jsonPrimitive?.content == "s1" }
+        val deletedAt = core.calls.indexOfFirst { it.first == "session.delete" && it.second["session_id"]?.jsonPrimitive?.content == "db1" }
+        assertTrue("close at $closedAt, delete at $deletedAt", closedAt in 0 until deletedAt)
+        assertEquals("s3", chat.sessionId)
+    }
+
+    @Test
+    fun aBuildThatNeverSettlesFailsTheDeleteInTheAppsWordsAndKeepsTheChatsPlace() = runTest(UnconfinedTestDispatcher()) {
+        resume = backToS1
+        val chat = openChat().apply { open() }  // s1, whose build never announces itself
+
+        val refused = runCatching { withTimeout(5.minutes) { chat.delete("db1") } }.exceptionOrNull()
+
+        assertTrue("$refused", refused is SetupRefusal)
+        assertEquals(ChatSession.NOT_CLOSED, refused?.message)
+        assertFalse(core.calls.any { it.first == "session.delete" })
+        assertFalse("s1" in closed())
+        assertEquals("s1", chat.sessionId)  // back on it, as the desktop goes back to a row it could not delete
+
+        // The body was woken by the bounded wait, from the scheduler: what an event wakes now runs once the body suspends.
+        core.emit("session.info", "s2", "{}")
+        delay(1)
+        assertEquals(listOf("s2"), closed())  // the empty chat the delete opened is let go
+        core.emit("session.info", "s1", "{}")
+        delay(1)
+        assertEquals(listOf("s2"), closed())  // the chat is on s1: nothing closes it
+    }
+
+    @Test
+    fun aFailedCloseOfTheOwnRowKeepsTheChatsPlaceAndSaysSo() = runTest(UnconfinedTestDispatcher()) {
+        resume = backToS1
+        close = { throw IllegalStateException("bridge gone") }
+        delete = { throw CoreError(4023, "cannot delete an active session") }  // the core still holds s1
+        val chat = openChat().apply { open() }
+        core.emit("session.info", "s1", "{}")
+
+        val refused = runCatching { withTimeout(5.minutes) { chat.delete("db1") } }.exceptionOrNull()
+
+        assertTrue("$refused", refused is SetupRefusal)
+        assertEquals(ChatSession.NOT_CLOSED, refused?.message)
+        assertNotEquals(ChatSession.STILL_WORKING, refused?.message)
+        assertEquals(listOf("s1"), closed())  // it was tried
+        assertFalse(core.calls.any { it.first == "session.delete" })
+        assertEquals("s1", chat.sessionId)
+    }
+
+    @Test
+    fun deletingARowWhoseLeftSessionIsStillClosingWaitsForTheClose() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }  // s1, unsettled
+        chat.open()  // s2: s1 left, its close pending
+        val mark = core.calls.size
+
+        val deleting = launch { withTimeout(5.minutes) { chat.delete("db1") } }
+        assertFalse(callsAfter(mark).any { it.first == "session.delete" })
+
+        core.emit("session.info", "s1", "{}")
+        deleting.join()
+
+        assertEquals(listOf("session.close" to "s1", "session.delete" to "db1"), callsAfter(mark))
+        assertEquals("s2", chat.sessionId)
+    }
+
+    @Test
+    fun aSessionLeftMidTurnAndComeBackToIsClosedWhenLeftIdle() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        core.emit("session.info", "s1", "{}")
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        chat.open()  // s2: s1 left running, not closed
+        core.emit("message.complete", "s1", """{"text":"hi"}""")  // another session's now
+
+        resume = backToS1
+        chat.resume("db1")  // reuse-live: no build, no new session.info
+        chat.open()  // s3: s1 left idle
+
+        assertTrue("${closed()}", "s1" in closed())
+    }
+
     @Test
     fun aChatStartsInTheCoresMostRecentConversation() = runTest(UnconfinedTestDispatcher()) {
         mostRecent = { """{"session_id":"db-old","title":"Calendar","source":"cli"}""" }
@@ -1397,6 +1492,29 @@ class ChatSessionTest {
         assertEquals(listOf("session.resume" to "db-old", "session.title" to "s-resumed"), callsAfter(1))
         assertEquals(emptyList<String>(), closed())
         assertEquals("s-resumed", chat.sessionId)
+    }
+
+    @Test
+    fun aDeleteWaitsForTheChatsSwitch() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        val asked = resume
+        var deleting = false
+        // The user deletes the row the chat is switching to while its resume is still being answered.
+        resume = {
+            if (!deleting) {
+                deleting = true
+                backgroundScope.launch { chat.delete("db-old-tip") }
+            }
+            asked()
+        }
+
+        chat.resume("db-old")
+
+        // After the switch the row is the chat's own: the chat moves off it, and nothing is deleted yet.
+        assertEquals(listOf("session.resume" to "db-old", "session.create" to null), callsAfter(1))
+
+        core.emit("session.info", "s-resumed", "{}")
+        assertEquals(listOf("session.close" to "s-resumed", "session.delete" to "db-old-tip"), callsAfter(core.calls.size - 2))
     }
 
     private companion object {

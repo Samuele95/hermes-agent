@@ -113,16 +113,7 @@ class SessionLivenessDeviceTest {
             chat.open()  // leaves it idle; its close waits for its agent build
             runtimes += chat.sessionId
             val since = System.nanoTime()
-            withTimeout(120_000) {
-                while (true) {
-                    try {
-                        chat.delete(other)
-                        break
-                    } catch (live: SetupRefusal) {  // still live in the core until the close lands
-                        delay(200)
-                    }
-                }
-            }
+            withTimeout(120_000) { chat.delete(other) }  // waits for the left session's close itself (W7)
             Log.i("SessionLiveness", "other session deleted after ${(System.nanoTime() - since) / 1_000_000} ms")
             assertEquals(4007, refusalOf(other))
         } finally {
