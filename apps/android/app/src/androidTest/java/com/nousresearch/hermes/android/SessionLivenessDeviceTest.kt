@@ -20,10 +20,12 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertThrows
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** A chat on the app's own core closes the sessions it leaves idle, so their stored rows can be deleted. */
+/** A chat on the app's own core closes the sessions it leaves idle, so their stored rows can be deleted, its own included. */
 @RunWith(AndroidJUnit4::class)
 class SessionLivenessDeviceTest {
     companion object {
@@ -80,6 +82,52 @@ class SessionLivenessDeviceTest {
             runCatching { gateway.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = chat.sessionId)) }
             left?.let { runCatching { gateway.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = it)) } }
             stored?.let { runCatching { gateway.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = it)) } }
+            scope.cancel()
+        }
+    }
+
+    /** The core's answer to deleting [stored] now: its refusal code. */
+    private fun refusalOf(stored: String): Int = assertThrows(CoreError::class.java) {
+        runBlocking { gateway.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = stored)) }
+    }.code
+
+    @Test
+    fun theChatsOwnSessionIsDeletedByMovingOffIt() = runBlocking<Unit> {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val chat = ChatSession(gateway, noTurns, scope, keepSecret = { _, _ -> })
+        val runtimes = mutableListOf<String>()
+        val rows = mutableListOf<String>()
+        try {
+            chat.open()
+            val own = chat.sessionId.also(runtimes::add)
+            val stored = persisted(own).also(rows::add)
+
+            chat.delete(stored)  // the chat's own: a new chat first, the old session closed, then the row
+
+            assertNotEquals(own, chat.sessionId.also(runtimes::add))
+            assertEquals(4007, refusalOf(stored))  // gone
+            chat.delete(stored)  // gone already counts as deleted
+
+            val other = persisted(chat.sessionId).also(rows::add)
+            chat.open()  // leaves it idle; its close waits for its agent build
+            runtimes += chat.sessionId
+            val since = System.nanoTime()
+            withTimeout(120_000) {
+                while (true) {
+                    try {
+                        chat.delete(other)
+                        break
+                    } catch (live: SetupRefusal) {  // still live in the core until the close lands
+                        delay(200)
+                    }
+                }
+            }
+            Log.i("SessionLiveness", "other session deleted after ${(System.nanoTime() - since) / 1_000_000} ms")
+            assertEquals(4007, refusalOf(other))
+        } finally {
+            // A failed run leaves no session or row behind on the shared phone.
+            runtimes.forEach { runCatching { gateway.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = it)) } }
+            rows.forEach { runCatching { gateway.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = it)) } }
             scope.cancel()
         }
     }

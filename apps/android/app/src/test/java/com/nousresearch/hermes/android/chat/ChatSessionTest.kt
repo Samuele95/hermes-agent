@@ -26,6 +26,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import com.nousresearch.hermes.android.SetupRefusal
 import org.junit.Test
 
 /** One chat: a core session, the prompts the user sends to it, and the turns it runs. */
@@ -39,16 +40,19 @@ class ChatSessionTest {
     private var submit: () -> String = { """{"status":"streaming"}""" }
     private var sessions = 0
     private var close: (JsonObject) -> String = { """{"closed":true}""" }
+    private var delete: (String) -> String = { id -> """{"deleted":"$id"}""" }
     private var contract = """"desktop_contract":${BackendContract.BACKEND_CONTRACT}"""
     private val core = FakeCoreGateway { method, params ->
         when (method) {
             "session.create" -> """{"session_id":"s${++sessions}","stored_session_id":"db$sessions","message_count":0,"messages":[],"info":{$contract}}"""
             "prompt.submit" -> submit()
             "session.close" -> close(params)
+            "session.delete" -> delete(params.getValue("session_id").jsonPrimitive.content)
             "session.interrupt" -> """{"status":"interrupted"}"""
             "session.list" -> """{"sessions":[{"id":"db-old","title":"Calendar","message_count":3,"started_at":1.0},
                                                  {"id":"db-empty","message_count":0,"started_at":2.0}]}"""
-            "session.resume" -> """{"session_id":"s-resumed","message_count":2,"stored_session_id":"db-old",
+            // The core continues a compressed conversation at its tip and answers that key (no top-level stored id).
+            "session.resume" -> """{"session_id":"s-resumed","message_count":2,"session_key":"db-old-tip",
                                    "messages":[{"role":"user","text":"what's on my calendar?"},{"role":"assistant","text":"Two meetings."}],
                                    "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT},"model":"kimi-k2"}}"""
             else -> error("unexpected $method")
@@ -67,6 +71,9 @@ class ChatSessionTest {
 
     /** The runtime ids the chat asked the core to close, in order. */
     private fun closed() = core.calls.filter { it.first == "session.close" }.map { it.second.getValue("session_id").jsonPrimitive.content }
+
+    /** The calls after the first [skip], each as its method and the id it named. */
+    private fun callsAfter(skip: Int) = core.calls.drop(skip).map { it.first to it.second["session_id"]?.jsonPrimitive?.content }
 
     private fun TestScope.openChat() =
         ChatSession(core, host, backgroundScope, keepSecret = { name, value -> keepSecret(name, value) }, notifier = notifier)
@@ -629,5 +636,96 @@ class ChatSessionTest {
         assertEquals(listOf("s1"), closed())
         assertEquals("s2", chat.sessionId)
         assertEquals(emptyList<Entry>(), chat.state.value.entries)
+    }
+
+    @Test
+    fun deletingTheChatsOwnSessionMovesOffItFirst() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        core.emit("session.info", "s1", "{}")
+
+        chat.delete("db1")
+
+        // The core refuses to delete a live session: a new chat first, the old session closed, then its row deleted.
+        assertEquals(listOf("session.create" to null, "session.close" to "s1", "session.delete" to "db1"), callsAfter(1))
+        assertEquals("s2", chat.sessionId)
+        assertEquals(emptyList<Entry>(), chat.state.value.entries)
+
+        chat.resume("db-old")  // a resumed session goes by the stored key the core answered, its compression tip
+        core.emit("session.info", "s-resumed", "{}")
+        val mark = core.calls.size
+        chat.delete("db-old-tip")
+
+        assertEquals(listOf("session.create" to null, "session.close" to "s-resumed", "session.delete" to "db-old-tip"), callsAfter(mark))
+    }
+
+    @Test
+    fun theChatsOwnSessionIsNotDeletedWhileItsTurnRuns() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        val mark = core.calls.size
+
+        val refused = runCatching { chat.delete("db1") }.exceptionOrNull()
+
+        assertTrue("$refused", refused is SetupRefusal)
+        assertEquals(ChatSession.STILL_WORKING, refused?.message)
+        assertEquals(emptyList<Pair<String, String?>>(), callsAfter(mark))
+        assertEquals("s1", chat.sessionId)
+        assertTrue(chat.state.value.running)
+    }
+
+    @Test
+    fun anotherSessionIsDeletedByItsKeyAndTheChatStays() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+
+        chat.delete("db-old")
+
+        assertEquals(listOf("session.delete" to "db-old"), callsAfter(1))
+        assertEquals("s1", chat.sessionId)
+    }
+
+    @Test
+    fun theStoredKeyFollowsTheCoreAfterACompression() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        core.emit("session.info", "s1", """{"stored_session_id":"db1b"}""")  // a compression rotated the key
+
+        chat.delete("db1b")
+
+        assertEquals(listOf("session.create" to null, "session.close" to "s1", "session.delete" to "db1b"), callsAfter(1))
+
+        core.emit("session.info", "s2", """{"stored_session_id":""}""")  // no key named: the one the chat has stays
+        var mark = core.calls.size
+        chat.delete("db2")
+        assertEquals(listOf("session.create" to null, "session.close" to "s2", "session.delete" to "db2"), callsAfter(mark))
+
+        core.emit("session.info", "s9", """{"stored_session_id":"db9"}""")  // another session's key is not the chat's
+        mark = core.calls.size
+        chat.delete("db9")
+        assertEquals(listOf("session.delete" to "db9"), callsAfter(mark))
+        assertEquals("s3", chat.sessionId)
+    }
+
+    @Test
+    fun aRowAlreadyGoneCountsAsDeleted() = runTest(UnconfinedTestDispatcher()) {
+        delete = { throw CoreError(4007, "session not found") }
+        val chat = openChat().apply { open() }
+
+        chat.delete("db-old")  // returns: the row is gone, as asked
+
+        assertEquals(listOf("session.delete" to "db-old"), callsAfter(1))
+    }
+
+    @Test
+    fun aLeftSessionStillRunningIsRefusedInTheAppsWords() = runTest(UnconfinedTestDispatcher()) {
+        delete = { throw CoreError(4023, "cannot delete an active session") }
+        val chat = openChat().apply { open() }
+
+        val refused = runCatching { chat.delete("db-old") }.exceptionOrNull()
+        assertTrue("$refused", refused is SetupRefusal)
+        assertEquals(ChatSession.STILL_WORKING, refused?.message)
+
+        delete = { throw CoreError(5036, "delete failed: disk") }
+        val failed = runCatching { chat.delete("db-old") }.exceptionOrNull()
+        assertEquals(5036, (failed as? CoreError)?.code)
     }
 }

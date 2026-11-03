@@ -1,5 +1,6 @@
 package com.nousresearch.hermes.android.chat
 
+import com.nousresearch.hermes.android.SetupRefusal
 import com.nousresearch.hermes.android.forUser
 import com.nousresearch.hermes.android.turn.TurnHost
 import com.nousresearch.hermes.bridge.CoreError
@@ -16,6 +17,7 @@ import com.nousresearch.hermes.bridge.protocol.PromptSubmitParams
 import com.nousresearch.hermes.bridge.protocol.SessionCloseParams
 import com.nousresearch.hermes.bridge.protocol.Requests
 import com.nousresearch.hermes.bridge.protocol.SessionCreateParams
+import com.nousresearch.hermes.bridge.protocol.SessionDeleteParams
 import com.nousresearch.hermes.bridge.protocol.SessionResumeParams
 import com.nousresearch.hermes.bridge.protocol.SessionListRow
 import com.nousresearch.hermes.bridge.protocol.SessionListParams
@@ -38,6 +40,14 @@ import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.serialization.json.JsonPrimitive
 
+/** The core session a chat follows: [runtime] is the id its frames carry, [stored] the key its stored row goes by. */
+data class SessionRef(val runtime: String, val stored: String) {
+    /** After [event] of this session: a `session.info` names the stored key, which a compression rotates. */
+    fun seen(event: CoreEvent): SessionRef = if (event.type != Events.SESSION_INFO.name) this else
+        runCatching { event.decode(Events.SESSION_INFO)!!.storedSessionId }.getOrNull()
+            ?.takeIf { it.isNotBlank() }?.let { copy(stored = it) } ?: this
+}
+
 /**
  * One chat: a core session, the prompts sent to it, its turns, which [turns] keeps alive, and the questions
  * a turn asks, which [notifier] hears of along with finished turns. A secret the agent asks for goes to
@@ -49,6 +59,8 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     companion object {
         /** The session's source, which is also the agent's platform; "android" keeps the CLI toolsets. */
         const val SOURCE = "android"
+        /** Said when a session cannot be deleted because a reply is still being written in it. */
+        const val STILL_WORKING = "It is still working; delete it when it finishes."
     }
 
     /**
@@ -56,7 +68,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
      * behind the transcript's question cards. Events, questions and session switches arrive on different threads;
      * each change is one [change] of this one value, so none of them can see or leave a half-made state.
      */
-    private data class Live(val session: String? = null, val chat: Chat = Chat(), val waiting: Map<String, InTurnPrompt> = emptyMap()) {
+    private data class Live(val ref: SessionRef? = null, val chat: Chat = Chat(), val waiting: Map<String, InTurnPrompt> = emptyMap()) {
         /** The requests the core withdrew (their cards are gone from the transcript) let go too. */
         fun withdrawn(): Live = copy(waiting = waiting.filterKeys { id -> chat.prompts.any { it.id == id } })
     }
@@ -84,7 +96,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
 
     /** The core session this chat sends to; the chat must be open. */
     val sessionId: String
-        get() = checkNotNull(synchronized(lock) { live.session }) { "open() the chat first" }
+        get() = checkNotNull(synchronized(lock) { live.ref?.runtime }) { "open() the chat first" }
 
     init {
         // Collect before the first request: the core does not replay events.
@@ -93,7 +105,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
             // Nothing else shows the core's requests: one this chat cannot show is declined, or its turn would wait it out.
             core.prompts.collect { raw ->
                 var asked: Prompt? = null
-                change { now -> prompt(raw, now.session)?.let { p -> asked = p; now.copy(chat = now.chat.asked(p), waiting = now.waiting + (p.id to raw)) } ?: now }
+                change { now -> prompt(raw, now.ref?.runtime)?.let { p -> asked = p; now.copy(chat = now.chat.asked(p), waiting = now.waiting + (p.id to raw)) } ?: now }
                 asked?.let(notifier::promptPending) ?: core.decline(raw, "not available in the Android app")
             }
         }
@@ -110,12 +122,33 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     /** [open]'s work; returns the close of the session it left, if any, which the screen does not wait for. */
     private suspend fun opened(): Job? = switching.withLock {
         val created = core.call(Methods.SESSION_CREATE, SessionCreateParams(source = SOURCE))
-        switchTo(created.sessionId, Chat(model = created.info.model.ifBlank { null }), created.info.desktopContract)
+        switchTo(SessionRef(created.sessionId, created.storedSessionId), Chat(model = created.info.model.ifBlank { null }), created.info.desktopContract)
     }
 
     /** Past conversations with something in them, as the core lists them (newest first). */
     suspend fun pastSessions(): List<SessionListRow> =
         core.call(Methods.SESSION_LIST, SessionListParams(limit = 100)).sessions.filter { it.messageCount > 0 }
+
+    /**
+     * Deletes stored session [storedId] (a drawer row's id). The core refuses a session live here, so the chat's own is
+     * left first, a new chat opening and the old one closing (invariant 4); not while its turn runs.
+     */
+    suspend fun delete(storedId: String) {
+        val now = synchronized(lock) { live }
+        if (now.ref?.stored == storedId) {
+            if (now.chat.running) throw SetupRefusal(STILL_WORKING)
+            opened()?.join()
+        }
+        try {
+            core.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = storedId))
+        } catch (refused: CoreError) {
+            when (refused.code) {
+                4007 -> Unit                                      // already gone: what was asked (D4)
+                4023 -> throw SetupRefusal(STILL_WORKING)          // a left session whose turn still runs (§8)
+                else -> throw refused
+            }
+        }
+    }
 
     /**
      * Continues stored session [sessionId]: the chat shows its transcript and sends to it from now on. A session still
@@ -132,27 +165,29 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         val chat = Chat(entries = transcriptOf(resumed.messages),
                         streaming = if (inTurn) resumed.inflight?.assistant.orEmpty() else null, model = resumed.info.model.ifBlank { null })
         val open = resumed.openRequests.orEmpty().map { InTurnPrompt(it.id, it.method, it.params) }
-        switchTo(resumed.sessionId, chat, resumed.info.desktopContract, open)
+        // The live info's key first (the core's own); the reply's session_key next; the caller's id as the last resort.
+        val stored = resumed.info.storedSessionId.ifBlank { null } ?: resumed.sessionKey ?: resumed.storedSessionId ?: sessionId
+        switchTo(SessionRef(resumed.sessionId, stored), chat, resumed.info.desktopContract, open)
     }
 
     /**
-     * Makes [session] the chat's session, showing [chat] with the cards of the [open] requests it can show; the previous
+     * Makes [ref] the chat's session, showing [chat] with the cards of the [open] requests it can show; the previous
      * session's turn and questions are let go, and the session itself is closed in the core if it was idle: the
      * returned job is that close.
      */
-    private fun switchTo(session: String, chat: Chat, reportedContract: JsonElement?, open: List<InTurnPrompt> = emptyList()): Job? {
+    private fun switchTo(ref: SessionRef, chat: Chat, reportedContract: JsonElement?, open: List<InTurnPrompt> = emptyList()): Job? {
         val notice = contractNotice(reportedContract)
         val (before, after) = change { now ->
-            val opened = open.mapNotNull { raw -> prompt(raw, session)?.let { it to raw } }
+            val opened = open.mapNotNull { raw -> prompt(raw, ref.runtime)?.let { it to raw } }
             // The same session resumed: questions it asked after the core's snapshot are still its own.
-            val kept = if (now.session == session) now.chat.prompts.filter { p -> opened.none { it.first.id == p.id } }
+            val kept = if (now.ref?.runtime == ref.runtime) now.chat.prompts.filter { p -> opened.none { it.first.id == p.id } }
                        .mapNotNull { p -> now.waiting[p.id]?.let { p to it } } else emptyList()
             val cards = opened + kept
-            Live(session, cards.fold(notice?.let(chat::notice) ?: chat) { shownChat, (p, _) -> shownChat.asked(p) },
+            Live(ref, cards.fold(notice?.let(chat::notice) ?: chat) { shownChat, (p, _) -> shownChat.asked(p) },
                  cards.associate { (p, raw) -> p.id to raw })
         }
         // Invariant 3, decided from the one atomic swap (EJ-78): an idle session the chat left is closed; a running one runs on.
-        val left = before.session?.takeIf { !before.chat.running && it != after.session }
+        val left = before.ref?.runtime?.takeIf { !before.chat.running && it != after.ref?.runtime }
         // The previous session's turn would end in events this chat no longer follows: it ends here for the app.
         syncTurn()
         // Questions that lost their card are settled rather than left waiting; one carried over (the same session
@@ -174,7 +209,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
      */
     private fun syncTurn() = synchronized(turnLock) {
         val now = synchronized(lock) { live }
-        val wanted = now.session?.takeIf { now.chat.running }
+        val wanted = now.ref?.runtime?.takeIf { now.chat.running }
         if (wanted == activeTurn) return@synchronized
         activeTurn?.let(turns::end)
         wanted?.let(turns::begin)
@@ -185,7 +220,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     private fun closeWhenSettled(left: String): Job = scope.launch {
         settled.first { left in it }
         switching.withLock {
-            if (synchronized(lock) { live.session } == left) return@withLock
+            if (synchronized(lock) { live.ref?.runtime } == left) return@withLock
             try {
                 core.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = left))
                 settled.update { it - left }
@@ -271,7 +306,9 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     private fun on(event: CoreEvent) {
         val session = event.sessionId ?: return
         if (event.type == Events.SESSION_INFO.name || event.type == Events.ERROR.name) settled.update { it + session }
-        val (before, after) = change { now -> if (now.session != session) now else now.copy(chat = now.chat.reduce(event)).withdrawn() }
+        val (before, after) = change { now ->
+            if (now.ref?.runtime != session) now else now.copy(ref = now.ref.seen(event), chat = now.chat.reduce(event)).withdrawn()
+        }
         if (before === after) return
         if (before.chat.running != after.chat.running) syncTurn()
         if (before.chat.running && !after.chat.running) notifier.turnFinished(after.chat.entries.lastOrNull() as? Entry.Reply)
