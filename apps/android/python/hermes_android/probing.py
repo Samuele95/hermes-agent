@@ -8,14 +8,32 @@ Runs on the bridge's network thread (``blocking`` in the contract), never on the
 
 from __future__ import annotations
 
+import enum
 import socket
 import urllib.error
 import urllib.parse
 import urllib.request
 
 KNOWN_PORTS = ((11434, "ollama"), (1234, "lmstudio"), (8080, "llamacpp"), (8000, "vllm"))
-# The most telling outcome wins when several candidates fail: a server that answered beats one that did not.
-_RANK = {"unreachable": 0, "no_models": 1, "refused": 2, "needs_key": 3}
+FOUND = "found"
+
+
+class Outcome(enum.IntEnum):
+    """Why a probe found no models, ordered so that the most telling failure wins when several candidates
+    fail: a server that answered beats one that did not. ``found`` is no failure, so it is :data:`FOUND`."""
+
+    UNREACHABLE = 0
+    NO_MODELS = 1
+    REFUSED = 2
+    NEEDS_KEY = 3
+
+    @property
+    def wire(self) -> str:
+        """The contract's spelling (``EndpointProbe``)."""
+        return self.name.lower()
+
+
+_BY_STATUS = {401: Outcome.NEEDS_KEY, 403: Outcome.REFUSED, 200: Outcome.NO_MODELS}
 
 
 def kind(port: int | None) -> str:
@@ -82,14 +100,12 @@ def status(base_url: str, api_key: str | None, timeout: float) -> int | None:
 def probe(address: str, api_key: str | None = None, ports=KNOWN_PORTS, timeout: float = 5.0) -> dict:
     """Finds the OpenAI-compatible server behind ``address`` (a URL, ``host:port`` or a bare host tried on
     ``ports``) and its models, through the core's own probe. ``api_key`` is used for this probe only."""
-    outcome = "unreachable"
+    outcome = Outcome.UNREACHABLE
     for base, name in _candidates(address, ports):
         if not _open(base, timeout):
             continue
         resolved, models = models_at(base, api_key, timeout)
         if models:
-            return {"outcome": "found", "base_url": resolved, "kind": name, "models": models}
-        tried = {401: "needs_key", 403: "refused", 200: "no_models"}.get(status(resolved, api_key, timeout) or 0,
-                                                                         "unreachable")
-        outcome = max(outcome, tried, key=_RANK.__getitem__)
-    return {"outcome": outcome, "base_url": None, "kind": None, "models": []}
+            return {"outcome": FOUND, "base_url": resolved, "kind": name, "models": models}
+        outcome = max(outcome, _BY_STATUS.get(status(resolved, api_key, timeout) or 0, Outcome.UNREACHABLE))
+    return {"outcome": outcome.wire, "base_url": None, "kind": None, "models": []}

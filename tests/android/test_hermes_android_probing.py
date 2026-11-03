@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import json
+from pathlib import Path
 
 import pytest
 
 from tests.android.fake_endpoint import closed_port
 
 probing = importlib.import_module("hermes_android.probing")
+from hermes_android.probing import FOUND, Outcome
+
+CONTRACT = json.loads((Path(inspect.getfile(probing)).parent / "bridge_contract.json").read_text(encoding="utf-8"))
 
 
 @pytest.fixture
@@ -116,3 +121,24 @@ def test_reading_why_a_probe_failed_closes_every_answer(home, servers):
         gc.collect()
 
     assert [w for w in caught if issubclass(w.category, ResourceWarning)] == []
+
+
+def test_the_probes_outcomes_are_the_contracts():
+    assert {o.wire for o in Outcome} | {FOUND} == set(CONTRACT["enums"]["EndpointProbe"])
+    assert sorted(Outcome) == [Outcome.UNREACHABLE, Outcome.NO_MODELS, Outcome.REFUSED, Outcome.NEEDS_KEY]
+
+
+# Each row puts its strongest failure before a weaker one, so 'the last failure wins' cannot pass.
+@pytest.mark.parametrize(("ports", "expected"), [
+    (("keyed", "empty", "closed"), "needs_key"),
+    (("refusing", "keyed"), "needs_key"),
+    (("empty", "refusing"), "refused"),
+    (("closed", "empty"), "no_models"),
+])
+def test_the_most_telling_failure_wins_across_ports(home, servers, ports, expected):
+    made = {"keyed": lambda: servers(models=["m1"], key="sk-test-123").port,
+            "empty": lambda: servers(models=[]).port,
+            "refusing": lambda: servers(status=403).port,
+            "closed": closed_port}
+
+    assert probe("127.0.0.1", ports=tuple((made[name](), "ollama") for name in ports))["outcome"] == expected
