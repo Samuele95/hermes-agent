@@ -30,7 +30,7 @@ def home(tmp_path, monkeypatch):
 def save(**fields) -> dict:
     request = {"id": None, "name": "Host Ollama", "base_url": "http://127.0.0.1:11434/v1/", "model": "gemma4:12b-it-q8_0",
                "has_key": True, **fields}
-    return json.loads(endpoints.save_custom_endpoint(json.dumps(request)))
+    return endpoints.save(**request)
 
 
 def test_a_saved_endpoint_resolves_to_its_url_with_the_key_from_the_environment(home, monkeypatch):
@@ -76,7 +76,7 @@ def test_an_incomplete_endpoint_is_refused_in_words_before_anything_is_written(h
 
 
 def listed() -> list[dict]:
-    return json.loads(endpoints.list_saved())["endpoints"]
+    return endpoints.list_saved()
 
 
 def test_saved_endpoints_are_listed_without_keys(home):
@@ -132,7 +132,7 @@ def test_a_deleted_default_endpoint_no_longer_routes_the_main_model(home, server
     save_config(cfg)
     assert resolve_runtime_provider()["base_url"] == url  # routed there before the delete
 
-    gone = json.loads(endpoints.delete(json.dumps({"id": "host-ollama"})))
+    gone = endpoints.delete("host-ollama")
 
     assert gone["was_default"] is True
     assert listed() == []
@@ -156,7 +156,7 @@ def test_every_spelling_of_the_deleted_endpoint_detaches_the_main_model(home, sp
                     "api_key": "sk-inline", "key_env": KEY_ENV}
     save_config(cfg)
 
-    gone = json.loads(endpoints.delete(json.dumps({"id": "host-ollama"})))
+    gone = endpoints.delete("host-ollama")
 
     assert gone == {"key_env": KEY_ENV, "was_default": True}
     assert load_config()["model"] == {"default": "gemma4"}
@@ -169,7 +169,7 @@ def test_a_main_model_on_another_provider_is_left_alone(home):
     cfg["model"] = {"default": "x", "provider": "other", "base_url": "http://10.0.0.9/v1", "key_env": "OTHER_KEY"}
     save_config(cfg)
 
-    gone = json.loads(endpoints.delete(json.dumps({"id": "host-ollama"})))
+    gone = endpoints.delete("host-ollama")
 
     assert gone["was_default"] is False
     assert load_config()["model"] == {"default": "x", "provider": "other", "base_url": "http://10.0.0.9/v1",
@@ -188,7 +188,7 @@ def _hand_written_proxy(home):
 def test_deleting_an_entry_keyed_by_another_variable_names_only_its_own_slot(home):
     _hand_written_proxy(home)
 
-    gone = json.loads(endpoints.delete(json.dumps({"id": "proxy"})))
+    gone = endpoints.delete("proxy")
 
     # OPENROUTER_API_KEY is not this endpoint's to delete; its own slot is (as Desktop's delete does).
     assert gone == {"key_env": "HERMES_CUSTOM_PROXY_API_KEY", "was_default": False}
@@ -198,7 +198,7 @@ def test_deleting_a_keyless_entry_still_names_its_own_slot(home):
     # A key stored earlier may still sit in the keystore after a keyless re-save dropped key_env.
     save(has_key=False)
 
-    gone = json.loads(endpoints.delete(json.dumps({"id": "host-ollama"})))
+    gone = endpoints.delete("host-ollama")
 
     assert gone["key_env"] == "HERMES_CUSTOM_HOST_OLLAMA_API_KEY"
 
@@ -213,7 +213,7 @@ def test_an_edit_without_a_new_key_keeps_the_entrys_key_variable(home):
 
 
 def test_deleting_an_unknown_endpoint_is_an_error_in_words(home):
-    assert "error" in json.loads(endpoints.delete(json.dumps({"id": "nope"})))
+    assert "error" in endpoints.delete("nope")
 
 
 def test_the_list_and_delete_bridge_calls_answer_their_declared_replies(home):
@@ -225,3 +225,15 @@ def test_the_list_and_delete_bridge_calls_answer_their_declared_replies(home):
 
     assert [r["id"] for r in rows] == ["host-ollama"]
     assert gone == {"key_env": "HERMES_CUSTOM_HOST_OLLAMA_API_KEY", "was_default": False}
+
+
+def test_the_save_bridge_call_answers_its_declared_reply(home):
+    import hermes_android
+    request = {"id": None, "name": "Host Ollama", "base_url": "http://127.0.0.1:11434/v1/", "model": "gemma4",
+               "has_key": True}
+
+    saved = json.loads(hermes_android.call("save_custom_endpoint", json.dumps(request)))
+    refused = json.loads(hermes_android.call("save_custom_endpoint", json.dumps({**request, "model": " "})))
+
+    assert saved == {"id": "host-ollama", "key_env": KEY_ENV}
+    assert refused == {"error": "An endpoint needs a name, a model and an http(s) base URL."}

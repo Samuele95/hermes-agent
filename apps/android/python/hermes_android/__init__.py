@@ -194,24 +194,24 @@ def secrets_changed(_arg: str) -> str:
 
 
 def save_custom_endpoint(arg: str) -> str:
-    """The app's call into :func:`hermes_android.endpoints.save_custom_endpoint`."""
+    """The app's call into :func:`hermes_android.endpoints.save`."""
     from hermes_android import endpoints
 
-    return endpoints.save_custom_endpoint(arg)
+    return json.dumps(endpoints.save(**json.loads(arg)))
 
 
 def list_custom_endpoints(_arg: str) -> str:
     """The app's call into :func:`hermes_android.endpoints.list_saved`."""
     from hermes_android import endpoints
 
-    return endpoints.list_saved()
+    return json.dumps({"endpoints": endpoints.list_saved()})
 
 
 def delete_custom_endpoint(arg: str) -> str:
     """The app's call into :func:`hermes_android.endpoints.delete`."""
     from hermes_android import endpoints
 
-    return endpoints.delete(arg)
+    return json.dumps(endpoints.delete(json.loads(arg)["id"]))
 
 
 def probe_endpoint(arg: str) -> str:
