@@ -57,10 +57,11 @@ fun GatewayScreen(state: GatewayUi, samsung: Boolean, onOn: () -> Unit, onOff: (
             GatewayStatus.RESTARTING -> R.string.gateway_status_restarting
             GatewayStatus.STOPPING -> R.string.gateway_status_stopping
             GatewayStatus.FAILED -> R.string.gateway_status_failed
+            GatewayStatus.DIED -> R.string.gateway_status_died
         }
         val tone = when (state.status) {
             GatewayStatus.RUNNING -> MaterialTheme.colorScheme.primary
-            GatewayStatus.FAILED -> MaterialTheme.colorScheme.error
+            GatewayStatus.FAILED, GatewayStatus.DIED -> MaterialTheme.colorScheme.error
             GatewayStatus.STOPPED -> Hermes.colors.textTertiary
             else -> MaterialTheme.colorScheme.onSurfaceVariant
         }
@@ -68,7 +69,7 @@ fun GatewayScreen(state: GatewayUi, samsung: Boolean, onOn: () -> Unit, onOff: (
             Box(Modifier.size(8.dp).background(tone, CircleShape))
             Text(listOfNotNull(stringResource(status), state.reason).joinToString(" "),
                  Modifier.weight(1f).padding(start = 10.dp).testTag("gateway-status-${state.status.name.lowercase()}"),
-                 style = MaterialTheme.typography.bodyMedium, color = if (state.status == GatewayStatus.FAILED) tone else MaterialTheme.colorScheme.onSurface)
+                 style = MaterialTheme.typography.bodyMedium, color = if (state.status in setOf(GatewayStatus.FAILED, GatewayStatus.DIED)) tone else MaterialTheme.colorScheme.onSurface)
             // A running gateway reads its token, allowlist and settings only at its start.
             if (state.status == GatewayStatus.RUNNING) {
                 TextButton(onRestart, Modifier.testTag("gateway-restart")) { Text(stringResource(R.string.gateway_restart)) }

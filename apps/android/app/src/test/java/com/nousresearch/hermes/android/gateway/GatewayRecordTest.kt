@@ -1,6 +1,8 @@
 package com.nousresearch.hermes.android.gateway
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** What the gateway's own record says, checked against the process that wrote it. */
@@ -15,11 +17,38 @@ class GatewayRecordTest {
     }
 
     @Test
-    fun aRecordFromAProcessThatIsGoneIsStopped() {
-        // Killed, or ended by its own watchdog: Android restarts it, and the new process writes a new record.
-        assertEquals(GatewayStatus.STOPPED to null, statusOf(record(GatewayRecord.State.RUNNING, pid = 42), alivePid = null))
+    fun aLiveRecordWhoseProcessIsGoneDiedUnplanned() {
+        // Killed, or ended by its own watchdog, and nothing brought it back (Samsung can hold the sticky restart, L21).
+        for (state in listOf(GatewayRecord.State.STARTING, GatewayRecord.State.RUNNING, GatewayRecord.State.RESTARTING)) {
+            assertEquals(GatewayStatus.DIED to null, statusOf(record(state, pid = 42), alivePid = null))
+        }
         // A new :gateway process alive with the old one's record: it is coming up and has not written its own yet.
         assertEquals(GatewayStatus.STARTING to null, statusOf(record(GatewayRecord.State.RUNNING, pid = 42), alivePid = 99))
+    }
+
+    @Test
+    fun aGoneGatewayEndedOnPurposeIsStopped() {
+        // The user's Force stop, or a reboot since the record: a planned end, not a death.
+        assertEquals(GatewayStatus.STOPPED to null, statusOf(record(GatewayRecord.State.RUNNING), alivePid = null) { true })
+
+        // Asked only for a live record whose process is gone.
+        val never: (GatewayRecord) -> Boolean = { throw AssertionError("planned end asked for $it") }
+        assertEquals(GatewayStatus.STOPPED to null, statusOf(record(GatewayRecord.State.STOPPED), alivePid = null, never))
+        assertEquals(GatewayStatus.FAILED to "no network",
+                     statusOf(record(GatewayRecord.State.FAILED, reason = "no network"), alivePid = null, never))
+        assertEquals(GatewayStatus.RUNNING to null, statusOf(record(GatewayRecord.State.RUNNING, pid = 42), alivePid = 42, never))
+    }
+
+    @Test
+    fun aForceStopOrAnotherBootIsAPlannedEnd() {
+        val written = GatewayRecord(GatewayRecord.State.RUNNING, 42, boot = 7)
+
+        assertTrue(endedOnPurpose(written, bootNow = 7, userRequested = true))
+        assertTrue(endedOnPurpose(written, bootNow = 8, userRequested = false))
+        assertFalse(endedOnPurpose(written, bootNow = 7, userRequested = false))
+        // Android cannot tell: the end counts as unplanned.
+        assertFalse(endedOnPurpose(GatewayRecord(GatewayRecord.State.RUNNING, 42), bootNow = 8, userRequested = false))
+        assertFalse(endedOnPurpose(written, bootNow = null, userRequested = false))
     }
 
     @Test
@@ -48,9 +77,11 @@ class GatewayRecordTest {
 
     @Test
     fun theRecordRoundTripsAsJson() {
-        val written = record(GatewayRecord.State.FAILED, pid = 7, reason = "no network")
+        val written = GatewayRecord(GatewayRecord.State.FAILED, 7, "no network", boot = 7)
 
         assertEquals(written, GatewayRecord.parse(written.json()))
         assertEquals(null, GatewayRecord.parse("not json"))
+        // A record written by an older build has no boot count.
+        assertEquals(GatewayRecord(GatewayRecord.State.RUNNING, 3), GatewayRecord.parse("""{"state":"RUNNING","pid":3}"""))
     }
 }

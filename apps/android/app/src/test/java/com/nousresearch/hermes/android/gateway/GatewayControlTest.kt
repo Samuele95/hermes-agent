@@ -11,11 +11,15 @@ class GatewayControlTest {
     private val launched = mutableListOf<String>()
     private var running = GatewayStatus.STOPPED
     private var exempt = false
+    private var refuse = false
     private val settings = object : GatewaySettings {
         override var startAtBoot = false
     }
     private val control = GatewayControl(settings, object : GatewayLauncher {
-        override fun start() { launched += "start" }
+        override fun start() {
+            if (refuse) throw IllegalStateException("not allowed")
+            launched += "start"
+        }
         override fun stop() { launched += "stop" }
     }, observe = { running to null }, batteryExempt = { exempt })
 
@@ -204,5 +208,90 @@ class GatewayControlTest {
         control.refresh()
 
         assertEquals(GatewayStatus.RESTARTING, control.state.value?.status)
+    }
+
+    @Test
+    fun aGatewayThatDiedUnplannedIsStartedAgain() {
+        running = GatewayStatus.DIED
+
+        assertTrue(control.revive())
+        assertEquals(listOf("start"), launched)
+        assertTrue(control.restarting)  // seen through until its process is up
+
+        running = GatewayStatus.STARTING
+        control.refresh()
+        assertFalse(control.restarting)
+    }
+
+    @Test
+    fun openingTheScreenRevivesADeadGatewayAndShowsItComingUp() {
+        running = GatewayStatus.DIED
+
+        control.open()
+        assertEquals(listOf("start"), launched)
+        assertEquals(GatewayStatus.STARTING, control.state.value?.status)
+
+        control.refresh()  // the new process is not up yet: never "Off" in between
+        assertEquals(GatewayStatus.STARTING, control.state.value?.status)
+
+        running = GatewayStatus.RUNNING
+        control.refresh()
+        assertEquals(GatewayStatus.RUNNING, control.state.value?.status)
+    }
+
+    @Test
+    fun onlyADiedGatewayIsRevived() {
+        for (status in GatewayStatus.entries - GatewayStatus.DIED) {
+            running = status
+
+            assertFalse("$status revived", control.revive())
+            control.open()
+
+            assertEquals("$status revived", emptyList<String>(), launched)
+        }
+    }
+
+    @Test
+    fun aStartTheSystemRefusesLeavesTheGatewayShownAsDied() {
+        refuse = true
+        running = GatewayStatus.DIED
+
+        control.open()
+
+        assertEquals(GatewayStatus.DIED, control.state.value?.status)
+        assertFalse(control.restarting)
+    }
+
+    @Test
+    fun aRevivalThatNeverComesUpIsGivenUp() {
+        running = GatewayStatus.DIED
+        control.open()
+
+        control.abandonPendingStart()
+        control.refresh()
+
+        assertEquals(GatewayStatus.DIED, control.state.value?.status)
+        assertFalse(control.restarting)
+    }
+
+    @Test
+    fun aDiedGatewayIsRestartedByStartingIt() {
+        running = GatewayStatus.DIED
+
+        control.restart()
+
+        assertEquals(listOf("start"), launched)  // no stop to send to a process that is gone
+    }
+
+    @Test
+    fun aRestartWhoseOldGatewayDiedStartsTheNewOne() {
+        running = GatewayStatus.RUNNING
+        control.open()
+        control.restart()
+
+        running = GatewayStatus.DIED  // killed while it drained
+        control.refresh()
+
+        assertEquals(listOf("stop", "start"), launched)
     }
 }

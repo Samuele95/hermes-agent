@@ -88,6 +88,17 @@ class GatewayScreenTest {
         assertEquals(listOf("on"), calls)
     }
 
+    @Test
+    fun aGatewayThatDiedShowsOffAndIsTurnedOn() {
+        show(GatewayUi(GatewayStatus.DIED, startAtBoot = false))
+
+        compose.onNodeWithTag("gateway-status-died").assertExists()
+        compose.onNodeWithTag("gateway-restart").assertDoesNotExist()
+        compose.onNodeWithTag("gateway-switch").assertIsOff().performClick()
+
+        assertEquals(listOf("on"), calls)
+    }
+
     private fun showsOnAndIsTurnedOff(status: GatewayStatus) {
         show(GatewayUi(status, startAtBoot = false))
 

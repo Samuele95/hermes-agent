@@ -116,7 +116,7 @@ class GatewayService : Service() {
     }
 
     private fun record(state: GatewayRecord.State, reason: String? = null) {
-        runCatching { writeGatewayRecord(this, GatewayRecord(state, Process.myPid(), reason)) }
+        runCatching { writeGatewayRecord(this, GatewayRecord(state, Process.myPid(), reason, boot = bootCount(this))) }
     }
 
     /** Stops the service, then the process: its interpreter cannot be started twice. */

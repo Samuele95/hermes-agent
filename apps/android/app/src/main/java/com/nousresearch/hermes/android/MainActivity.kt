@@ -107,7 +107,7 @@ class MainActivity : ComponentActivity() {
                                                         clarify = { p, given -> app.chat { clarify(p, given) } },
                                                         secret = { p, value -> app.chat { secret(p, value) } })
                             ChatScreen(chat, about = state.about, onSetup = { app.setup { open() } }, answers = answers,
-                                       onTerminal = { app.ssh { open() } }, onGateway = app.gateway::open, onStop = { app.chat { cancel() } },
+                                       onTerminal = { app.ssh { open() } }, onGateway = app::openGateway, onStop = { app.chat { cancel() } },
                                        onSettings = { app.settings { open() } }, onNewChat = { app.chat { open() } },
                                        // The drawer's sessions load as it opens; a tap continues one.
                                        sessions = history, onSessions = { open -> if (open) app.history { open() } else state.history.close() },
@@ -123,6 +123,12 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // Samsung can keep a killed gateway from coming back by itself (L21): the app brings it back when it shows (D38).
+        (application as HermesApplication).reviveGateway()
     }
 
     /** While the core starts (the first run unpacks it), or when it could not: the brand, and what is happening. */

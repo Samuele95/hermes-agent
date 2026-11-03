@@ -110,6 +110,17 @@ class HermesApplication : Application() {
         seeThrough()
     }
 
+    /** The app came on screen: a gateway that died without a planned stop, and that nothing brought back, starts again (D38). */
+    fun reviveGateway() {
+        scope.launch(Dispatchers.IO) { if (gateway.revive()) seeThrough() }
+    }
+
+    /** Opens the gateway screen, which starts again a gateway that died unplanned; that start is seen through like a restart. */
+    fun openGateway() {
+        gateway.open()
+        if (gateway.restarting) seeThrough()
+    }
+
     private fun seeThrough() {
         scope.launch(Dispatchers.IO) {
             val until = SystemClock.elapsedRealtime() + 60_000

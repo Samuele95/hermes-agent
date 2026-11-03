@@ -10,14 +10,20 @@ import kotlinx.coroutines.flow.update
 import kotlinx.serialization.Serializable
 
 /** What the gateway is doing, as seen from the app. */
-enum class GatewayStatus { STOPPED, STARTING, RUNNING, RESTARTING, STOPPING, FAILED }
+enum class GatewayStatus {
+    STOPPED, STARTING, RUNNING, RESTARTING, STOPPING, FAILED,
+
+    /** Its process ended without a recorded stop or failure (killed, or ended by its own watchdog) and nothing restarted it. */
+    DIED,
+}
 
 /**
  * The gateway's own account of itself, written by its service in the `:gateway` process on every change and
- * read by the app's controls (the core's `gateway_state.json` is the core's business, not the app's).
+ * read by the app's controls (the core's `gateway_state.json` is the core's business, not the app's). [boot] is
+ * the phone's boot count when it was written (null in a record from an older build).
  */
 @Serializable
-data class GatewayRecord(val state: State, val pid: Int, val reason: String? = null) {
+data class GatewayRecord(val state: State, val pid: Int, val reason: String? = null, val boot: Int? = null) {
     @Serializable
     enum class State { STARTING, RUNNING, RESTARTING, STOPPED, FAILED }
 
@@ -28,16 +34,28 @@ data class GatewayRecord(val state: State, val pid: Int, val reason: String? = n
     }
 }
 
+/** The states a gateway records while it runs: one of them with no live writer means the process died. */
+private val LIVE = setOf(GatewayRecord.State.STARTING, GatewayRecord.State.RUNNING, GatewayRecord.State.RESTARTING)
+
+/** A gone gateway's record was ended on purpose: the user's Force stop, or the phone restarted since it was written. */
+fun endedOnPurpose(record: GatewayRecord, bootNow: Int?, userRequested: Boolean): Boolean =
+    userRequested || (record.boot != null && bootNow != null && record.boot != bootNow)
+
 /**
  * The status (and, after a failure, its reason) from the gateway's [record] and the pid of the `:gateway` process
- * alive now: a record whose writer is gone says nothing about now (the process was killed; Android starts it
- * again, and the new one writes its own record), except a failure, which stays until the next start.
+ * alive now. A failure stays until the next start. A record that says the gateway runs while no process lives means
+ * it died without a planned stop ([GatewayStatus.DIED]: killed, or ended by its own watchdog; Samsung can keep
+ * Android from restarting it, L21), unless [plannedEnd] says Android ended it on the user's behalf (Force stop) or
+ * the phone restarted since, which reads as stopped. A new process that has not written its own record is starting.
  */
-fun statusOf(record: GatewayRecord?, alivePid: Int?): Pair<GatewayStatus, String?> = when {
+fun statusOf(record: GatewayRecord?, alivePid: Int?, plannedEnd: (GatewayRecord) -> Boolean = { false }): Pair<GatewayStatus, String?> = when {
     // The record is written before the process ends: while its writer lives, the gateway is still stopping.
     record != null && record.pid == alivePid &&
         record.state in setOf(GatewayRecord.State.STOPPED, GatewayRecord.State.FAILED) -> GatewayStatus.STOPPING to null
     record?.state == GatewayRecord.State.FAILED -> GatewayStatus.FAILED to record.reason
+    // Its writer is gone without recording a stop or a failure: killed, or ended by a watchdog (D38, L21).
+    record != null && alivePid == null && record.state in LIVE ->
+        (if (plannedEnd(record)) GatewayStatus.STOPPED else GatewayStatus.DIED) to null
     record == null || record.pid != alivePid -> (if (alivePid != null) GatewayStatus.STARTING else GatewayStatus.STOPPED) to null
     else -> when (record.state) {
         GatewayRecord.State.STARTING -> GatewayStatus.STARTING
@@ -81,12 +99,38 @@ class GatewayControl(
     /** A restart asked for: the gateway starts again once the stopping one is observed gone; turning it off cancels it. */
     private val restartPending = AtomicBoolean(false)
 
-    /** A restart still waits for the old gateway to end: someone must keep calling [refresh] until it is false. */
-    val restarting: Boolean get() = restartPending.get()
+    /** A died gateway was started again and its process is not up yet; turning it off or giving up clears it. */
+    private val reviving = AtomicBoolean(false)
+
+    /**
+     * A start asked for is not yet seen through (a restart waiting for the old gateway to end, or a revived gateway
+     * whose process is not up yet): someone must keep calling [refresh] until it is false.
+     */
+    val restarting: Boolean get() = restartPending.get() || reviving.get()
 
     fun open() {
         val (status, reason) = observe()
         screen.value = GatewayUi(status, settings.startAtBoot, reason = reason)
+        if (status == GatewayStatus.DIED) revive()
+    }
+
+    /**
+     * Starts again a gateway that died without a planned stop and that nothing brought back (D38: Samsung can hold
+     * the sticky restart, L21). Called when the app comes on screen and when this screen opens; any other status
+     * is left alone. Returns whether a start was sent; one the system refuses leaves the gateway shown as died.
+     */
+    fun revive(): Boolean {
+        if (observe().first != GatewayStatus.DIED) return false
+        try {
+            launcher.start()
+        } catch (_: IllegalStateException) {  // incl. ForegroundServiceStartNotAllowedException
+            return false
+        } catch (_: SecurityException) {
+            return false
+        }
+        reviving.set(true)
+        screen.update { it?.copy(status = GatewayStatus.STARTING, reason = null) }
+        return true
     }
 
     fun close() {
@@ -96,15 +140,21 @@ class GatewayControl(
     /** Re-reads what runs, for a screen that is showing; finishes a restart once the old gateway has stopped. */
     fun refresh() {
         val (status, reason) = observe()
-        // STOPPED and FAILED both mean the old process is gone (a live writer reads as STOPPING).
-        if (status in setOf(GatewayStatus.STOPPED, GatewayStatus.FAILED) && restartPending.compareAndSet(true, false)) {
+        // A revived gateway's process is up (or ended again on its own): from now on the screen shows what is.
+        if (status != GatewayStatus.DIED) reviving.set(false)
+        // STOPPED, FAILED and DIED all mean the old process is gone (a live writer reads as STOPPING).
+        if (status in ENDED && restartPending.compareAndSet(true, false)) {
             launcher.start()
             screen.update { it?.copy(status = GatewayStatus.STARTING, reason = null) }
             return
         }
-        // A start waits for the old gateway to end: until then the screen says it is restarting, not what stops.
-        val shown = if (restartPending.get()) GatewayStatus.RESTARTING else status
-        screen.update { it?.copy(status = shown, reason = reason.takeUnless { restartPending.get() }) }
+        // A start waits for the old gateway to end (or for the revived one to come up): until then the screen says so.
+        val shown = when {
+            restartPending.get() -> GatewayStatus.RESTARTING
+            reviving.get() -> GatewayStatus.STARTING
+            else -> status
+        }
+        screen.update { it?.copy(status = shown, reason = reason.takeUnless { restartPending.get() || reviving.get() }) }
     }
 
     /**
@@ -112,7 +162,7 @@ class GatewayControl(
      * drains and stops first (its process ends), then [refresh] starts the new one; one that does not run starts.
      */
     fun restart() {
-        if (observe().first in setOf(GatewayStatus.STOPPED, GatewayStatus.FAILED)) {
+        if (observe().first in ENDED) {
             turnOn()
             return
         }
@@ -135,11 +185,13 @@ class GatewayControl(
     /** A pending start waited too long for the old gateway to end: it is dropped, so no later refresh starts it. */
     fun abandonPendingStart() {
         restartPending.set(false)
+        reviving.set(false)
         refresh()
     }
 
     fun turnOff() {
         restartPending.set(false)
+        reviving.set(false)
         launcher.stop()
         refresh()
     }
@@ -157,6 +209,11 @@ class GatewayControl(
     /** The phone booted: start the gateway if the user asked for it. */
     fun onBoot() {
         if (settings.startAtBoot) launcher.start()
+    }
+
+    private companion object {
+        /** The gateway's process is gone: a pending start may go ahead. */
+        val ENDED = setOf(GatewayStatus.STOPPED, GatewayStatus.FAILED, GatewayStatus.DIED)
     }
 }
 
