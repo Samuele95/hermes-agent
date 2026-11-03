@@ -276,13 +276,13 @@ object BridgeCalls {
     /** The public half of the identity the core reads from the keystore. */
     val SSH_PUBLIC_KEY = BridgeCall("ssh_public_key", NoParams.serializer(), SshPublicKeyReply.serializer())
     /** A host's key, seen without logging in, and how it stands against known_hosts. */
-    val SSH_HOST_KEY = BridgeCall("ssh_host_key", SshHostKeyParams.serializer(), SshHostKeyReply.serializer())
+    val SSH_HOST_KEY = BridgeCall("ssh_host_key", SshHostKeyParams.serializer(), SshHostKeyReply.serializer(), blocking = true)
     /** Pins a host key the user confirmed; refuses over a different pinned key. */
     val SSH_TRUST_HOST = BridgeCall("ssh_trust_host", SshTrustHostParams.serializer(), SshTrustHostReply.serializer())
     /** Points the terminal at the host (config.yaml terminal.*, Dv32). */
     val SSH_CONFIGURE = BridgeCall("ssh_configure", SshConfigureParams.serializer(), SshConfigureReply.serializer())
     /** Logs in once with the app's key against the pinned host key. */
-    val SSH_CHECK_LOGIN = BridgeCall("ssh_check_login", SshCheckLoginParams.serializer(), SshCheckLoginReply.serializer())
+    val SSH_CHECK_LOGIN = BridgeCall("ssh_check_login", SshCheckLoginParams.serializer(), SshCheckLoginReply.serializer(), blocking = true)
     /** Where the terminal runs: user@host:port on an SSH host, null on the phone. */
     val TERMINAL_STATUS = BridgeCall("terminal_status", NoParams.serializer(), TerminalStatusReply.serializer())
     /** Runs the terminal on the phone again (config.yaml terminal.backend, Dv32); the host stays pinned. */
@@ -292,10 +292,10 @@ object BridgeCalls {
     /** Whether a token is held, who may talk to the bot, and whether this build has the Telegram SDK. */
     val TELEGRAM_STATUS = BridgeCall("telegram_status", NoParams.serializer(), TelegramStatusReply.serializer())
     /** Asks Telegram who the held token belongs to: ok (bot named), refused by Telegram, or Telegram out of reach. */
-    val TELEGRAM_CHECK = BridgeCall("telegram_check", NoParams.serializer(), TelegramCheckReply.serializer())
+    val TELEGRAM_CHECK = BridgeCall("telegram_check", NoParams.serializer(), TelegramCheckReply.serializer(), blocking = true)
 
     /** The calls that may wait on the network (`blocking` in the contract): EmbeddedPython runs them on their own thread. */
-    val BLOCKING: Set<String> = setOf("probe_endpoint", "discover_endpoints")
+    val BLOCKING: Set<String> = setOf("probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check")
 }
 
 /** One state change of the :gateway process's gateway host, as a JSON line through native.emit; reason only for failed. */

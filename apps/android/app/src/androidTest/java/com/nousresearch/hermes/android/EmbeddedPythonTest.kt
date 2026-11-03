@@ -79,27 +79,32 @@ class EmbeddedPythonTest {
     }
 
     @Test
-    fun aNetworkProbeDoesNotHoldTheCoresFrames() {
+    fun aNetworkProbeDoesNotHoldTheCoresFrames() =
+        assertAHeldCallLetsFramesThrough("probe_endpoint") { """{"address":"http://127.0.0.1:$it/v1","api_key":null}""" }
+
+    @Test
+    fun anSshHostLookDoesNotHoldTheCoresFrames() =
+        // asyncssh connects and waits for a banner that never comes (up to 15 s); the closed listener ends it with {error}.
+        assertAHeldCallLetsFramesThrough("ssh_host_key") { """{"host":"127.0.0.1","port":$it}""" }
+
+    /** Holds the bridge call [function] on a silent listener ([request] gets its port) and checks a ping still answers. */
+    private fun assertAHeldCallLetsFramesThrough(function: String, request: (port: Int) -> String) {
         core
         // Never accepted: the kernel completes the connect and nothing answers (tests/android/fake_endpoint.py's
-        // silent_listener), so the probe waits inside probe_api_models on the bridge's network thread. IPv4 by
-        // name: Android's getLoopbackAddress() is ::1, where the probe's 127.0.0.1 would be refused at once.
+        // silent_listener), so the call waits on the bridge's network thread. IPv4 by name: Android's
+        // getLoopbackAddress() is ::1, where the call's 127.0.0.1 would be refused at once.
         val silent = ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"))
         var reply: Result<String>? = null
-        val probe = thread {
-            reply = runCatching {
-                EmbeddedPython.call("probe_endpoint", """{"address":"http://127.0.0.1:${silent.localPort}/v1","api_key":null}""")
-            }
-        }
+        val held = thread { reply = runCatching { EmbeddedPython.call(function, request(silent.localPort)) } }
         try {
             Thread.sleep(1_500)
 
             assertEquals(PingResult(pong = true), runBlocking { withTimeout(3_000) { core.call(Methods.PING, PingParams) } })
-            assertTrue("the probe had already ended ($reply), so the ping proves nothing about a held probe", probe.isAlive)
+            assertTrue("$function had already ended ($reply), so the ping proves nothing about a held call", held.isAlive)
         } finally {
             silent.close()
         }
-        probe.join(30_000)
-        assertFalse("the probe did not end after its listener closed", probe.isAlive)
+        held.join(30_000)
+        assertFalse("$function did not end after its listener closed", held.isAlive)
     }
 }

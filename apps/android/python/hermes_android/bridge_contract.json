@@ -155,6 +155,7 @@
     },
     "ssh_host_key": {
       "summary": "A host's key, seen without logging in, and how it stands against known_hosts.",
+      "blocking": true,
       "params": {
         "host": "string",
         "port": "integer"
@@ -189,6 +190,7 @@
     },
     "ssh_check_login": {
       "summary": "Logs in once with the app's key against the pinned host key.",
+      "blocking": true,
       "params": {
         "host": "string",
         "user": "string",
@@ -232,6 +234,7 @@
     },
     "telegram_check": {
       "summary": "Asks Telegram who the held token belongs to: ok (bot named), refused by Telegram, or Telegram out of reach.",
+      "blocking": true,
       "params": {},
       "reply": {
         "check": "TelegramCheck",

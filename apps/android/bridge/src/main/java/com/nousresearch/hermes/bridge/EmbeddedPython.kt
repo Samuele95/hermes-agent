@@ -39,7 +39,7 @@ object EmbeddedPython : CoreRuntime {
         check(this.sink == null) { "the embedded interpreter is already running" }
         this.sink = sink
         listOf(paths.home, paths.hermesHome, paths.tmp).forEach { it.mkdirs() }
-        threads.run(blocking = false) {
+        threads.onCore {
             System.loadLibrary("hermes_bridge")
             nativeStart(paths.runtime.path, paths.home.path, paths.hermesHome.path, paths.tmp.path, role)
         }
@@ -78,7 +78,7 @@ object EmbeddedPython : CoreRuntime {
      * reply; a call in [BridgeCalls.BLOCKING] runs on the network thread, apart from the core's frames.
      */
     fun call(function: String, arg: String): String =
-        threads.run(function in BridgeCalls.BLOCKING) { String(nativeCall(function, arg.toByteArray(Charsets.UTF_8)), Charsets.UTF_8) }
+        threads.call(function) { String(nativeCall(function, arg.toByteArray(Charsets.UTF_8)), Charsets.UTF_8) }
 
     @JvmStatic
     private fun onFrame(frame: ByteArray): Boolean {
