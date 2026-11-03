@@ -81,14 +81,15 @@ import kotlin.random.Random
  * A chat in the desktop's shape: the transcript is the page, replies flat across it and the user's words in
  * bubbles, the composer at the bottom naming the model, and a drawer with the sessions and the app's other places.
  * It holds only the draft; [onSend] gets the trimmed text, [onRetry] runs the last prompt again. [onSessions] hears the drawer open (load the sessions)
- * and close. [onContext] opens the context sheet from the meter; [context] is that sheet while it is open.
+ * and close; [sessionActions] is the rows' menu (rename, delete). [onContext] opens the context sheet from the meter;
+ * [context] is that sheet while it is open.
  */
 @Composable
 fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifier, about: String? = null,
                onSetup: (() -> Unit)? = null, answers: PromptAnswers? = null, onTerminal: (() -> Unit)? = null,
                onGateway: (() -> Unit)? = null, onStop: () -> Unit = {}, onRetry: (() -> Unit)? = null, onSettings: (() -> Unit)? = null,
                onNewChat: (() -> Unit)? = null, sessions: HistoryUi? = null, onSessions: (open: Boolean) -> Unit = {},
-               onPickSession: (String) -> Unit = {}, context: ContextUi? = null, onContext: (() -> Unit)? = null,
+               onPickSession: (String) -> Unit = {}, sessionActions: SessionActions? = null, context: ContextUi? = null, onContext: (() -> Unit)? = null,
                onCompress: (String?) -> Unit = {}, onCloseContext: () -> Unit = {}) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -109,7 +110,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
     ModalNavigationDrawer(drawerContent = {
         ModalDrawerSheet(Modifier.width(304.dp), drawerShape = RectangleShape,
                          drawerContainerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
-            SessionDrawerContent(links, sessions, onPick = { id -> scope.launch { drawer.close() }; onPickSession(id) }, about)
+            SessionDrawerContent(links, sessions, onPick = { id -> scope.launch { drawer.close() }; onPickSession(id) }, about, sessionActions)
         }
     }, modifier, drawerState = drawer, gesturesEnabled = hasDrawer) {
         Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).safeDrawingPadding()) {

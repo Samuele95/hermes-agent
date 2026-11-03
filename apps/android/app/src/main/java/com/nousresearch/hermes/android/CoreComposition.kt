@@ -49,7 +49,7 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, secrets: Secre
     val chat = ChatSession(gateway, turns, scope, keepSecret, notifier).apply { start() }
     val setup = ProviderSetup(gateway, secrets, bridge, session = { chat.sessionId }, reopenChat = chat::open, keyNames = keyNames,
                               subnet = subnet)
-    val history = SessionHistory(list = chat::pastSessions, resume = chat::resume)
+    val history = SessionHistory(list = chat::pastSessions, resume = chat::resume, rename = chat::rename, delete = chat::delete)
     val context = ContextPanel(meter = { chat.state.value.meter }, breakdown = chat::breakdown, compress = chat::compress)
     // Undispatched: setup is showing before the core is Ready, so the chat never flashes first.
     if (setup.needed()) scope.launch(start = CoroutineStart.UNDISPATCHED) { setup.open() }

@@ -39,6 +39,15 @@
         <item>Type a task, question, or snippet. I remember the session, cite my sources, and stop to ask when I\'m unsure.</item>
     </string-array>
     <string name="history_empty">No past conversations yet.</string>
+    <string name="session_actions">Session actions</string>
+    <string name="session_rename">Rename…</string>
+    <string name="session_rename_save">Save title</string>
+    <string name="session_rename_cancel">Cancel rename</string>
+    <string name="session_untitled">Untitled session</string>
+    <string name="session_delete">Delete</string>
+    <string name="session_delete_title">Delete session?</string>
+    <string name="session_delete_body">This will permanently delete “%1$s”. This cannot be undone.</string>
+    <string name="session_cancel">Cancel</string>
     <string name="ssh_title">Remote terminal (SSH)</string>
     <string name="ssh_done">Done</string>
     <string name="ssh_runs_here">The terminal runs on this phone. Set up a host below to run it there instead.</string>

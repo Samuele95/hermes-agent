@@ -1,11 +1,17 @@
 package com.nousresearch.hermes.android
 
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.test.performTouchInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.nousresearch.hermes.android.chat.HistoryUi
+import com.nousresearch.hermes.android.chat.SessionActions
 import com.nousresearch.hermes.android.chat.SessionList
 import com.nousresearch.hermes.bridge.protocol.SessionListRow
 import org.junit.Assert.assertEquals
@@ -13,7 +19,10 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** The past conversations in the drawer, under their headings, each by its title (or how it began) and a tap from continuing. */
+/**
+ * The past conversations in the drawer, under their headings, each by its title (or how it began) and a tap from
+ * continuing; a long press offers to rename or delete one.
+ */
 @RunWith(AndroidJUnit4::class)
 class SessionListTest {
     @get:Rule
@@ -22,7 +31,13 @@ class SessionListTest {
     private val picked = mutableListOf<String>()
     private val now = System.currentTimeMillis() / 1000.0
 
-    private fun show(ui: HistoryUi) = compose.setContent { SessionList(ui, onPick = { picked += it }) }
+    private val heard = mutableListOf<String>()
+    private val actions = SessionActions(edit = { heard += "edit:$it" }, saveTitle = { heard += "save:$it" },
+                                         askDelete = { heard += "ask:$it" }, confirmDelete = { heard += "confirm" })
+    private val calendar = listOf(SessionListRow(id = "db-1", title = "Calendar", messageCount = 3, startedAt = now - 60))
+
+    private fun show(ui: HistoryUi, actions: SessionActions? = null) =
+        compose.setContent { SessionList(ui, onPick = { picked += it }, actions = actions) }
 
     @Test
     fun aPastSessionIsListedUnderItsHeadingAndContinuedOnATap() {
@@ -50,5 +65,58 @@ class SessionListTest {
         show(HistoryUi(emptyList(), error = "session store unavailable"))
 
         compose.onNodeWithTag("history-error").assertExists()
+    }
+
+    @Test
+    fun aLongPressOffersRenameAndDelete() {
+        show(HistoryUi(calendar), actions)
+
+        compose.onNodeWithText("Calendar").performTouchInput { longClick() }
+        compose.onNodeWithTag("session-rename").performClick()
+        assertEquals(listOf("edit:db-1"), heard)
+
+        compose.onNodeWithText("Calendar").performTouchInput { longClick() }
+        compose.onNodeWithTag("session-delete").performClick()
+        assertEquals(listOf("edit:db-1", "ask:db-1"), heard)
+
+        compose.onNodeWithText("Calendar").performClick()  // a plain tap still continues it
+        assertEquals(listOf("db-1"), picked)
+    }
+
+    @Test
+    fun theRowBeingRenamedIsAFieldThatSavesItsTitle() {
+        show(HistoryUi(calendar, editing = "db-1"), actions)
+
+        compose.onNodeWithTag("rename-field").assertTextEquals("Calendar")
+        compose.onNodeWithTag("rename-field").performTextReplacement("Trip plans")
+        compose.onNodeWithTag("rename-save").performClick()
+        assertEquals(listOf("save:Trip plans"), heard)
+
+        compose.onNodeWithTag("rename-field").performTextReplacement("  ")
+        compose.onNodeWithTag("rename-save").assertIsNotEnabled()  // a blank title cannot be saved
+        compose.onNodeWithTag("rename-cancel").performClick()
+        assertEquals(listOf("save:Trip plans", "edit:null"), heard)
+    }
+
+    @Test
+    fun aDeleteAsksBeforeItDeletes() {
+        show(HistoryUi(calendar, confirmDelete = "db-1"), actions)
+
+        compose.onNodeWithTag("delete-dialog").assertExists()
+        compose.onNodeWithText("This will permanently delete “Calendar”", substring = true).assertExists()
+        compose.onNodeWithTag("delete-cancel").performClick()
+        compose.onNodeWithTag("delete-confirm").performClick()
+
+        assertEquals(listOf("ask:null", "confirm"), heard)
+    }
+
+    @Test
+    fun withoutActionsARowOnlyContinues() {
+        show(HistoryUi(calendar))
+
+        compose.onNodeWithText("Calendar").performTouchInput { longClick() }
+
+        compose.onNodeWithTag("session-rename").assertDoesNotExist()
+        assertEquals(emptyList<String>(), picked)
     }
 }

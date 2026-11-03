@@ -7,13 +7,23 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
-/** The history screen: past sessions, newest first as the core lists them, and what went wrong if anything. */
-data class HistoryUi(val sessions: List<SessionListRow>, val busy: Boolean = false, val error: String? = null)
+/**
+ * The history screen: past sessions, newest first as the core lists them, and what went wrong if anything; the row
+ * being renamed ([editing]) or awaiting a delete confirmation ([confirmDelete]), each by its stored id.
+ */
+data class HistoryUi(val sessions: List<SessionListRow>, val busy: Boolean = false, val error: String? = null,
+                     val editing: String? = null, val confirmDelete: String? = null)
 
-/** Past conversations (spec §2.5): [list] them, and [resume] the one the user picks. [state] is null while closed. */
+/**
+ * Past conversations (spec §2.5): [list] them, [resume] the one the user picks, [rename] (sessions-05) or [delete]
+ * (sessions-06) one. The core's rules for those live in [ChatSession]; this owns only the drawer's flow (SOLID-S), and
+ * lists the rows again after each change. [state] is null while closed.
+ */
 class SessionHistory(
     private val list: suspend () -> List<SessionListRow>,
     private val resume: suspend (sessionId: String) -> Unit,
+    private val rename: suspend (storedId: String, title: String) -> Unit,
+    private val delete: suspend (storedId: String) -> Unit,
 ) {
     private val screen = MutableStateFlow<HistoryUi?>(null)
     val state: StateFlow<HistoryUi?> = screen.asStateFlow()
@@ -40,5 +50,59 @@ class SessionHistory(
         } catch (failed: Exception) {
             screen.update { it?.copy(busy = false, error = forUser(failed)) }
         }
+    }
+
+    /** Starts renaming row [storedId] (null stops); not while a change runs. */
+    fun edit(storedId: String?) {
+        screen.update { ui -> if (ui == null || ui.busy) ui else ui.copy(editing = storedId, confirmDelete = null, error = null) }
+    }
+
+    /**
+     * Saves [title] on the row being renamed and lists the rows again: the title shown is the core's (invariant 5). An
+     * unchanged title closes the field (D6); a blank one is not sent (D5). A refusal keeps the field, with its words.
+     */
+    suspend fun saveTitle(title: String) {
+        val ui = screen.value?.takeUnless { it.busy } ?: return
+        val id = ui.editing ?: return
+        val next = title.trim()
+        if (next.isEmpty()) return
+        if (next == ui.sessions.find { it.id == id }?.title?.trim()) return edit(null)
+        screen.update { it?.copy(busy = true, error = null) }
+        try {
+            rename(id, next)
+        } catch (failed: Exception) {
+            screen.update { it?.copy(busy = false, error = forUser(failed)) }
+            return
+        }
+        relisted()
+    }
+
+    /** Asks to delete row [storedId] (null: not now); nothing is deleted until [confirmDelete]. */
+    fun askDelete(storedId: String?) {
+        screen.update { ui -> if (ui == null || ui.busy) ui else ui.copy(confirmDelete = storedId, editing = null, error = null) }
+    }
+
+    /** Deletes the row the user confirmed, then lists the rows again; a refusal is shown and the list stays (D8). */
+    suspend fun confirmDelete() {
+        val id = screen.value?.takeUnless { it.busy }?.confirmDelete ?: return
+        screen.update { it?.copy(confirmDelete = null, busy = true, error = null) }
+        try {
+            delete(id)
+        } catch (failed: Exception) {
+            screen.update { it?.copy(busy = false, error = forUser(failed)) }
+            return
+        }
+        relisted()
+    }
+
+    /** After a change: the core's rows again, into an open drawer; a closed one stays closed. */
+    private suspend fun relisted() {
+        val rows = try {
+            list()
+        } catch (failed: Exception) {
+            screen.update { it?.copy(busy = false, editing = null, error = forUser(failed)) }
+            return
+        }
+        screen.update { it?.let { HistoryUi(rows) } }
     }
 }

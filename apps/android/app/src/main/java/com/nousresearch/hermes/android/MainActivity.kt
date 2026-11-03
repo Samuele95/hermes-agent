@@ -43,6 +43,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.nousresearch.hermes.android.chat.ChatScreen
 import com.nousresearch.hermes.android.chat.PromptAnswers
+import com.nousresearch.hermes.android.chat.SessionActions
 import com.nousresearch.hermes.android.gateway.GatewayScreen
 import com.nousresearch.hermes.android.gateway.GatewayUi
 import com.nousresearch.hermes.android.gateway.TelegramSetup
@@ -114,6 +115,8 @@ class MainActivity : ComponentActivity() {
                                        // The drawer's sessions load as it opens; a tap continues one.
                                        sessions = history, onSessions = { open -> if (open) app.history { open() } else state.history.close() },
                                        onPickSession = { id -> app.history { pick(id) } },
+                                       sessionActions = SessionActions(edit = state.history::edit, saveTitle = { title -> app.history { saveTitle(title) } },
+                                                                       askDelete = state.history::askDelete, confirmDelete = { app.history { confirmDelete() } }),
                                        context = context, onContext = { app.context { open() } },
                                        onCompress = { focus -> app.context { compress(focus) } }, onCloseContext = state.context::close,
                                        onSend = { text ->

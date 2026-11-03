@@ -1,7 +1,9 @@
 package com.nousresearch.hermes.android.chat
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,20 +18,37 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
@@ -37,8 +56,11 @@ import androidx.compose.ui.unit.sp
 import com.nousresearch.hermes.android.R
 import com.nousresearch.hermes.android.ui.Hermes
 import com.nousresearch.hermes.android.ui.HermesIcons
+import com.nousresearch.hermes.android.ui.PrimaryButton
+import com.nousresearch.hermes.android.ui.SecondaryButton
 import com.nousresearch.hermes.android.ui.SectionLabel
 import com.nousresearch.hermes.android.ui.WordmarkFont
+import com.nousresearch.hermes.bridge.protocol.SessionListRow
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
@@ -46,12 +68,18 @@ import java.util.Locale
 /** One place the drawer leads to. */
 data class DrawerLink(val icon: ImageVector, val label: String, val tag: String, val go: () -> Unit)
 
+/** What a session row's menu does (sessions-05/06): [edit] / [askDelete] take a stored id, null to stop. */
+class SessionActions(val edit: (storedId: String?) -> Unit, val saveTitle: (String) -> Unit,
+                     val askDelete: (storedId: String?) -> Unit, val confirmDelete: () -> Unit)
+
 /**
  * The drawer the chat slides out, in the shape of the desktop's sidebar: the brand, a new chat and the places the
- * app has, then the sessions, newest first under their headings; [about] (the runtime line) closes it.
+ * app has, then the sessions, newest first under their headings; [about] (the runtime line) closes it. With [actions],
+ * a long press on a session offers to rename or delete it.
  */
 @Composable
-fun ColumnScope.SessionDrawerContent(links: List<DrawerLink>, sessions: HistoryUi?, onPick: (String) -> Unit, about: String?) {
+fun ColumnScope.SessionDrawerContent(links: List<DrawerLink>, sessions: HistoryUi?, onPick: (String) -> Unit, about: String?,
+                                     actions: SessionActions? = null) {
     Row(Modifier.padding(start = 20.dp, end = 16.dp, top = 20.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         Image(painterResource(if (Hermes.colors.dark) R.drawable.brand_mark_dark else R.drawable.brand_mark), null,
               Modifier.size(32.dp).clip(RoundedCornerShape(8.dp)))
@@ -62,7 +90,7 @@ fun ColumnScope.SessionDrawerContent(links: List<DrawerLink>, sessions: HistoryU
     links.forEach { DrawerRow(it) }
     if (sessions != null) {
         Caption(stringResource(R.string.sessions_title), Modifier.padding(top = 12.dp))
-        SessionList(sessions, onPick, Modifier.weight(1f))
+        SessionList(sessions, onPick, Modifier.weight(1f), actions)
     } else Spacer(Modifier.weight(1f))
     about?.let {
         Text(it, Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp), style = MaterialTheme.typography.labelSmall,
@@ -91,11 +119,15 @@ private fun Caption(label: String, modifier: Modifier = Modifier) {
     }
 }
 
-/** Past conversations under their headings (spec §2.5); a tap continues one. */
+/**
+ * Past conversations under their headings (spec §2.5); a tap continues one. With [actions], a long press opens the
+ * row's menu (Rename… · Delete), the row being renamed is a title field, and a delete asks first.
+ */
 @Composable
-fun SessionList(ui: HistoryUi, onPick: (String) -> Unit, modifier: Modifier = Modifier) {
+fun SessionList(ui: HistoryUi, onPick: (String) -> Unit, modifier: Modifier = Modifier, actions: SessionActions? = null) {
     val now = remember(ui) { System.currentTimeMillis() }
     val groups = remember(ui.sessions, now) { groupSessions(ui.sessions, now) }
+    var menuFor by remember { mutableStateOf<String?>(null) }  // the row whose menu is open: transient UI (D7)
     Column(modifier.fillMaxWidth().testTag("history")) {
         if (ui.busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp).height(2.dp))
         ui.error?.let {
@@ -113,19 +145,90 @@ fun SessionList(ui: HistoryUi, onPick: (String) -> Unit, modifier: Modifier = Mo
                          style = MaterialTheme.typography.labelMedium, color = Hermes.colors.textTertiary)
                 }
                 items(group.sessions, key = { it.id }) { row ->
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp).clip(RoundedCornerShape(8.dp))
-                            .clickable(enabled = !ui.busy) { onPick(row.id) }.padding(horizontal = 12.dp, vertical = 9.dp),
-                        verticalAlignment = Alignment.CenterVertically) {
-                        Text(row.title.ifBlank { row.preview }.ifBlank { row.id }, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium,
-                             maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Box(Modifier.padding(start = 8.dp)) {
-                            Text(sessionAge(row.startedAt, now), style = MaterialTheme.typography.labelSmall, color = Hermes.colors.textTertiary)
-                        }
+                    if (actions != null && ui.editing == row.id) RenameField(row, ui.busy, actions)
+                    else Box {
+                        SessionRow(row, now, enabled = !ui.busy, onPick = { onPick(row.id) },
+                                   onMenu = actions?.let { { menuFor = row.id } })
+                        if (actions != null) RowMenu(open = menuFor == row.id, onDismiss = { menuFor = null },
+                                                     onRename = { menuFor = null; actions.edit(row.id) },
+                                                     onDelete = { menuFor = null; actions.askDelete(row.id) })
                     }
                 }
             }
         }
     }
+    if (actions != null) ui.confirmDelete?.let { id -> DeleteDialog(ui.sessions.find { it.id == id }?.label() ?: id, actions) }
+}
+
+/** What a row is called: its title, else the start of its first message, else its id. */
+private fun SessionListRow.label() = title.ifBlank { preview }.ifBlank { id }
+
+@Composable
+private fun SessionRow(row: SessionListRow, now: Long, enabled: Boolean, onPick: () -> Unit, onMenu: (() -> Unit)?) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp).clip(RoundedCornerShape(8.dp))
+            .combinedClickable(enabled = enabled, onClick = onPick, onLongClickLabel = stringResource(R.string.session_actions),
+                               onLongClick = onMenu)
+            .padding(horizontal = 12.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Text(row.label(), Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Box(Modifier.padding(start = 8.dp)) {
+            Text(sessionAge(row.startedAt, now), style = MaterialTheme.typography.labelSmall, color = Hermes.colors.textTertiary)
+        }
+    }
+}
+
+/** A row's menu, as the desktop sidebar's: Rename… and Delete. */
+@Composable
+private fun RowMenu(open: Boolean, onDismiss: () -> Unit, onRename: () -> Unit, onDelete: () -> Unit) {
+    DropdownMenu(expanded = open, onDismissRequest = onDismiss) {
+        DropdownMenuItem(text = { Text(stringResource(R.string.session_rename)) }, onClick = onRename, Modifier.testTag("session-rename"),
+                         leadingIcon = { Icon(HermesIcons.Pencil, null, Modifier.size(16.dp)) })
+        DropdownMenuItem(text = { Text(stringResource(R.string.session_delete), color = MaterialTheme.colorScheme.error) }, onClick = onDelete,
+                         Modifier.testTag("session-delete"),
+                         leadingIcon = { Icon(HermesIcons.Trash, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.error) })
+    }
+}
+
+/**
+ * The row being renamed: its title, selected, in a field. Done or the check saves it (a blank one cannot be saved,
+ * D5); Back or the cross stops. Composed after the chat's drawer Back handler, so Back stops the rename first.
+ */
+@Composable
+private fun RenameField(row: SessionListRow, busy: Boolean, actions: SessionActions) {
+    var typed by rememberSaveable(row.id, stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue(row.title, TextRange(0, row.title.length)))
+    }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(row.id) { focus.requestFocus() }
+    BackHandler { actions.edit(null) }
+    val ok = typed.text.isNotBlank() && !busy
+    val save = { if (ok) actions.saveTitle(typed.text) }
+    OutlinedTextField(typed, { typed = it },
+                      Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp).focusRequester(focus).testTag("rename-field"),
+                      singleLine = true, enabled = !busy, placeholder = { Text(stringResource(R.string.session_untitled)) },
+                      keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { save() }),
+                      trailingIcon = {
+                          Row {
+                              IconButton(save, Modifier.testTag("rename-save"), enabled = ok) {
+                                  Icon(HermesIcons.Check, stringResource(R.string.session_rename_save))
+                              }
+                              IconButton({ actions.edit(null) }, Modifier.testTag("rename-cancel")) {
+                                  Icon(HermesIcons.Close, stringResource(R.string.session_rename_cancel))
+                              }
+                          }
+                      })
+}
+
+/** Asks before a row is deleted, in the desktop's words; Delete hands over to the drawer's progress line (D8). */
+@Composable
+private fun DeleteDialog(label: String, actions: SessionActions) {
+    AlertDialog(onDismissRequest = { actions.askDelete(null) }, modifier = Modifier.testTag("delete-dialog"),
+                containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                title = { Text(stringResource(R.string.session_delete_title)) },
+                text = { Text(stringResource(R.string.session_delete_body, label)) },
+                confirmButton = { PrimaryButton(stringResource(R.string.session_delete), actions.confirmDelete, Modifier.testTag("delete-confirm")) },
+                dismissButton = { SecondaryButton(stringResource(R.string.session_cancel), { actions.askDelete(null) },
+                                                  Modifier.testTag("delete-cancel")) })
 }
 
 @Composable
