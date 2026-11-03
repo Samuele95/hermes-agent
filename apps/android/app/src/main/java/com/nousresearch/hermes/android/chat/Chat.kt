@@ -8,7 +8,8 @@ import kotlinx.serialization.json.JsonPrimitive
 
 /** One item of a chat's transcript. */
 sealed interface Entry {
-    data class User(val text: String) : Entry
+    /** The user's words; [rowId] is the core's durable row for them once the core names it (null: unproven, never "none"). */
+    data class User(val text: String, val rowId: Long? = null) : Entry
 
     /** The agent's commentary between tool calls, sealed as its own segment while its turn runs on (not its answer). */
     data class Interim(val text: String) : Entry
@@ -20,6 +21,9 @@ sealed interface Entry {
 
     data class Notice(val text: String) : Entry
 }
+
+/** The last prompt, to run again: its place in the transcript, its words, and the core's row id when known. */
+data class Retry(val index: Int, val text: String, val rowId: Long?)
 
 /**
  * A chat's transcript. While a turn runs, [streaming] is the reply written since the turn began or since its last
@@ -37,6 +41,25 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
     fun asked(prompt: Prompt): Chat = copy(prompts = prompts + prompt)
 
     fun settled(id: String): Chat = copy(prompts = prompts.filterNot { it.id == id })
+
+    /** The newest prompt takes the row id the core named for it; one already named, or an id shown elsewhere, stays (D2). */
+    fun boundUser(rowId: Long): Chat {
+        val i = entries.indexOfLast { it is Entry.User }
+        val user = entries.getOrNull(i) as? Entry.User ?: return this
+        if (user.rowId != null || entries.any { it is Entry.User && it.rowId == rowId }) return this
+        return copy(entries = entries.toMutableList().apply { set(i, user.copy(rowId = rowId)) })
+    }
+
+    /** The last prompt, when nothing runs and something answered it (D3); null otherwise. */
+    fun retryTarget(): Retry? {
+        if (running) return null
+        val i = entries.indexOfLast { it is Entry.User }
+        val user = entries.getOrNull(i) as? Entry.User ?: return null
+        return Retry(i, user.text, user.rowId).takeIf { i < entries.lastIndex && user.text.isNotBlank() }
+    }
+
+    /** The transcript before [target]'s prompt: what the core keeps when it cuts before that row. */
+    fun rewound(target: Retry): Chat = copy(entries = entries.take(target.index))
 
     /** The chat after one event of its session. A payload the app cannot read leaves it unchanged. */
     fun reduce(event: CoreEvent): Chat = runCatching { apply(event) }.getOrDefault(this)
@@ -71,7 +94,8 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
         // The completed text is authoritative; a structured (parts) completion keeps what was streamed.
         val text = (done.text as? JsonPrimitive)?.takeIf { it.isString }?.content ?: streaming.orEmpty()
         val thought = done.reasoning?.takeIf { it.isNotBlank() } ?: reasoning?.takeIf { it.isNotBlank() }
-        return copy(entries = entries + Entry.Reply(text, done.status ?: TurnStatus.COMPLETE, done.error, thought),
-                    streaming = null, activity = null, reasoning = null)
+        val ended = copy(entries = entries + Entry.Reply(text, done.status ?: TurnStatus.COMPLETE, done.error, thought),
+                         streaming = null, activity = null, reasoning = null)
+        return done.persistedTurn?.userRowId?.let(ended::boundUser) ?: ended
     }
 }

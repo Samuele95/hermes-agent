@@ -27,4 +27,12 @@ class TranscriptTest {
 
         assertEquals(listOf(Entry.Tool("history-1", "terminal", null, done = true)), transcriptOf(messages))
     }
+
+    @Test
+    fun aUserRowKeepsItsRowId() {
+        val messages = listOf(TranscriptMessage(role = "user", text = "hi", rowId = 5),
+                              TranscriptMessage(role = "assistant", text = "Hello", rowId = 6))
+
+        assertEquals(listOf(Entry.User("hi", 5), Entry.Reply("Hello", TurnStatus.COMPLETE)), transcriptOf(messages))
+    }
 }

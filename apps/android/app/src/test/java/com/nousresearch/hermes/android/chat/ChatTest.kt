@@ -221,4 +221,45 @@ class ChatTest {
         assertEquals(emptyList<Prompt>(), denied.prompts)
         assertEquals(emptyList<Prompt>(), asked.settled("srq-1").settled("srq-2").prompts)
     }
+
+    @Test
+    fun theCoreNamesThePromptsRowWhenItsTurnCompletes() {
+        val named = Chat().sent("hi").after(event("message.start"), event("message.complete",
+            """{"text":"Hello","persisted_turn":{"row_ids":[7,8],"complete":true,"user_row_id":7}}"""))
+        assertEquals(listOf(Entry.User("hi", 7), Entry.Reply("Hello", TurnStatus.COMPLETE)), named.entries)
+
+        // A completion without the receipt leaves the prompt unproven.
+        val unnamed = Chat().sent("hi").after(event("message.start"), event("message.complete", """{"text":"Hello"}"""))
+        assertEquals(Entry.User("hi"), unnamed.entries.first())
+    }
+
+    @Test
+    fun onlyTheNewestUnnamedPromptTakesARowId() {
+        val reply = Entry.Reply("r", TurnStatus.COMPLETE)
+        val newestNamed = Chat(listOf(Entry.User("a"), reply, Entry.User("b", 9), reply))
+        assertEquals(newestNamed, newestNamed.boundUser(12))  // the older unnamed prompt is not the newest one
+
+        val unnamed = Chat(listOf(Entry.User("a", 3), reply, Entry.User("b")))
+        assertEquals(unnamed, unnamed.boundUser(3))  // an id already shown stays where it is
+        assertEquals(listOf(Entry.User("a", 3), reply, Entry.User("b", 12)), unnamed.boundUser(12).entries)
+    }
+
+    @Test
+    fun theRetryTargetIsTheLastAnsweredPromptWhileNothingRuns() {
+        val reply = Entry.Reply("r", TurnStatus.COMPLETE)
+        assertEquals(null, Chat().retryTarget())
+        assertEquals(null, Chat(listOf(Entry.User("a"))).retryTarget())  // no answer yet (D3)
+        assertEquals(null, Chat(listOf(Entry.User("a", 1), reply), streaming = "").retryTarget())  // running
+        assertEquals(null, Chat(listOf(Entry.User("  "), Entry.Notice("x"))).retryTarget())  // blank
+
+        assertEquals(Retry(2, "b", 2), Chat(listOf(Entry.User("a", 1), reply, Entry.User("b", 2), Entry.Notice("x"))).retryTarget())
+    }
+
+    @Test
+    fun rewindingKeepsWhatCameBeforeThePrompt() {
+        val reply = Entry.Reply("r", TurnStatus.COMPLETE)
+        val chat = Chat(listOf(Entry.User("a", 1), reply, Entry.User("b", 2), Entry.Notice("x")), model = "kimi-k2")
+
+        assertEquals(Chat(listOf(Entry.User("a", 1), reply), model = "kimi-k2"), chat.rewound(Retry(2, "b", 2)))
+    }
 }

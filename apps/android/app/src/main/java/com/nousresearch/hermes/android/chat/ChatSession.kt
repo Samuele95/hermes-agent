@@ -19,6 +19,7 @@ import com.nousresearch.hermes.bridge.protocol.SessionCloseParams
 import com.nousresearch.hermes.bridge.protocol.Requests
 import com.nousresearch.hermes.bridge.protocol.SessionCreateParams
 import com.nousresearch.hermes.bridge.protocol.SessionDeleteParams
+import com.nousresearch.hermes.bridge.protocol.SessionHistoryParams
 import com.nousresearch.hermes.bridge.protocol.SessionResumeParams
 import com.nousresearch.hermes.bridge.protocol.SessionListRow
 import com.nousresearch.hermes.bridge.protocol.SessionListParams
@@ -285,11 +286,77 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         val session = sessionId
         change { it.copy(chat = it.chat.sent(text)) }
         try {
-            core.call(Methods.PROMPT_SUBMIT, PromptSubmitParams(sessionId = session, text = JsonPrimitive(text)))
+            val result = core.call(Methods.PROMPT_SUBMIT, PromptSubmitParams(sessionId = session, text = JsonPrimitive(text)))
+            result.userRowId?.let { bind(session, it) }
         } catch (refused: CoreError) {
             say(refused.message ?: "The core refused the prompt (${refused.code}).")
         } catch (failed: Exception) {  // anything else: the message did not go out, and the user hears it
             say(forUser(failed))
+        }
+    }
+
+    /** The core named the row of [session]'s newest prompt; only while the chat is still on that session. */
+    private fun bind(session: String, rowId: Long) {
+        change { if (it.ref?.runtime == session) it.copy(chat = it.chat.boundUser(rowId)) else it }
+    }
+
+    /**
+     * Runs the last prompt again, as the desktop's Retry does: the core cuts its transcript before that prompt's row
+     * (`truncate_before_row_id`) and answers it anew. A prompt whose row the chat never learned is looked up in the
+     * core's history by its exact words; with no single match it is sent again after the old turn, nothing cut (D1).
+     * A refusal shows the core's transcript, re-read, with the core's words: never the one the app predicted.
+     */
+    suspend fun retry() {
+        val (session, target) = synchronized(lock) { live.ref?.runtime to live.chat.retryTarget() }
+        if (session == null || target == null) return
+        val rowId = target.rowId ?: rowIdOf(session, target.text)
+        var shownBefore: List<Entry>? = null
+        change { now ->
+            val again = now.chat.retryTarget()
+            // Decided in the one change that rewinds (EJ-78, D4): the chat left, a turn began, or the prompt moved → nothing.
+            if (now.ref?.runtime != session || again?.index != target.index || again.text != target.text) now
+            else {
+                shownBefore = now.chat.entries
+                now.copy(chat = (if (rowId != null) now.chat.rewound(target) else now.chat).sent(target.text))
+            }
+        }
+        val before = shownBefore ?: return
+        try {
+            val result = core.call(Methods.PROMPT_SUBMIT, PromptSubmitParams(
+                sessionId = session, text = JsonPrimitive(target.text), truncateBeforeRowId = rowId,
+                // The core cuts only with consent; a first-turn cut empties the transcript, which needs its own (D7: never deep).
+                confirmTruncate = rowId?.let { true }, confirmEmptyTruncate = rowId?.let { true }))
+            result.userRowId?.let { bind(session, it) }
+        } catch (failed: Exception) {
+            if (failed is CancellationException) throw failed
+            val words = if (failed is CoreError) failed.message ?: "The core refused the retry (${failed.code})." else forUser(failed)
+            resync(session, before, words)
+        }
+    }
+
+    /** The row of [text] in the core's history: the one user row with exactly those words, else null (D6, EJ-62). */
+    private suspend fun rowIdOf(session: String, text: String): Long? = try {
+        core.call(Methods.SESSION_HISTORY, SessionHistoryParams(sessionId = session)).messages
+            .filter { it.role == "user" && it.displayKind == null && it.rowId != null }
+            .singleOrNull { it.text.orEmpty().trim() == text.trim() }?.rowId
+    } catch (refused: CoreError) {  // no history to read: a plain resubmit, as the desktop degrades
+        null
+    }
+
+    /** After a refused retry: the core's transcript re-read (invariant 5), else [before] (D5); then [words]. */
+    private suspend fun resync(session: String, before: List<Entry>, words: String) {
+        val entries = try {
+            transcriptOf(core.call(Methods.SESSION_HISTORY, SessionHistoryParams(sessionId = session)).messages)
+        } catch (failed: Exception) {
+            if (failed is CancellationException) throw failed
+            before
+        }
+        change { now ->
+            when {
+                now.ref?.runtime != session -> now
+                now.chat.running -> now.copy(chat = now.chat.notice(words))  // a turn began after all: its events are the truth
+                else -> now.copy(chat = now.chat.copy(entries = entries).notice(words))
+            }
         }
     }
 

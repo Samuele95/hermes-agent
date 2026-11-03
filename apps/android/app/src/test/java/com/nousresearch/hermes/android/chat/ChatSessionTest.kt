@@ -44,6 +44,7 @@ class ChatSessionTest {
     private var contract = """"desktop_contract":${BackendContract.BACKEND_CONTRACT}"""
     private var config: () -> String = { """{"config":{"display":{}}}""" }
     private var mostRecent: () -> String = { """{"session_id":null}""" }
+    private var history: () -> String = { """{"count":0,"messages":[]}""" }
     // The core continues a compressed conversation at its tip and answers that key (no top-level stored id).
     private var resume: () -> String = { """{"session_id":"s-resumed","message_count":2,"session_key":"db-old-tip",
                                    "messages":[{"role":"user","text":"what's on my calendar?"},{"role":"assistant","text":"Two meetings."}],
@@ -60,6 +61,7 @@ class ChatSessionTest {
             "session.resume" -> resume()
             "session.most_recent" -> mostRecent()
             "config.get" -> config()
+            "session.history" -> history()
             else -> error("unexpected $method")
         }
     }
@@ -79,6 +81,9 @@ class ChatSessionTest {
 
     /** The calls after the first [skip], each as its method and the id it named. */
     private fun callsAfter(skip: Int) = core.calls.drop(skip).map { it.first to it.second["session_id"]?.jsonPrimitive?.content }
+
+    /** The params of the last prompt.submit; a field the app left unset is absent. */
+    private fun lastSubmit() = core.calls.last { it.first == "prompt.submit" }.second
 
     private fun TestScope.openChat() =
         ChatSession(core, host, backgroundScope, keepSecret = { name, value -> keepSecret(name, value) }, notifier = notifier)
@@ -815,5 +820,148 @@ class ChatSessionTest {
 
         assertEquals(listOf("config.get", "session.most_recent", "session.create"), callsAfter(0).map { it.first })
         assertEquals("s1", chat.sessionId)
+    }
+
+    @Test
+    fun aSentPromptLearnsItsRowIdFromTheCore() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        submit = { """{"status":"streaming","user_row_id":41}""" }
+
+        chat.send("hello")
+
+        assertEquals(listOf(Entry.User("hello", 41)), chat.state.value.entries)
+    }
+
+    @Test
+    fun retryRunsTheLastPromptAgainCuttingBeforeItsRow() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        submit = { """{"status":"streaming","user_row_id":41}""" }
+        chat.send("hello")
+        core.emit("message.start", "s1")
+        core.emit("message.complete", "s1", """{"text":"hi"}""")
+        submit = { """{"status":"streaming","user_row_id":52}""" }
+        val mark = core.calls.size
+
+        chat.retry()
+
+        assertEquals(listOf("prompt.submit"), callsAfter(mark).map { it.first })  // the id was known: no history call
+        val sent = lastSubmit()
+        assertEquals("s1", sent.getValue("session_id").jsonPrimitive.content)
+        assertEquals("hello", sent.getValue("text").jsonPrimitive.content)
+        assertEquals("41", sent.getValue("truncate_before_row_id").jsonPrimitive.content)
+        assertEquals("true", sent.getValue("confirm_truncate").jsonPrimitive.content)
+        assertEquals("true", sent.getValue("confirm_empty_truncate").jsonPrimitive.content)
+        assertFalse("never a deep cut (D7)", "confirm_deep_truncate" in sent)
+        assertEquals(listOf(Entry.User("hello", 52)), chat.state.value.entries)
+    }
+
+    @Test
+    fun aResumedConversationIsRetriedByTheRowIdsItCameBackWith() = runTest(UnconfinedTestDispatcher()) {
+        resume = { """{"session_id":"s-resumed","message_count":4,"session_key":"db-old-tip",
+                     "messages":[{"role":"user","text":"what's on my calendar?","row_id":10},{"role":"assistant","text":"Two meetings.","row_id":11},
+                                 {"role":"user","text":"and tomorrow?","row_id":12},{"role":"assistant","text":"One.","row_id":13}],
+                     "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT},"model":"kimi-k2"}}""" }
+        val chat = openChat().apply { open() }
+        chat.resume("db-old")
+        submit = { """{"status":"streaming","user_row_id":61}""" }
+
+        chat.retry()
+
+        val sent = lastSubmit()
+        assertEquals("s-resumed" to "12", sent.getValue("session_id").jsonPrimitive.content to sent.getValue("truncate_before_row_id").jsonPrimitive.content)
+        assertEquals(listOf(Entry.User("what's on my calendar?", 10), Entry.Reply("Two meetings.", TurnStatus.COMPLETE),
+                            Entry.User("and tomorrow?", 61)), chat.state.value.entries)
+    }
+
+    @Test
+    fun aPromptWithoutARowIdIsFoundInTheCoresHistory() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hello")
+        core.emit("message.start", "s1")
+        core.emit("message.complete", "s1", """{"text":"hi"}""")
+        history = { """{"count":2,"messages":[{"role":"user","text":"hello","row_id":5},{"role":"assistant","text":"hi","row_id":6}]}""" }
+        val mark = core.calls.size
+
+        chat.retry()
+
+        assertEquals(listOf("session.history" to "s1", "prompt.submit" to "s1"), callsAfter(mark))
+        assertEquals("5", lastSubmit().getValue("truncate_before_row_id").jsonPrimitive.content)
+    }
+
+    @Test
+    fun aPromptTheHistoryCannotPinIsSentAgainWithoutACut() = runTest(UnconfinedTestDispatcher()) {
+        val answers = listOf(
+            """{"count":2,"messages":[{"role":"user","text":"ok","row_id":3},{"role":"user","text":"ok","row_id":7}]}""",  // two
+            """{"count":1,"messages":[{"role":"assistant","text":"done","row_id":4}]}""",                                    // none
+            """{"count":1,"messages":[{"role":"user","text":"ok","row_id":3,"display_kind":"skill_invocation"}]}""",         // a skill row
+        )
+        for ((i, answer) in answers.withIndex()) {
+            val chat = openChat().apply { open() }
+            val session = chat.sessionId
+            chat.send("ok")
+            core.emit("message.start", session)
+            core.emit("message.complete", session, """{"text":"done"}""")
+            history = { answer }
+
+            chat.retry()
+
+            val sent = lastSubmit()
+            assertFalse("answer $i: no cut", "truncate_before_row_id" in sent)
+            assertFalse("answer $i: no consent", "confirm_truncate" in sent)
+            assertEquals("answer $i: appended (D1)", listOf(Entry.User("ok"), Entry.Reply("done", TurnStatus.COMPLETE), Entry.User("ok")),
+                         chat.state.value.entries)
+        }
+    }
+
+    @Test
+    fun aRefusedRetryShowsTheCoresTranscriptAndWhy() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        submit = { """{"status":"streaming","user_row_id":41}""" }
+        chat.send("hello")
+        core.emit("message.start", "s1")
+        core.emit("message.complete", "s1", """{"text":"hi"}""")
+        submit = { throw CoreError(4018, "target user message is no longer in session history") }
+        history = { """{"count":2,"messages":[{"role":"user","text":"hello","row_id":41},{"role":"assistant","text":"hi there","row_id":42}]}""" }
+        val mark = core.calls.size
+
+        chat.retry()
+
+        assertEquals(listOf("prompt.submit", "session.history"), callsAfter(mark).map { it.first })
+        // The core's transcript, re-read: not the predicted [User("hello")].
+        assertEquals(listOf(Entry.User("hello", 41), Entry.Reply("hi there", TurnStatus.COMPLETE),
+                            Entry.Notice("target user message is no longer in session history")), chat.state.value.entries)
+    }
+
+    @Test
+    fun aRefusedRetryWhoseHistoryCannotBeReadPutsBackWhatWasShown() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        submit = { """{"status":"streaming","user_row_id":41}""" }
+        chat.send("hello")
+        core.emit("message.start", "s1")
+        core.emit("message.complete", "s1", """{"text":"hi"}""")
+        submit = { throw CoreError(4018, "target user message is no longer in session history") }
+        history = { throw CoreError(5000, "history unavailable") }
+
+        chat.retry()
+
+        assertEquals(listOf(Entry.User("hello", 41), Entry.Reply("hi", TurnStatus.COMPLETE),
+                            Entry.Notice("target user message is no longer in session history")), chat.state.value.entries)
+    }
+
+    @Test
+    fun retryAsksTheCoreNothingWhileATurnRunsOrBeforeAnAnswer() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        suspend fun unchanged(step: String) {
+            val (calls, entries) = core.calls.size to chat.state.value.entries
+            chat.retry()
+            assertEquals(step, calls, core.calls.size)
+            assertEquals(step, entries, chat.state.value.entries)
+        }
+
+        unchanged("a fresh chat")
+        chat.send("hello")
+        unchanged("no answer yet")
+        core.emit("message.start", "s1")
+        unchanged("running")
     }
 }
