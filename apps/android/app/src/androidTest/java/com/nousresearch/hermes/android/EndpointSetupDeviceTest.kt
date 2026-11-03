@@ -49,6 +49,8 @@ class EndpointSetupDeviceTest {
         const val NAME = "Hermes Device Test"
         const val KEY_ENV = "HERMES_CUSTOM_HERMES_DEVICE_TEST_API_KEY"
         const val KEY = "sk-hermes-endpoint-test-not-a-real-key"
+        const val ORPHAN = "HERMES_CUSTOM_HERMES_ORPHAN_TEST_API_KEY"  // a slot no saved entry names
+        const val PLAIN = "HERMES_DEVICE_TEST_PLAIN_TOKEN"  // a secret outside the custom-endpoint namespace
     }
 
     /** The core's credential rows for this endpoint, under its id or the legacy `custom:<name>` keys. */
@@ -64,6 +66,8 @@ class EndpointSetupDeviceTest {
 
     private fun forgetTheEndpoint() {
         app.secrets.delete(KEY_ENV)
+        app.secrets.delete(ORPHAN)
+        app.secrets.delete(PLAIN)
         EmbeddedPython.call("secrets_changed", "")
         runCatching { runBlocking { ready.gateway.call(Methods.MODEL_DISCONNECT, ModelDisconnectParams(ID)) } }
     }
@@ -155,6 +159,17 @@ class EndpointSetupDeviceTest {
         assertEquals(0, pooled())
         setup.open()
         assertEquals(listOf(SavedEndpoint(ID, NAME, baseUrl, model, false)), saved().filter { it.id == ID })
+    }
+
+    @Test
+    fun aKeySlotNoEntryNamesIsForgottenWhenSetupOpens() = runBlocking {
+        app.secrets.put(ORPHAN, "sk-orphan".toByteArray())
+        app.secrets.put(PLAIN, "plain".toByteArray())
+
+        setup.open()
+
+        assertNull("an unnamed custom-endpoint slot is taken back", app.secrets.get(ORPHAN))
+        assertArrayEquals("plain".toByteArray(), app.secrets.get(PLAIN))
     }
 
     @Test

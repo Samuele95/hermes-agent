@@ -201,10 +201,10 @@ def save_custom_endpoint(arg: str) -> str:
 
 
 def list_custom_endpoints(_arg: str) -> str:
-    """The app's call into :func:`hermes_android.endpoints.list_saved`."""
+    """The app's call into :func:`hermes_android.endpoints.list_saved` and :func:`~hermes_android.endpoints.named_keys`."""
     from hermes_android import endpoints
 
-    return json.dumps({"endpoints": endpoints.list_saved()})
+    return json.dumps({"endpoints": endpoints.list_saved(), "key_envs": endpoints.named_keys()})
 
 
 def delete_custom_endpoint(arg: str) -> str:

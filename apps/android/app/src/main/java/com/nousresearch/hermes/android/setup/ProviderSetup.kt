@@ -7,6 +7,7 @@ import com.nousresearch.hermes.bridge.CoreGateway
 import com.nousresearch.hermes.bridge.SecretStore
 import com.nousresearch.hermes.bridge.ask
 import com.nousresearch.hermes.bridge.contract.BridgeCalls
+import com.nousresearch.hermes.bridge.contract.BridgeSecrets
 import com.nousresearch.hermes.bridge.contract.DeleteCustomEndpointParams
 import com.nousresearch.hermes.bridge.contract.DiscoverEndpointsParams
 import com.nousresearch.hermes.bridge.contract.EndpointProbe
@@ -371,13 +372,38 @@ class ProviderSetup(
 
     private fun listing() = SetupStep.Providers(choices, saved, defaultGone)
 
-    /** The saved endpoints; a list that cannot be read is shown empty rather than blocking provider setup. */
-    private suspend fun savedEndpoints(): List<SavedEndpoint> = try {
-        bridge.ask(BridgeCalls.LIST_CUSTOM_ENDPOINTS).endpoints
-    } catch (cancelled: CancellationException) {
-        throw cancelled
-    } catch (_: Exception) {
-        emptyList()
+    /** The saved endpoints; a list that cannot be read is shown empty (rather than blocking setup) and forgets nothing. */
+    private suspend fun savedEndpoints(): List<SavedEndpoint> {
+        val held = runCatching { secrets.names() }.getOrDefault(emptySet())  // before the listing: a slot stored after it is not judged by an older config
+        val listed = try {
+            bridge.ask(BridgeCalls.LIST_CUSTOM_ENDPOINTS)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            return emptyList()
+        }
+        forgetUnnamed(held, listed.keyEnvs)
+        return listed.endpoints
+    }
+
+    /**
+     * Takes back every custom-endpoint slot ([held] by the keystore) that config.yaml no longer names: a keyless
+     * re-save or a forget that failed after a delete can leave one, exported to the core by the bulk keystore source
+     * (Dv17). Other secrets are never touched. Best effort: what fails here is retried at the next listing.
+     */
+    private suspend fun forgetUnnamed(held: Set<String>, named: List<String>) {
+        val gone = held.filter {
+            it.startsWith(BridgeSecrets.CUSTOM_ENDPOINT_SLOT_PREFIX) && it.endsWith(BridgeSecrets.CUSTOM_ENDPOINT_SLOT_SUFFIX) &&
+                it !in named && runCatching { secrets.delete(it) }.isSuccess  // one that fails does not keep the others
+        }
+        // No model.disconnect: a slot's name does not give back its endpoint's slug (the id rule is lossy).
+        if (gone.isEmpty()) return
+        try {
+            bridge.secretsChanged()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {  // the next reload revokes them; the list still shows
+        }
     }
 
     private suspend fun listed(refresh: Boolean): List<ProviderChoice> =

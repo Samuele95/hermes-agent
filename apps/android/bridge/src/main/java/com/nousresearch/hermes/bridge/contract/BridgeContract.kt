@@ -111,6 +111,7 @@ data class SaveCustomEndpointReply(
 @Serializable
 data class ListCustomEndpointsReply(
     val endpoints: List<SavedEndpoint>,
+    @SerialName("key_envs") val keyEnvs: List<String>,
 )
 
 @Serializable
@@ -256,7 +257,7 @@ object BridgeCalls {
     val GATEWAY_STATE = BridgeCall("gateway_state", NoParams.serializer(), GatewayStateReply.serializer())
     /** Adds a custom OpenAI-compatible endpoint to config.yaml (Dv20), or replaces the saved one id names (null for a new one); a new key goes to the keystore under key_env, an edit without one keeps the entry's key_env; forget names the endpoint's own keystore slot when config.yaml no longer names it after this save (the app forgets it, as for a delete), else null. */
     val SAVE_CUSTOM_ENDPOINT = BridgeCall("save_custom_endpoint", SaveCustomEndpointParams.serializer(), SaveCustomEndpointReply.serializer())
-    /** The custom endpoints saved in config.yaml (providers.*), without keys: has_key says whether one is in the keystore under the entry's key_env. */
+    /** The custom endpoints saved in config.yaml (providers.*), without keys: has_key says whether the entry names a key_env (the variable the app keeps its key under). key_envs is every key variable config.yaml names, under key_env or api_key_env in any section, listed or not; the app forgets a custom-endpoint slot it holds that is not among them. */
     val LIST_CUSTOM_ENDPOINTS = BridgeCall("list_custom_endpoints", NoParams.serializer(), ListCustomEndpointsReply.serializer())
     /** Removes a saved custom endpoint from config.yaml; names the keystore variable the app deletes (always the endpoint's own HERMES_CUSTOM_<ID>_API_KEY, never another provider's), and whether the default model was detached from it. */
     val DELETE_CUSTOM_ENDPOINT = BridgeCall("delete_custom_endpoint", DeleteCustomEndpointParams.serializer(), DeleteCustomEndpointReply.serializer())
@@ -302,4 +303,6 @@ data class GatewayStateEvent(
 object BridgeSecrets {
     const val SSH_IDENTITY = "TERMINAL_SSH_PRIVATE_KEY"
     const val TELEGRAM_BOT_TOKEN = "TELEGRAM_BOT_TOKEN"
+    const val CUSTOM_ENDPOINT_SLOT_PREFIX = "HERMES_CUSTOM_"
+    const val CUSTOM_ENDPOINT_SLOT_SUFFIX = "_API_KEY"
 }

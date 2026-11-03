@@ -99,6 +99,15 @@ def list_saved() -> list[dict[str, object]]:
     return rows
 
 
+def named_keys() -> list[str]:
+    """Every key variable config.yaml names (``key_env`` / ``api_key_env``, any section). Wider than
+    :func:`list_saved` on purpose: the listing is narrowed (D32), and an entry it does not show may still name a
+    slot the app holds, which must not be forgotten."""
+    from hermes_cli.config import load_config
+
+    return sorted(_named_key_vars(load_config()))
+
+
 def _names_endpoint(provider: object, endpoint_id: str, entry: dict) -> bool:
     """True when ``model.provider`` names this endpoint: its key, or ``custom:<key>`` / ``custom:<lowercased
     name>`` as the core's model switch spells it. Mirrors the Desktop's

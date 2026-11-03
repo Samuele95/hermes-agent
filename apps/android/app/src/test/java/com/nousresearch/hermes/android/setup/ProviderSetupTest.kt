@@ -30,11 +30,15 @@ class ProviderSetupTest {
     private var subnetFound: suspend () -> String? = { subnet }  // the shell's Wi-Fi adapter
     private fun argOf(function: String) = Json.parseToJsonElement(sent.last { it.first == function }.second).jsonObject
     private val held = mutableMapOf<String, ByteArray>()
+    private var failDeletes = 0  // the keystore's next deletes that throw
     private val secrets = object : SecretStore {
         override fun put(name: String, value: ByteArray) { held[name] = value.copyOf() }
         override fun get(name: String) = held[name]?.copyOf()  // a fresh copy, as the keystore decrypts one
-        override fun delete(name: String) { held.remove(name) }
-        override fun all() = held.toMap()
+        override fun delete(name: String) {
+            if (failDeletes > 0) { failDeletes--; throw IllegalStateException("keystore unavailable") }
+            held.remove(name)
+        }
+        override fun all() = held.mapValues { it.value.copyOf() }
     }
     private val log = mutableListOf<String>()
     private var deepseekRow = UNAUTHENTICATED_DEEPSEEK
@@ -60,7 +64,9 @@ class ProviderSetupTest {
     }
     private var endpointSaved: (JsonObject) -> String = { """{"id":"host-ollama","key_env":"HERMES_CUSTOM_HOST_OLLAMA_API_KEY","forget":null}""" }
     private var secretsChanged: () -> Unit = { log += "secrets_changed" }
+    private var onList: () -> Unit = {}  // runs while the Python half reads the list
     private val bridge = AppBridge { function, request ->
+        if (function == "list_custom_endpoints") onList()
         if (function == "delete_custom_endpoint") dropListed(Json.parseToJsonElement(request).jsonObject.getValue("id").jsonPrimitive.content)
         answers[function]?.let { sent += function to request; return@AppBridge it }
         when (function) {
@@ -78,12 +84,16 @@ class ProviderSetupTest {
 
     private fun ProviderSetup.step() = state.value?.step
 
-    /** As the Python half does: a deleted endpoint is no longer listed. */
+    /** The list answer: the saved [rows] and every key variable config.yaml names ([keyEnvs]). */
+    private fun listing(vararg rows: String, keyEnvs: List<String> = emptyList()) =
+        """{"endpoints":[${rows.joinToString(",")}],"key_envs":[${keyEnvs.joinToString(",") { "\"$it\"" }}]}"""
+
+    /** As the Python half does: a deleted endpoint is no longer listed, nor its own slot named. */
     private fun dropListed(id: String) {
-        val listed = answers["list_custom_endpoints"] ?: return
-        val kept = Json.parseToJsonElement(listed).jsonObject.getValue("endpoints").jsonArray
-            .filter { it.jsonObject.getValue("id").jsonPrimitive.content != id }
-        answers["list_custom_endpoints"] = JsonObject(mapOf("endpoints" to JsonArray(kept))).toString()
+        val listed = answers["list_custom_endpoints"]?.let { Json.parseToJsonElement(it).jsonObject } ?: return
+        val kept = listed.getValue("endpoints").jsonArray.filter { it.jsonObject.getValue("id").jsonPrimitive.content != id }
+        val named = listed.getValue("key_envs").jsonArray.filter { it.jsonPrimitive.content != "HERMES_CUSTOM_${id.uppercase()}_API_KEY" }
+        answers["list_custom_endpoints"] = JsonObject(mapOf("endpoints" to JsonArray(kept), "key_envs" to JsonArray(named))).toString()
     }
 
     @Test
@@ -392,7 +402,7 @@ class ProviderSetupTest {
 
     @Test
     fun theProviderListShowsTheSavedEndpoints() = runTest {
-        answers["list_custom_endpoints"] = """{"endpoints":[$dgx]}"""
+        answers["list_custom_endpoints"] = listing(dgx, keyEnvs = listOf("HERMES_CUSTOM_DGX_API_KEY"))
         setup.open()
 
         assertEquals(listOf("dgx"), (setup.state.value?.step as SetupStep.Providers).saved.map { it.id })
@@ -437,7 +447,7 @@ class ProviderSetupTest {
 
     @Test
     fun anEditKeepsItsIdAndItsKeyWhenNoNewKeyIsTyped() = runTest {
-        answers["list_custom_endpoints"] = """{"endpoints":[$dgx]}"""
+        answers["list_custom_endpoints"] = listing(dgx, keyEnvs = listOf("HERMES_CUSTOM_DGX_API_KEY"))
         held["HERMES_CUSTOM_DGX_API_KEY"] = "k".toByteArray()
         endpointSaved = { """{"id":"dgx","key_env":"HERMES_CUSTOM_DGX_API_KEY","forget":null}""" }
         setup.open()
@@ -455,7 +465,7 @@ class ProviderSetupTest {
 
     @Test
     fun deletingAnEndpointForgetsItsKeyAndDisconnectsIt() = runTest {
-        answers["list_custom_endpoints"] = """{"endpoints":[$dgx]}"""
+        answers["list_custom_endpoints"] = listing(dgx, keyEnvs = listOf("HERMES_CUSTOM_DGX_API_KEY"))
         answers["delete_custom_endpoint"] = """{"key_env":"HERMES_CUSTOM_DGX_API_KEY","was_default":false}"""
         held["HERMES_CUSTOM_DGX_API_KEY"] = "k".toByteArray()
         var disconnected: String? = null
@@ -547,7 +557,7 @@ class ProviderSetupTest {
 
     @Test
     fun deletingTheDefaultEndpointStartsTheChatAfreshOnTheProviderList() = runTest {
-        answers["list_custom_endpoints"] = """{"endpoints":[$dgx]}"""
+        answers["list_custom_endpoints"] = listing(dgx, keyEnvs = listOf("HERMES_CUSTOM_DGX_API_KEY"))
         answers["delete_custom_endpoint"] = """{"key_env":"HERMES_CUSTOM_DGX_API_KEY","was_default":true}"""
         setup.open()
 
@@ -562,7 +572,7 @@ class ProviderSetupTest {
 
     @Test
     fun deletingAnotherEndpointLeavesTheChatAlone() = runTest {
-        answers["list_custom_endpoints"] = """{"endpoints":[$dgx]}"""
+        answers["list_custom_endpoints"] = listing(dgx, keyEnvs = listOf("HERMES_CUSTOM_DGX_API_KEY"))
         answers["delete_custom_endpoint"] = """{"key_env":"HERMES_CUSTOM_DGX_API_KEY","was_default":false}"""
         setup.open()
 
@@ -574,7 +584,7 @@ class ProviderSetupTest {
 
     @Test
     fun aDeleteWhoseKeyCouldNotBeForgottenAtTheCoreSaysSoAndNoLongerListsTheEndpoint() = runTest {
-        answers["list_custom_endpoints"] = """{"endpoints":[$dgx]}"""
+        answers["list_custom_endpoints"] = listing(dgx, keyEnvs = listOf("HERMES_CUSTOM_DGX_API_KEY"))
         answers["delete_custom_endpoint"] = """{"key_env":"HERMES_CUSTOM_DGX_API_KEY","was_default":false}"""
         disconnect = { throw CoreError(5035, "HERMES_CUSTOM_DGX_API_KEY is managed elsewhere") }
         setup.open()
@@ -587,7 +597,7 @@ class ProviderSetupTest {
 
     @Test
     fun aDefaultDeletedWhileItsKeyCouldNotBeForgottenStillSaysNoDefaultIsLeft() = runTest {
-        answers["list_custom_endpoints"] = """{"endpoints":[$dgx]}"""
+        answers["list_custom_endpoints"] = listing(dgx, keyEnvs = listOf("HERMES_CUSTOM_DGX_API_KEY"))
         answers["delete_custom_endpoint"] = """{"key_env":"HERMES_CUSTOM_DGX_API_KEY","was_default":true}"""
         disconnect = { throw CoreError(5035, "HERMES_CUSTOM_DGX_API_KEY is managed elsewhere") }
         setup.open()
@@ -599,7 +609,7 @@ class ProviderSetupTest {
 
     @Test
     fun theListKeepsSayingTheDefaultIsGoneUntilSetupIsOpenedAgain() = runTest {
-        answers["list_custom_endpoints"] = """{"endpoints":[$dgx]}"""
+        answers["list_custom_endpoints"] = listing(dgx, keyEnvs = listOf("HERMES_CUSTOM_DGX_API_KEY"))
         answers["delete_custom_endpoint"] = """{"key_env":"HERMES_CUSTOM_DGX_API_KEY","was_default":true}"""
         setup.open()
         setup.deleteEndpoint("dgx")
@@ -611,6 +621,72 @@ class ProviderSetupTest {
         setup.close()
         setup.open()
         assertFalse((setup.step() as SetupStep.Providers).defaultGone)
+    }
+
+    @Test
+    fun aSlotNoEntryNamesIsForgottenWhenSetupLists() = runTest {
+        held["HERMES_CUSTOM_GONE_API_KEY"] = "orphan".toByteArray()
+        held["HERMES_CUSTOM_DGX_API_KEY"] = "named".toByteArray()
+        answers["list_custom_endpoints"] = listing(dgx, keyEnvs = listOf("HERMES_CUSTOM_DGX_API_KEY"))
+
+        setup.open()
+
+        assertFalse(held.containsKey("HERMES_CUSTOM_GONE_API_KEY"))
+        assertTrue(held.containsKey("HERMES_CUSTOM_DGX_API_KEY"))
+        assertEquals(1, log.count { it == "secrets_changed" })
+        assertTrue(log.none { it == "model.disconnect" })  // a slot does not name its slug
+    }
+
+    @Test
+    fun aSlotLeftByAFailedForgetIsGoneAtTheNextListing() = runTest {
+        held["HERMES_CUSTOM_DGX_API_KEY"] = "k".toByteArray()
+        answers["list_custom_endpoints"] = listing(dgx, keyEnvs = listOf("HERMES_CUSTOM_DGX_API_KEY"))
+        answers["delete_custom_endpoint"] = """{"key_env":"HERMES_CUSTOM_DGX_API_KEY","was_default":false}"""
+        setup.open()
+        failDeletes = 2  // the delete's forget, then the listing's retry right after it
+
+        setup.deleteEndpoint("dgx")
+
+        assertTrue(setup.state.value?.error != null)
+        assertEquals(emptyList<String>(), (setup.step() as SetupStep.Providers).saved.map { it.id })
+        assertTrue("the keystore still fails", held.containsKey("HERMES_CUSTOM_DGX_API_KEY"))
+
+        setup.close()
+        setup.open()
+
+        assertFalse(held.containsKey("HERMES_CUSTOM_DGX_API_KEY"))
+    }
+
+    @Test
+    fun theReconcileNeverTouchesOtherSecrets() = runTest {
+        val others = listOf("DEEPSEEK_API_KEY", "TERMINAL_SSH_PRIVATE_KEY", "TELEGRAM_BOT_TOKEN",
+                            "HERMES_CUSTOMER_API_KEY", "HERMES_CUSTOM_DGX_TOKEN")
+        others.forEach { held[it] = "x".toByteArray() }
+        answers["list_custom_endpoints"] = listing()
+
+        setup.open()
+
+        assertEquals(others.toSet(), held.keys)
+        assertTrue(log.none { it == "secrets_changed" })
+    }
+
+    @Test
+    fun aListingThatFailsForgetsNothing() = runTest {
+        held["HERMES_CUSTOM_GONE_API_KEY"] = "orphan".toByteArray()  // no list answer: the bridge call fails
+
+        setup.open()
+
+        assertTrue(held.containsKey("HERMES_CUSTOM_GONE_API_KEY"))
+    }
+
+    @Test
+    fun aSlotStoredWhileTheListIsReadIsKept() = runTest {
+        onList = { held["HERMES_CUSTOM_NEW_API_KEY"] = "k".toByteArray() }  // a save landing after config was read
+        answers["list_custom_endpoints"] = listing()
+
+        setup.open()
+
+        assertTrue(held.containsKey("HERMES_CUSTOM_NEW_API_KEY"))
     }
 
     private companion object {

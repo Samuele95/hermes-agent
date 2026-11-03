@@ -47,6 +47,16 @@ class KeystoreSecretStoreTest {
     }
 
     @Test
+    fun namesListTheStoredSecretsEvenOneThatFailsAuthenticationButNoStagingFile() {
+        store.put("OPENROUTER_API_KEY", "a".toByteArray())
+        store.put("HERMES_CUSTOM_GONE_API_KEY", "b".toByteArray())
+        File(dir, "HERMES_CUSTOM_GONE_API_KEY").writeBytes(ByteArray(40) { 7 })  // garbage: fails authentication
+        File(dir, ".DEEPSEEK_API_KEY.tmp").writeBytes(ByteArray(40))  // a put that never finished
+
+        assertEquals(setOf("OPENROUTER_API_KEY", "HERMES_CUSTOM_GONE_API_KEY"), store.names())
+    }
+
+    @Test
     fun aDeletedSecretIsGone() {
         store.put("OPENROUTER_API_KEY", "a".toByteArray())
 

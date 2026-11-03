@@ -19,6 +19,9 @@ interface SecretStore {
     /** Whether [name] is held; the plaintext read to find out is wiped at once. */
     fun contains(name: String): Boolean = get(name)?.also { it.fill(0) } != null
 
+    /** The names held, without their values (each plaintext read to find them is wiped). */
+    fun names(): Set<String> = all().onEach { it.value.fill(0) }.keys
+
     fun delete(name: String)
 
     fun all(): Map<String, ByteArray>
@@ -78,4 +81,7 @@ class KeystoreSecretStore(private val dir: File, private val key: () -> SecretKe
 
     override fun all(): Map<String, ByteArray> =
         (dir.list() ?: emptyArray()).filter(NAME::matches).sorted().mapNotNull { name -> get(name)?.let { name to it } }.toMap()
+
+    /** The blobs' names, nothing decrypted: one that fails authentication is still held (and can be deleted). */
+    override fun names(): Set<String> = (dir.list() ?: emptyArray()).filter(NAME::matches).toSet()
 }

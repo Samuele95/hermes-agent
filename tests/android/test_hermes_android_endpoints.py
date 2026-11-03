@@ -217,6 +217,21 @@ def _hand_written_numeric(home, *, default=False):
     (home / "config.yaml").write_text(text, encoding="utf-8")
 
 
+def test_the_listing_names_every_key_variable_config_names(home):
+    # Wider than the list on purpose: an entry the list does not show may still name a slot the app holds.
+    from hermes_cli.config import save_config
+    _hand_written_proxy(home)
+    save()
+    cfg = load_config()
+    cfg["providers"]["alias"] = {"name": "Alias", "url": "http://10.0.0.6/v1", "api_key_env": "HERMES_CUSTOM_ALIAS_API_KEY"}
+    cfg["model"] = {"default": "m", "key_env": "HERMES_CUSTOM_MODEL_API_KEY"}
+    save_config(cfg)
+
+    assert endpoints.named_keys() == sorted([KEY_ENV, "OPENROUTER_API_KEY", "HERMES_CUSTOM_ALIAS_API_KEY",
+                                             "HERMES_CUSTOM_MODEL_API_KEY"])
+    assert "alias" not in [e["id"] for e in listed()]
+
+
 def test_deleting_an_entry_keyed_by_another_variable_names_only_its_own_slot(home):
     _hand_written_proxy(home)
 
@@ -252,10 +267,11 @@ def test_the_list_and_delete_bridge_calls_answer_their_declared_replies(home):
     import hermes_android
     save(has_key=False)
 
-    rows = json.loads(hermes_android.call("list_custom_endpoints", ""))["endpoints"]
+    listing = json.loads(hermes_android.call("list_custom_endpoints", ""))
     gone = json.loads(hermes_android.call("delete_custom_endpoint", json.dumps({"id": "host-ollama"})))
 
-    assert [r["id"] for r in rows] == ["host-ollama"]
+    assert [r["id"] for r in listing["endpoints"]] == ["host-ollama"]
+    assert listing["key_envs"] == []  # the saved entry is keyless
     assert gone == {"key_env": "HERMES_CUSTOM_HOST_OLLAMA_API_KEY", "was_default": False}
 
 

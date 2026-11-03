@@ -166,3 +166,13 @@ def test_the_secret_names_are_the_ones_the_core_reads():
     assert CONTRACT["secrets"]["telegram_bot_token"] == PLATFORM_TOKEN_ENV_NAMES[Platform.TELEGRAM]
     # The SSH identity is read by the asyncssh transport, and the core keeps it from every child process.
     assert CONTRACT["secrets"]["ssh_identity"] in local_env_policy._ALWAYS_STRIP_KEYS
+
+
+def test_the_custom_endpoint_slot_rule_is_the_cores():
+    # The app tells a custom endpoint's key slot by its fixed prefix and suffix, never by a copy of the id rule.
+    from hermes_cli.config import custom_endpoint_key_env
+
+    for identity in ["dgx", "2070", "host ollama", "", "a.b:11434"]:
+        slot = custom_endpoint_key_env(identity)
+        assert slot.startswith(CONTRACT["secrets"]["custom_endpoint_slot_prefix"]), slot
+        assert slot.endswith(CONTRACT["secrets"]["custom_endpoint_slot_suffix"]), slot
