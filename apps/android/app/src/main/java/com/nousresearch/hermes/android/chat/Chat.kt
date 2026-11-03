@@ -32,13 +32,20 @@ data class Retry(val index: Int, val text: String, val rowId: Long?)
  * sealed commentary, [reasoning] the model's reasoning so far (when the core shows it), [activity] what the agent is
  * doing, and [prompts] what it is waiting on the user for. [model] is the model the session runs, as the core last named it.
  * [todos] is the agent's plan and [meter] how full the context is, both as the core last sent them.
+ * [submitted]: a prompt is on its way and its turn has not started yet (`prompt.submit` sent, no `message.start`).
  */
 data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? = null, val activity: String? = null,
                 val prompts: List<Prompt> = emptyList(), val reasoning: String? = null, val model: String? = null,
-                val todos: TodoList? = null, val meter: ContextMeter? = null) {
+                val todos: TodoList? = null, val meter: ContextMeter? = null, val submitted: Boolean = false) {
     val running: Boolean get() = streaming != null
 
-    fun sent(text: String): Chat = copy(entries = entries + Entry.User(text))
+    /** A turn runs or is about to: from the prompt's send to the turn's end (GoF-State; improve #4). */
+    val busy: Boolean get() = running || submitted
+
+    fun sent(text: String): Chat = copy(entries = entries + Entry.User(text), submitted = true)
+
+    /** The prompt did not go out (refused, or never reached the core): the chat is idle again. */
+    fun unsent(): Chat = copy(submitted = false)
 
     fun notice(text: String): Chat = copy(entries = entries + Entry.Notice(text))
 
@@ -54,9 +61,9 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
         return copy(entries = entries.toMutableList().apply { set(i, user.copy(rowId = rowId)) })
     }
 
-    /** The last prompt, when nothing runs and something answered it (D3); null otherwise. */
+    /** The last prompt, when nothing runs or is about to and something answered it (D3); null otherwise. */
     fun retryTarget(): Retry? {
-        if (running) return null
+        if (busy) return null
         val i = entries.indexOfLast { it is Entry.User }
         val user = entries.getOrNull(i) as? Entry.User ?: return null
         return Retry(i, user.text, user.rowId).takeIf { i < entries.lastIndex && user.text.isNotBlank() }
@@ -73,7 +80,7 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
     fun reduce(event: CoreEvent): Chat = runCatching { apply(event) }.getOrDefault(this)
 
     private fun apply(event: CoreEvent): Chat = when (event.type) {
-        Events.MESSAGE_START.name -> copy(streaming = "")
+        Events.MESSAGE_START.name -> copy(streaming = "", submitted = false)
         Events.MESSAGE_DELTA.name -> copy(streaming = streaming.orEmpty() + event.decode(Events.MESSAGE_DELTA)!!.text)
         // Commentary beside tool calls: sealed with the core's words, the buffer emptied (never null: the turn runs on).
         Events.MESSAGE_INTERIM.name -> event.decode(Events.MESSAGE_INTERIM)!!.text.trim()
@@ -96,7 +103,7 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
         }
         // The core may end a turn with `error` alone (a refused @-reference, an ownership refusal, a crash), and the
         // TUI treats every `error` as the end of the turn: so does the chat, keeping the message as a notice.
-        Events.ERROR.name -> notice(event.decode(Events.ERROR)!!.message).copy(streaming = null, activity = null, reasoning = null)
+        Events.ERROR.name -> notice(event.decode(Events.ERROR)!!.message).copy(streaming = null, activity = null, reasoning = null, submitted = false)
         Events.REQUEST_CANCEL.name -> settled(event.decode(Events.REQUEST_CANCEL)!!.id)
         Events.APPROVAL_CANCELLED.name -> event.decode(Events.APPROVAL_CANCELLED)!!.requestIds.toSet().let { ids ->
             copy(prompts = prompts.filterNot { it is Prompt.Approval && it.requestId in ids })
@@ -109,7 +116,7 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
         val text = (done.text as? JsonPrimitive)?.takeIf { it.isString }?.content ?: streaming.orEmpty()
         val thought = done.reasoning?.takeIf { it.isNotBlank() } ?: reasoning?.takeIf { it.isNotBlank() }
         val ended = copy(entries = entries + Entry.Reply(text, done.status ?: TurnStatus.COMPLETE, done.error, thought),
-                         streaming = null, activity = null, reasoning = null).measured(done.usage)
+                         streaming = null, activity = null, reasoning = null, submitted = false).measured(done.usage)
         return done.persistedTurn?.userRowId?.let(ended::boundUser) ?: ended
     }
 

@@ -410,6 +410,24 @@ class ChatScreenTest {
     }
 
     @Test
+    fun aPromptOnItsWayShowsStopAndHoldsRetryAndCompress() {
+        var chat by mutableStateOf(Chat(listOf(Entry.User("hi"), Entry.Notice("x")), submitted = true))
+        var stopped = 0
+        compose.setContent { ChatScreen(chat, onSend = {}, onStop = { stopped++ }, onRetry = {}, context = ContextUi(meter, breakdown)) }
+
+        compose.onNodeWithTag("send").assertDoesNotExist()  // Stop stands where Send was from the tap on
+        compose.onNodeWithTag("stop").performClick()
+        assertEquals(1, stopped)
+        compose.onNodeWithTag("retry").assertDoesNotExist()
+        compose.onNodeWithTag("compress").performScrollTo().assertIsNotEnabled()
+
+        chat = chat.unsent()  // refused, or never reached the core: Send comes back
+        compose.onNodeWithTag("send").assertExists()
+        compose.onNodeWithTag("retry").assertExists()
+        compose.onNodeWithTag("compress").performScrollTo().assertIsEnabled()
+    }
+
+    @Test
     fun theSheetClosesOnBackButNotWhileCompressing() {
         var context: ContextUi? by mutableStateOf(ContextUi(meter, breakdown, busy = true))
         var closes = 0

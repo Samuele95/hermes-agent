@@ -331,6 +331,48 @@ class ChatSessionTest {
     }
 
     @Test
+    fun aSecondSendBeforeTheTurnStartsSendsNothing() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        fun submits() = core.calls.count { it.first == "prompt.submit" }
+
+        chat.send("hello")
+        chat.send("hello")  // a second tap before the turn started (V5)
+        assertEquals(1, submits())
+        assertEquals(listOf(Entry.User("hello")), chat.state.value.entries)
+
+        core.emit("message.start", "s1")
+        chat.send("again")
+        assertEquals(1, submits())
+
+        core.emit("message.complete", "s1", """{"text":"hi"}""")
+        chat.send("again")
+        assertEquals(2, submits())
+        assertEquals("again", lastSubmit().getValue("text").jsonPrimitive.content)
+    }
+
+    @Test
+    fun stopBeforeTheTurnStartsCancelsIt() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("write an essay")
+
+        chat.cancel()
+
+        assertEquals("session.interrupt" to "s1", callsAfter(core.calls.size - 1).single())
+        core.emit("error", "s1", """{"message":"Turn cancelled before the agent was ready"}""")
+        assertFalse(chat.state.value.busy)
+        assertEquals(Entry.Notice("Turn cancelled before the agent was ready"), chat.state.value.entries.last())
+        assertEquals(emptyList<String>(), turns)  // no turn began
+
+        // The chat moved on from the busy session: Stop is about the chat's own, idle one.
+        val other = openChat().apply { open() }
+        other.send("hi")
+        other.open()
+        val mark = core.calls.size
+        other.cancel()
+        assertEquals(emptyList<Pair<String, String?>>(), callsAfter(mark))
+    }
+
+    @Test
     fun aPromptTheCoreRefusesBecomesANotice() = runTest(UnconfinedTestDispatcher()) {
         val chat = openChat().apply { open() }
         submit = { throw CoreError(4009, "session busy") }
@@ -338,6 +380,7 @@ class ChatSessionTest {
         chat.send("hello")
 
         assertEquals(listOf(Entry.User("hello"), Entry.Notice("session busy")), chat.state.value.entries)
+        assertFalse(chat.state.value.busy)  // Send comes back
     }
 
     @Test
@@ -463,6 +506,7 @@ class ChatSessionTest {
         chat.send("hello")
 
         assertTrue(chat.state.value.entries.last().let { it is Entry.Notice && it.text.startsWith("Something went wrong (") })
+        assertFalse(chat.state.value.busy)  // Send comes back
     }
 
     @Test
@@ -638,6 +682,25 @@ class ChatSessionTest {
     }
 
     @Test
+    fun aConversationLeftBeforeItsTurnStartsStaysOpen() = runTest(UnconfinedTestDispatcher()) {
+        val waysOut: List<suspend (ChatSession) -> Unit> = listOf({ it.open() }, { it.resume("db-old") })
+        for ((i, wayOut) in waysOut.withIndex()) {
+            val chat = openChat().apply { open() }
+            val left = chat.sessionId
+            core.emit("session.info", left, "{}")  // its build settled: an idle session would be closed now
+            chat.send("hello")  // prompt.submit answered, no message.start yet
+
+            wayOut(chat)
+
+            assertEquals("way out $i: the turn about to start runs on (V1)", emptyList<String>(), closed())
+            core.emit("message.start", left)
+            core.emit("message.complete", left, """{"text":"hi"}""")
+            assertEquals("way out $i: its turn ran in the core", emptyList<String>(), closed())
+            assertTrue("way out $i", chat.sessionId != left)
+        }
+    }
+
+    @Test
     fun resumingTheSessionTheChatIsInClosesNothing() = runTest(UnconfinedTestDispatcher()) {
         var created = 0
         val fresh = FakeCoreGateway { method, _ ->
@@ -744,6 +807,24 @@ class ChatSessionTest {
         assertEquals(emptyList<Pair<String, String?>>(), callsAfter(mark))
         assertEquals("s1", chat.sessionId)
         assertTrue(chat.state.value.running)
+    }
+
+    @Test
+    fun compressAndDeleteWaitForAPromptOnItsWay() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hi")  // no message.start yet
+        val mark = core.calls.size
+
+        val compressing = runCatching { chat.compress(null) }.exceptionOrNull()
+        assertTrue("$compressing", compressing is SetupRefusal)
+        assertEquals(ChatSession.STILL_REPLYING, compressing?.message)
+
+        val deleting = runCatching { chat.delete("db1") }.exceptionOrNull()
+        assertTrue("$deleting", deleting is SetupRefusal)
+        assertEquals(ChatSession.STILL_WORKING, deleting?.message)
+
+        assertEquals(emptyList<Pair<String, String?>>(), callsAfter(mark))  // neither session.compress nor session.create
+        assertEquals("s1", chat.sessionId)
     }
 
     @Test
@@ -1037,6 +1118,21 @@ class ChatSessionTest {
     }
 
     @Test
+    fun aRefusedRetryGivesSendBack() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        submit = { """{"status":"streaming","user_row_id":41}""" }
+        chat.send("hello")
+        core.emit("message.start", "s1")
+        core.emit("message.complete", "s1", """{"text":"hi"}""")
+        submit = { throw CoreError(4018, "target user message is no longer in session history") }
+        history = { """{"count":2,"messages":[{"role":"user","text":"hello","row_id":41},{"role":"assistant","text":"hi there","row_id":42}]}""" }
+
+        chat.retry()
+
+        assertFalse(chat.state.value.busy)  // retry's own sent() is undone with the resync
+    }
+
+    @Test
     fun aRetryWhoseHistoryCannotBeReadOrReachedIsSentAgainWithoutACut() = runTest(UnconfinedTestDispatcher()) {
         val answers: List<() -> String> = listOf(
             { """{"count":1,"messages":{"0":"ok"}}""" },  // an object where the list belongs: undecodable
@@ -1157,6 +1253,8 @@ class ChatSessionTest {
     fun aRefusedCompressionLeavesTheTranscriptAndEndsTheHold() = runTest(UnconfinedTestDispatcher()) {
         val chat = openChat().apply { open() }
         chat.send("hi")
+        core.emit("message.start", "s1")
+        core.emit("message.complete", "s1", """{"text":"hello"}""")
         compressReply = { throw CoreError(4009, "session busy — a /compress is running; run /compress when it finishes.") }
 
         val refused = try {
@@ -1167,9 +1265,24 @@ class ChatSessionTest {
         }
 
         assertEquals(4009, refused?.code)
-        assertEquals(listOf(Entry.User("hi")), chat.state.value.entries)
+        assertEquals(listOf(Entry.User("hi"), Entry.Reply("hello", TurnStatus.COMPLETE)), chat.state.value.entries)
         assertEquals(listOf("begin:compress:s1", "end:compress:s1"), turns.takeLast(2))
         assertFalse("a blank focus is none", core.calls.single { it.first == "session.compress" }.second.containsKey("focus_topic"))
+    }
+
+    @Test
+    fun aPromptSentDuringACompressionKeepsItsBubble() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        core.emit("message.complete", "s1", """{"text":"hello"}""")
+        // The user sends while the core compresses (the fake answers on the caller's thread; send does not suspend on it).
+        compressReply = { runBlocking { chat.send("next") }; COMPRESSED }
+
+        chat.compress(null)
+
+        assertEquals(Entry.User("next"), chat.state.value.entries.last())
+        assertFalse("the compressed transcript is not applied over it (V4)", chat.state.value.entries.contains(Entry.User("latest", 9)))
     }
 
     @Test

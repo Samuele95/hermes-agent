@@ -177,7 +177,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     suspend fun delete(storedId: String) {
         val now = synchronized(lock) { live }
         if (now.ref?.stored == storedId) {
-            if (now.chat.running) throw SetupRefusal(STILL_WORKING)
+            if (now.chat.busy) throw SetupRefusal(STILL_WORKING)
             opened()?.join()
         }
         try {
@@ -252,8 +252,9 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
             Live(ref, cards.fold(notice?.let(chat::notice) ?: chat) { shownChat, (p, _) -> shownChat.asked(p) },
                  cards.associate { (p, raw) -> p.id to raw })
         }
-        // Invariant 3, decided from the one atomic swap (EJ-78): an idle session the chat left is closed; a running one runs on.
-        val left = before.ref?.runtime?.takeIf { !before.chat.running && it != after.ref?.runtime }
+        // Invariant 3, decided from the one atomic swap (EJ-78): an idle session the chat left is closed; a busy one (a turn
+        // running or about to) runs on.
+        val left = before.ref?.runtime?.takeIf { !before.chat.busy && it != after.ref?.runtime }
         // The previous session's turn would end in events this chat no longer follows: it ends here for the app.
         syncTurn()
         // Questions that lost their card are settled rather than left waiting; one carried over (the same session
@@ -330,17 +331,27 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         fallback
     }
 
+    /** Sends [text] to the chat's session; nothing while a turn runs or is about to (Stop stands where Send was). */
     suspend fun send(text: String) {
-        val session = sessionId
-        change { it.copy(chat = it.chat.sent(text)) }
-        try {
-            val result = core.call(Methods.PROMPT_SUBMIT, PromptSubmitParams(sessionId = session, text = JsonPrimitive(text)))
-            result.userRowId?.let { bind(session, it) }
-        } catch (refused: CoreError) {
-            say(refused.message ?: "The core refused the prompt (${refused.code}).")
-        } catch (failed: Exception) {  // anything else: the message did not go out, and the user hears it
-            say(forUser(failed))
+        var session: String? = null
+        change { now ->  // the session and the bubble decided in one change (EJ-78)
+            val ref = checkNotNull(now.ref) { "open() the chat first" }
+            if (now.chat.busy) now else { session = ref.runtime; now.copy(chat = now.chat.sent(text)) }
         }
+        val to = session ?: return  // V5: a second tap before the turn started
+        try {
+            val result = core.call(Methods.PROMPT_SUBMIT, PromptSubmitParams(sessionId = to, text = JsonPrimitive(text)))
+            result.userRowId?.let { bind(to, it) }
+        } catch (refused: CoreError) {
+            unsent(to, refused.message ?: "The core refused the prompt (${refused.code}).")
+        } catch (failed: Exception) {  // anything else: the message did not go out, and the user hears it
+            unsent(to, forUser(failed))
+        }
+    }
+
+    /** [session]'s prompt did not go out: idle again if the chat is still there; [words] said either way (V7). */
+    private fun unsent(session: String, words: String) {
+        change { now -> now.copy(chat = (if (now.ref?.runtime == session) now.chat.unsent() else now.chat).notice(words)) }
     }
 
     /** The core named the row of [session]'s newest prompt; only while the chat is still on that session. */
@@ -402,7 +413,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
             when {
                 now.ref?.runtime != session -> now
                 now.chat.running -> now.copy(chat = now.chat.notice(words))  // a turn began after all: its events are the truth
-                else -> now.copy(chat = now.chat.copy(entries = entries).notice(words))
+                else -> now.copy(chat = now.chat.copy(entries = entries).unsent().notice(words))
             }
         }
     }
@@ -414,18 +425,18 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
      * compression is a model call (DC-B10). Returns what it did, in the core's words; a refusal is thrown.
      */
     suspend fun compress(focus: String?): String? {
-        val (session, running) = synchronized(lock) { live.ref?.runtime to live.chat.running }
+        val (session, busy) = synchronized(lock) { live.ref?.runtime to live.chat.busy }
         if (session == null) return null
-        if (running) throw SetupRefusal(STILL_REPLYING)
+        if (busy) throw SetupRefusal(STILL_REPLYING)
         val hold = "compress:$session"
         turns.begin(hold)
         try {
             val result = core.call(Methods.SESSION_COMPRESS,
                                    SessionCompressParams(sessionId = session, focusTopic = focus?.trim()?.ifEmpty { null }))
             change { now ->
-                // The chat left, or a turn began meanwhile: that session's own frames are the truth (as resync).
+                // The chat left, or a turn began or was sent meanwhile: that session's own frames are the truth (as resync; V4).
                 val ref = now.ref
-                if (ref?.runtime != session || now.chat.running) now
+                if (ref?.runtime != session || now.chat.busy) now
                 else now.copy(ref = result.info?.storedSessionId?.ifBlank { null }?.let { ref.copy(stored = it) } ?: ref,  // D4
                               chat = now.chat.compressed(result))
             }
@@ -437,12 +448,14 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
 
     /**
      * Stops the running turn, as the desktop's Stop does: the core interrupts it and ends it with an `interrupted`
-     * completion, which ends the turn here too. Nothing runs, nothing is asked.
+     * completion, which ends the turn here too; or the turn about to start, which the core ends with an `error`.
+     * Nothing runs, nothing is asked.
      */
     suspend fun cancel() {
-        if (!shown.value.running) return
+        // The session seen busy, read with its state (EJ-78): Stop before the turn started cancels it too (V6).
+        val session = synchronized(lock) { live.ref?.runtime?.takeIf { live.chat.busy } } ?: return
         try {
-            core.call(Methods.SESSION_INTERRUPT, SessionInterruptParams(sessionId = sessionId))
+            core.call(Methods.SESSION_INTERRUPT, SessionInterruptParams(sessionId = session))
         } catch (failed: Exception) {
             say(forUser(failed))
         }

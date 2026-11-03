@@ -42,6 +42,29 @@ class ChatTest {
     }
 
     @Test
+    fun aSentPromptIsBusyUntilItsTurnStartsAndEnds() {
+        val sent = Chat().sent("hi")
+        assertTrue(sent.busy)
+        assertFalse(sent.running)  // the turn host starts at message.start (V2)
+
+        val started = sent.reduce(event("message.start"))
+        assertTrue(started.busy && started.running)
+        assertFalse(started.submitted)
+        assertFalse(started.reduce(event("message.complete", """{"text":"Hello"}""")).busy)
+
+        // The core's cancel before the agent was ready ends with an error alone (V6).
+        val cancelled = sent.reduce(event("error", """{"message":"Turn cancelled before the agent was ready"}"""))
+        assertFalse(cancelled.busy)
+        assertEquals(Entry.Notice("Turn cancelled before the agent was ready"), cancelled.entries.last())
+        // A failed agent build completes the turn with no start.
+        assertFalse(sent.reduce(event("message.complete", """{"text":"x","status":"error","error":"agent init failed"}""")).busy)
+
+        val unsent = sent.unsent()
+        assertFalse(unsent.busy)
+        assertEquals(listOf(Entry.User("hi")), unsent.entries)
+    }
+
+    @Test
     fun aTurnTheCoreEndsWithAnErrorIsOverAndSaysWhy() {
         // prompt_turn emits message.start, then only `error` (a refused @-reference, an ownership refusal, a crash);
         // the TUI ends the turn on `error` too (turnController.recordError).
@@ -310,6 +333,15 @@ class ChatTest {
         assertEquals(null, Chat(listOf(Entry.User("  "), Entry.Notice("x"))).retryTarget())  // blank
 
         assertEquals(Retry(2, "b", 2), Chat(listOf(Entry.User("a", 1), reply, Entry.User("b", 2), Entry.Notice("x"))).retryTarget())
+    }
+
+    @Test
+    fun noRetryWhileAPromptIsOnItsWay() {
+        val reply = Entry.Reply("r", TurnStatus.COMPLETE)
+        val onItsWay = Chat(listOf(Entry.User("a", 1), reply)).sent("b").notice("x")
+
+        assertEquals(null, onItsWay.retryTarget())
+        assertEquals(Retry(2, "b", null), onItsWay.unsent().retryTarget())
     }
 
     @Test

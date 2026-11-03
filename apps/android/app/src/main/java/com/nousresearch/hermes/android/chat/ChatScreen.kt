@@ -137,7 +137,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
             // The agent's plan while it works through it (D1: a turn that ended leaves no stale plan pinned).
             chat.todos?.takeIf { chat.running && it.active }?.let { TodoStrip(it) }
             Composer(chat, onSend, onStop, onSetup, onContext)
-            context?.let { ContextSheet(it, running = chat.running, onCompress = onCompress, onClose = onCloseContext) }
+            context?.let { ContextSheet(it, running = chat.busy, onCompress = onCompress, onClose = onCloseContext) }
         }
     }
 }
@@ -369,7 +369,7 @@ private fun Problem(text: String, modifier: Modifier = Modifier) {
     }
 }
 
-/** The desktop's composer: a rounded field, the model it will ask beneath, and Send — or Stop while a turn runs. */
+/** The desktop's composer: a rounded field, the model it will ask beneath, and Send — or Stop while a turn runs or is about to. */
 @Composable
 private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, onSetup: (() -> Unit)?, onContext: (() -> Unit)?) {
     var draft by rememberSaveable { mutableStateOf("") }
@@ -394,7 +394,7 @@ private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, o
                 }
             }
             chat.meter?.let { ContextChip(it, onContext) }
-            if (chat.running) {
+            if (chat.busy) {
                 FilledIconButton(onStop, Modifier.size(36.dp).testTag("stop"),
                                  colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.onSurface,
                                                                                     contentColor = MaterialTheme.colorScheme.surface)) {
