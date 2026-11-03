@@ -20,7 +20,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -55,7 +54,7 @@ fun SetupScreen(setup: Setup, onPick: (String) -> Unit, onKey: (ByteArray) -> Un
                 onBack: () -> Unit, onClose: () -> Unit, modifier: Modifier = Modifier, onAddEndpoint: () -> Unit = {},
                 onEndpoint: (name: String, baseUrl: String, model: String, key: ByteArray?) -> Unit = { _, _, _, _ -> },
                 onOpenUrl: (String) -> Unit = {}, onForget: () -> Unit = {},
-                onFindServer: (address: String, key: ByteArray?) -> Unit = { _, _ -> }, onSearchNetwork: () -> Unit = {},
+                onFindServer: (address: String, key: ByteArray?, model: String) -> Unit = { _, _, _ -> }, onSearchNetwork: () -> Unit = {},
                 onEditEndpoint: (String) -> Unit = {}, onDeleteEndpoint: (String) -> Unit = {}) {
     val step = setup.step
     // The provider list is the first page (the brand mark heads it, as the desktop's first run); later steps go back.
@@ -138,19 +137,14 @@ private fun SignIn(step: SetupStep.SignIn, onOpenUrl: (String) -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun EndpointForm(step: SetupStep.Endpoint, enabled: Boolean, onEndpoint: (String, String, String, ByteArray?) -> Unit,
-                         onFindServer: (String, ByteArray?) -> Unit, onSearchNetwork: () -> Unit, onDeleteEndpoint: (String) -> Unit) {
+                         onFindServer: (String, ByteArray?, String) -> Unit, onSearchNetwork: () -> Unit, onDeleteEndpoint: (String) -> Unit) {
     val editing = step.editing
-    var address by rememberSaveable(editing?.id) { mutableStateOf(editing?.baseUrl ?: "") }
-    var model by rememberSaveable(editing?.id) { mutableStateOf(editing?.model ?: "") }
+    // Each server found starts the address and model again from what it answered, once: a rotation restores what the
+    // user typed since (the step outlives the activity, a keyed initial value is not re-applied).
+    var address by rememberSaveable(editing?.id, step.generation) { mutableStateOf(step.found?.baseUrl ?: editing?.baseUrl ?: "") }
+    var model by rememberSaveable(editing?.id, step.generation) { mutableStateOf(step.suggestedModel ?: editing?.model ?: "") }
     var name by rememberSaveable(editing?.id) { mutableStateOf(editing?.name ?: "") }
     var key by remember(editing?.id) { mutableStateOf("") }  // never saved state, as in KeyField
-    LaunchedEffect(step.found) {
-        // What the server answered at becomes the address. A model chosen before stays only if this server lists it:
-        // one picked from another server (or a typo) would be saved with this server's address.
-        val found = step.found ?: return@LaunchedEffect
-        address = found.baseUrl
-        if (model.trim() !in found.models) found.models.firstOrNull()?.let { model = it }
-    }
     // The server found belongs to the address it answered at: an address edited by hand since no longer shows its models.
     val found = step.found?.takeIf { it.baseUrl == address.trim() }
     val models = found?.models.orEmpty()
@@ -164,7 +158,7 @@ private fun EndpointForm(step: SetupStep.Endpoint, enabled: Boolean, onEndpoint:
                       visualTransformation = PasswordVisualTransformation(),
                       keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false))
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        SecondaryButton(stringResource(R.string.setup_find_server), { onFindServer(address.trim(), typedKey()) },
+        SecondaryButton(stringResource(R.string.setup_find_server), { onFindServer(address.trim(), typedKey(), model) },
                         Modifier.testTag("find-server"), enabled = enabled && address.isNotBlank())
         SecondaryButton(stringResource(R.string.setup_search_network), onSearchNetwork, Modifier.testTag("search-network"),
                         enabled = enabled && !step.scanning)
@@ -176,7 +170,7 @@ private fun EndpointForm(step: SetupStep.Endpoint, enabled: Boolean, onEndpoint:
             SectionCaption(stringResource(R.string.setup_found_on_network), Modifier.padding(top = 0.dp))
             found.forEachIndexed { i, server ->
                 ListRow(server.baseUrl, Modifier.testTag("found-$i"), detail = pluralStringResource(R.plurals.setup_found_models, server.models.size, kindLabel(server.kind), server.models.size),
-                        enabled = enabled, trailing = { Chevron() }) { onFindServer(server.baseUrl, null) }
+                        enabled = enabled, trailing = { Chevron() }) { onFindServer(server.baseUrl, null, model) }
             }
         }
     }

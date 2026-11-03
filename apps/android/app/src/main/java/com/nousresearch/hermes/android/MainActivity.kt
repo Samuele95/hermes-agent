@@ -97,7 +97,7 @@ class MainActivity : ComponentActivity() {
                                             onAddEndpoint = state.setup::addEndpoint, onOpenUrl = ::openInBrowser,
                                             onEndpoint = { name, url, model, key -> app.setup { saveEndpoint(name, url, model, key) } },
                                             onForget = { app.setup { forgetKey() } },
-                                            onFindServer = { address, key -> app.setup { findServer(address, key) } },
+                                            onFindServer = { address, key, model -> app.setup { findServer(address, key, model) } },
                                             onSearchNetwork = { app.setup { searchNetwork() } },
                                             onEditEndpoint = state.setup::editEndpoint,
                                             onDeleteEndpoint = { id -> app.setup { deleteEndpoint(id) } })

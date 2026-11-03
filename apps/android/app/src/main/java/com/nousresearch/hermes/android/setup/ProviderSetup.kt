@@ -50,10 +50,13 @@ sealed interface SetupStep {
     /**
      * A custom OpenAI-compatible endpoint (name, base URL, model, optional key): [editing] a saved one (else a new one),
      * the server [found] at the typed address (never a failure: that is the step's error), the network search's results
-     * ([scan]) and whether one runs ([scanning]).
+     * ([scan]) and whether one runs ([scanning]). [generation] counts the servers found on this form; each time it grows
+     * the form's address and model start again from [found] and [suggestedModel], and only then (a rotation keeps what
+     * the user typed since).
      */
     data class Endpoint(val editing: SavedEndpoint? = null, val found: FoundServer? = null,
-                        val scan: List<FoundServer>? = null, val scanning: Boolean = false) : SetupStep
+                        val scan: List<FoundServer>? = null, val scanning: Boolean = false,
+                        val suggestedModel: String? = null, val generation: Int = 0) : SetupStep
 
     /** A device-code sign-in waiting for the user to approve [userCode] at [url]. */
     data class SignIn(val provider: ProviderChoice, val loginId: String, val userCode: String, val url: String) : SetupStep
@@ -231,15 +234,16 @@ class ProviderSetup(
 
     /**
      * Asks for the model server behind [address] (a host, host:port or URL) and its models. [key] is used for this
-     * probe only and wiped after; nothing is stored until [saveEndpoint].
+     * probe only and wiped after; nothing is stored until [saveEndpoint]. [model]: what the form's model field holds;
+     * kept when the server lists it.
      */
-    suspend fun findServer(address: String, key: ByteArray?) {
+    suspend fun findServer(address: String, key: ByteArray?, model: String = "") {
         val shown = setup.value
         val form = shown?.step as? SetupStep.Endpoint ?: return run { key?.fill(0) }
         step(shown.showing) {
             // What an earlier probe found belongs to another address: saved with this one, it would name a wrong model.
             on(shown.showing) { it.copy(step = form.copy(found = null)) }
-            endpoints.find(form, address, key)
+            endpoints.find(form, address, key, model)
         }
     }
 

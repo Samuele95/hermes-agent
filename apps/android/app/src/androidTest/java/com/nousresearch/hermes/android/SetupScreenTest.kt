@@ -1,5 +1,6 @@
 package com.nousresearch.hermes.android
 
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
@@ -7,6 +8,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -40,13 +42,19 @@ class SetupScreenTest {
     private fun show(setup: Setup) = show { setup }
 
     /** [current] is read while composing: a state it reads changes what the screen shows, as the app's flow does. */
-    private fun show(current: () -> Setup) = compose.setContent {
-        SetupScreen(current(), onPick = { picked += "pick:$it" }, onKey = { picked += "key:" + String(it) },
+    private fun show(current: () -> Setup) = compose.setContent { Screen(current()) }
+
+    @Composable
+    private fun Screen(setup: Setup) {
+        SetupScreen(setup, onPick = { picked += "pick:$it" }, onKey = { picked += "key:" + String(it) },
                     onModel = { model, confirmed -> picked += "model:$model:$confirmed" }, onBack = {}, onClose = {},
                     onAddEndpoint = { picked += "add-endpoint" },
                     onEndpoint = { name, url, model, key -> picked += "endpoint:$name|$url|$model|${key?.let(::String)}" },
                     onOpenUrl = { picked += "open:$it" }, onForget = { picked += "forget" },
-                    onFindServer = { address, key -> picked += "find $address" + (key?.let { " key:" + String(it) } ?: "") },
+                    onFindServer = { address, key, model ->
+                        picked += "find $address" + (key?.let { " key:" + String(it) } ?: "") +
+                            (model.takeIf { it.isNotBlank() }?.let { " model:$it" } ?: "")
+                    },
                     onSearchNetwork = { picked += "search" }, onEditEndpoint = { picked += "edit $it" },
                     onDeleteEndpoint = { picked += "delete $it" })
     }
@@ -136,34 +144,60 @@ class SetupScreenTest {
     }
 
     @Test
-    fun aServerFoundLaterBringsItsOwnModel() {
+    fun anEditMadeAfterAServerWasFoundSurvivesARotation() {
+        val a = FoundServer("http://spark-98d1:11434/v1", ServerKind.OLLAMA, listOf("gemma4:12b-it-q8_0", "qwen3"))
+        val restore = StateRestorationTester(compose)
+        restore.setContent { Screen(Setup(SetupStep.Endpoint(found = a, suggestedModel = "gemma4:12b-it-q8_0", generation = 1))) }
+
+        compose.onNodeWithTag("endpoint-address").performTextReplacement("http://spark-98d1:8080/v1")  // another port
+        compose.onNodeWithTag("endpoint-model").performTextReplacement("my-model")  // a model the server does not list
+        restore.emulateSavedInstanceStateRestore()
+        compose.onNodeWithTag("endpoint-save").performScrollTo().performClick()
+
+        assertEquals(listOf("endpoint:spark-98d1|http://spark-98d1:8080/v1|my-model|null"), picked)
+    }
+
+    @Test
+    fun eachServerFoundFillsTheAddressAndModelItSuggests() {
         val a = FoundServer("http://spark-98d1:11434/v1", ServerKind.OLLAMA, listOf("gemma4:12b-it-q8_0"))
         val b = FoundServer("http://192.168.1.20:1234/v1", ServerKind.LMSTUDIO, listOf("qwen3", "llama3"))
         var setup by mutableStateOf(Setup(SetupStep.Endpoint()))
         show { setup }
 
         compose.onNodeWithTag("endpoint-model").performTextInput("gemm4")  // a typo before Find
-        setup = Setup(SetupStep.Endpoint(found = a))
+        setup = Setup(SetupStep.Endpoint(found = a, suggestedModel = "gemma4:12b-it-q8_0", generation = 1))
         compose.waitForIdle()
-        setup = Setup(SetupStep.Endpoint(found = b))  // then another server is found
+        setup = Setup(SetupStep.Endpoint(found = b, suggestedModel = "qwen3", generation = 2))  // then another server is found
         compose.onNodeWithTag("endpoint-save").performScrollTo().performClick()
 
         assertEquals(listOf("endpoint:192.168.1.20|http://192.168.1.20:1234/v1|qwen3|null"), picked)
     }
 
     @Test
-    fun aModelTheNewServerAlsoListsIsKept() {
-        val a = FoundServer("http://spark-98d1:11434/v1", ServerKind.OLLAMA, listOf("gemma4", "qwen3"))
-        val b = FoundServer("http://spark-98d1:11434/v1", ServerKind.OLLAMA, listOf("llama3", "qwen3"))
-        var setup by mutableStateOf(Setup(SetupStep.Endpoint(found = a)))
+    fun aServerFoundAgainStartsTheFormAgainFromIt() {
+        val a = FoundServer("http://spark-98d1:11434/v1", ServerKind.OLLAMA, listOf("gemma4:12b-it-q8_0"))
+        var setup by mutableStateOf(Setup(SetupStep.Endpoint(found = a, suggestedModel = "gemma4:12b-it-q8_0", generation = 1)))
         show { setup }
 
-        compose.onNodeWithTag("endpoint-model").performClick()
-        compose.onNodeWithTag("endpoint-model-qwen3").performClick()
-        setup = Setup(SetupStep.Endpoint(found = b))
+        compose.onNodeWithTag("endpoint-address").performTextReplacement("http://spark-98d1:8080/v1")
+        setup = Setup(SetupStep.Endpoint(found = a, suggestedModel = "gemma4:12b-it-q8_0", generation = 2))  // an equal server
         compose.onNodeWithTag("endpoint-save").performScrollTo().performClick()
 
-        assertEquals(listOf("endpoint:spark-98d1|http://spark-98d1:11434/v1|qwen3|null"), picked)
+        assertEquals(listOf("endpoint:spark-98d1|http://spark-98d1:11434/v1|gemma4:12b-it-q8_0|null"), picked)
+    }
+
+    @Test
+    fun aProbeUnderwayKeepsWhatWasTyped() {
+        val a = FoundServer("http://spark-98d1:11434/v1", ServerKind.OLLAMA, listOf("gemma4:12b-it-q8_0"))
+        var setup by mutableStateOf(Setup(SetupStep.Endpoint(found = a, suggestedModel = "gemma4:12b-it-q8_0", generation = 1)))
+        show { setup }
+
+        compose.onNodeWithTag("endpoint-address").performTextReplacement("http://spark-98d1:8080/v1")
+        compose.onNodeWithTag("endpoint-model").performTextReplacement("my-model")
+        setup = Setup(SetupStep.Endpoint(found = null, suggestedModel = "gemma4:12b-it-q8_0", generation = 1))  // findServer's interim write
+        compose.onNodeWithTag("endpoint-save").performScrollTo().performClick()
+
+        assertEquals(listOf("endpoint:spark-98d1|http://spark-98d1:8080/v1|my-model|null"), picked)
     }
 
     @Test
@@ -188,6 +222,17 @@ class SetupScreenTest {
         compose.onNodeWithTag("find-server").performScrollTo().performClick()
 
         assertEquals("find spark-98d1 key:sk-local", picked.last())
+    }
+
+    @Test
+    fun findServerSendsTheTypedModel() {
+        show(Setup(SetupStep.Endpoint()))
+
+        compose.onNodeWithTag("endpoint-address").performTextInput("spark-98d1")
+        compose.onNodeWithTag("endpoint-model").performTextInput("qwen3")
+        compose.onNodeWithTag("find-server").performScrollTo().performClick()
+
+        assertEquals("find spark-98d1 model:qwen3", picked.last())
     }
 
     @Test

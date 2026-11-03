@@ -10,6 +10,7 @@ import com.nousresearch.hermes.bridge.contract.BridgeSecrets
 import com.nousresearch.hermes.bridge.contract.DeleteCustomEndpointParams
 import com.nousresearch.hermes.bridge.contract.DiscoverEndpointsParams
 import com.nousresearch.hermes.bridge.contract.EndpointProbe
+import com.nousresearch.hermes.bridge.contract.FoundServer
 import com.nousresearch.hermes.bridge.contract.ProbeEndpointParams
 import com.nousresearch.hermes.bridge.contract.SaveCustomEndpointParams
 import com.nousresearch.hermes.bridge.contract.SavedEndpoint
@@ -45,9 +46,10 @@ internal class EndpointSetup(
 
     /**
      * Asks for the model server behind [address] (a host, host:port or URL) and its models. [key] is used for this
-     * probe only and wiped after; nothing is stored until [save].
+     * probe only and wiped after; nothing is stored until [save]. The server found comes with the model the form then
+     * offers ([suggestedModel]: [model] when it lists it); each server found counts once ([SetupStep.Endpoint.generation]).
      */
-    suspend fun find(form: SetupStep.Endpoint, address: String, key: ByteArray?): SetupStep.Endpoint {
+    suspend fun find(form: SetupStep.Endpoint, address: String, key: ByteArray?, model: String = ""): SetupStep.Endpoint {
         val reply = try {
             bridge.ask(BridgeCalls.PROBE_ENDPOINT,
                        ProbeEndpointParams(address.trim(), key?.takeIf { it.isNotEmpty() }?.decodeToString()))
@@ -55,7 +57,8 @@ internal class EndpointSetup(
             key?.fill(0)
         }
         return when (val probe = serverProbe(reply)) {
-            is ServerProbe.Found -> form.copy(found = probe.server, scan = null)
+            is ServerProbe.Found -> form.copy(found = probe.server, scan = null,
+                                              suggestedModel = suggestedModel(model, probe.server), generation = form.generation + 1)
             is ServerProbe.Failed -> throw SetupRefusal(problem(probe.failure))
         }
     }
@@ -150,6 +153,13 @@ internal class EndpointSetup(
         }
     }
 }
+
+/**
+ * The model the form offers once [server] answers: the one [typed] when the server lists it, else the server's first.
+ * A model picked from another server (or a typo) would be saved with this server's address.
+ */
+internal fun suggestedModel(typed: String, server: FoundServer): String =
+    typed.trim().takeIf { it in server.models } ?: server.models.firstOrNull() ?: typed.trim()
 
 /** Why the server at the typed address cannot be set up as it is, in words for the user. */
 internal fun problem(outcome: EndpointProbe): String = when (outcome) {

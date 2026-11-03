@@ -167,6 +167,67 @@ class EndpointSetupTest : SetupFakes() {
     }
 
     @Test
+    fun aServerFoundOffersTheTypedModelWhenItListsIt() = runTest {
+        answers["probe_endpoint"] = """{"found":{"base_url":"http://spark-98d1:11434/v1","kind":"ollama","models":["gemma4:12b-it-q8_0","qwen3"]},"failure":null}"""
+        setup.open(); setup.addEndpoint()
+
+        setup.findServer("spark-98d1", null, model = " qwen3 ")
+
+        val form = setup.step() as SetupStep.Endpoint
+        assertEquals("qwen3", form.suggestedModel)
+        assertEquals(1, form.generation)
+        assertFalse("the typed model stays in Kotlin", argOf("probe_endpoint").containsKey("model"))
+    }
+
+    @Test
+    fun aTypedModelTheServerDoesNotListGivesWayToItsFirst() = runTest {
+        answers["probe_endpoint"] = """{"found":{"base_url":"http://192.168.1.20:1234/v1","kind":"lmstudio","models":["gemma4:12b-it-q8_0","qwen3"]},"failure":null}"""
+        setup.open(); setup.addEndpoint()
+
+        setup.findServer("192.168.1.20:1234", null, model = "gemm4")  // a typo before Find
+        assertEquals("gemma4:12b-it-q8_0", (setup.step() as SetupStep.Endpoint).suggestedModel)
+
+        setup.findServer("192.168.1.20:1234", null, model = "")
+        assertEquals("gemma4:12b-it-q8_0", (setup.step() as SetupStep.Endpoint).suggestedModel)
+    }
+
+    @Test
+    fun eachServerFoundCountsOnceAndAFailedProbeNotAtAll() = runTest {
+        answers["probe_endpoint"] = """{"found":{"base_url":"http://a:11434/v1","kind":"ollama","models":["a-model"]},"failure":null}"""
+        setup.open(); setup.addEndpoint()
+
+        setup.findServer("a", null)
+        assertEquals(1, (setup.step() as SetupStep.Endpoint).generation)
+        setup.findServer("a", null)  // the same answer again: an equal server is still a new find
+        assertEquals(2, (setup.step() as SetupStep.Endpoint).generation)
+
+        answers["probe_endpoint"] = """{"found":null,"failure":"unreachable"}"""
+        setup.findServer("b", null)
+        assertEquals(2, (setup.step() as SetupStep.Endpoint).generation)
+        assertNull((setup.step() as SetupStep.Endpoint).found)
+
+        subnet = "192.168.1.37/24"
+        answers["discover_endpoints"] = """{"found":[{"base_url":"http://192.168.1.20:11434/v1","kind":"ollama","models":["m1"]}]}"""
+        setup.searchNetwork()
+        val form = setup.step() as SetupStep.Endpoint
+        assertEquals(1, form.scan?.size)
+        assertEquals(2, form.generation)
+    }
+
+    @Test
+    fun anEditedEndpointOffersItsOwnModelWhenTheServerListsIt() = runTest {
+        answers["list_custom_endpoints"] = listing(dgx)
+        answers["probe_endpoint"] = """{"found":{"base_url":"http://spark-98d1:11434/v1","kind":"ollama","models":["llama3","gemma4:12b-it-q8_0"]},"failure":null}"""
+        setup.open(); setup.editEndpoint("dgx")
+
+        setup.findServer("spark-98d1", null, model = "gemma4:12b-it-q8_0")
+
+        val form = setup.step() as SetupStep.Endpoint
+        assertEquals("dgx", form.editing?.id)
+        assertEquals("gemma4:12b-it-q8_0", form.suggestedModel)
+    }
+
+    @Test
     fun aRefusingServerIsExplainedAndTheTypedKeyIsWiped() = runTest {
         answers["probe_endpoint"] = """{"found":null,"failure":"refused"}"""
         setup.open(); setup.addEndpoint()
