@@ -66,6 +66,7 @@ class ProviderSetupTest {
     private var endpointSaved: (JsonObject) -> String = { """{"id":"host-ollama","key_env":"HERMES_CUSTOM_HOST_OLLAMA_API_KEY","forget":null}""" }
     private var secretsChanged: () -> Unit = { log += "secrets_changed" }
     private var onList: () -> Unit = {}  // runs while the Python half reads the list
+    private var onSave: suspend () -> Unit = {}  // runs while the Python half saves an endpoint
     private val bridge = AppBridge { function, request ->
         if (function == "list_custom_endpoints") onList()
         if (function == "delete_custom_endpoint") dropListed(Json.parseToJsonElement(request).jsonObject.getValue("id").jsonPrimitive.content)
@@ -75,6 +76,7 @@ class ProviderSetupTest {
             "save_custom_endpoint" -> {
                 sent += function to request
                 log += "save_endpoint"
+                onSave()
                 endpointSaved(Json.parseToJsonElement(request).jsonObject)
             }
             else -> error("unexpected bridge call $function")
@@ -164,7 +166,7 @@ class ProviderSetupTest {
         assertEquals(listOf("model.options", "secrets_changed", "model.options", "secrets_changed", "model.disconnect"), log)
         assertEquals("deepseek", core.calls.last().second.getValue("slug").jsonPrimitive.content)
         assertTrue(setup.step() is SetupStep.Key)
-        assertTrue(setup.state.value?.error != null)
+        assertEquals("DeepSeek did not accept the key.", setup.state.value?.error)
     }
 
     @Test
@@ -313,6 +315,32 @@ class ProviderSetupTest {
         assertTrue(setup.step() is SetupStep.Endpoint)
         assertTrue(held.isEmpty())
         assertEquals(listOf("save_endpoint"), log.drop(1))
+    }
+
+    @Test
+    fun anErrorLeftByAnotherExchangeDoesNotStopTheSavedEndpointBecomingTheDefault() = runTest {
+        answers["probe_endpoint"] = """{"found":null,"failure":"unreachable"}"""
+        onSave = { setup.findServer("elsewhere", null) }  // an unrelated exchange fails while the save runs
+        setup.open()
+        setup.addEndpoint()
+
+        setup.saveEndpoint("Host Ollama", "http://127.0.0.1:11434/v1", "gemma4", null)
+
+        assertEquals(listOf("config.set", "reopen_chat"), log.takeLast(2))
+        assertNull(setup.state.value)
+    }
+
+    @Test
+    fun aFailedSaveMakesNothingTheDefaultEvenWhenAnotherExchangeShowsModels() = runTest {
+        endpointSaved = { """{"error":"An endpoint needs a name, a model and an http(s) base URL."}""" }
+        onSave = { setup.pick("copilot") }  // another exchange moves setup to a provider's models while the save runs
+        setup.open()
+        setup.addEndpoint()
+
+        setup.saveEndpoint("", "http://127.0.0.1:11434/v1", "gemma4", null)
+
+        assertEquals("An endpoint needs a name, a model and an http(s) base URL.", setup.state.value?.error)
+        assertTrue("config.set" !in log)
     }
 
     @Test

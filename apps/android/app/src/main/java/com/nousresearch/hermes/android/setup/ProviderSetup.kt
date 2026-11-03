@@ -1,5 +1,6 @@
 package com.nousresearch.hermes.android.setup
 
+import com.nousresearch.hermes.android.SetupRefusal
 import com.nousresearch.hermes.android.forUser
 import com.nousresearch.hermes.bridge.AppBridge
 import com.nousresearch.hermes.bridge.CoreError
@@ -162,7 +163,7 @@ class ProviderSetup(
                 "pending" -> continue
                 "approved" -> step {
                     val signedIn = listed(refresh = true).firstOrNull { it.slug == provider.slug && it.ready }
-                        ?: throw CoreError(0, "${provider.name} did not list the account.")
+                        ?: throw SetupRefusal("${provider.name} did not list the account.")
                     models(signedIn)
                 }
                 else -> setup.update {
@@ -183,7 +184,7 @@ class ProviderSetup(
             val signedIn = listed(refresh = true).firstOrNull { it.slug == provider.slug && it.ready }
             if (signedIn == null) {
                 forget(provider.slug, name)
-                throw CoreError(0, "${provider.name} did not accept the key.")
+                throw SetupRefusal("${provider.name} did not accept the key.")
             }
             keyNames[provider.slug] = name
             models(signedIn)
@@ -234,7 +235,7 @@ class ProviderSetup(
             }
             when (val probe = serverProbe(reply)) {
                 is ServerProbe.Found -> form.copy(found = probe.server, scan = null)
-                is ServerProbe.Failed -> throw CoreError(0, problem(probe.failure))
+                is ServerProbe.Failed -> throw SetupRefusal(problem(probe.failure))
             }
         }
     }
@@ -245,9 +246,9 @@ class ProviderSetup(
         setup.update { it?.copy(step = form.copy(scanning = true), error = null) }
         try {
             step {
-                val cidr = subnet() ?: throw CoreError(0, "Connect to a Wi-Fi network to search it.")
+                val cidr = subnet() ?: throw SetupRefusal("Connect to a Wi-Fi network to search it.")
                 val found = bridge.ask(BridgeCalls.DISCOVER_ENDPOINTS, DiscoverEndpointsParams(cidr)).found
-                if (found.isEmpty()) throw CoreError(0, "No model server answered on this network.")
+                if (found.isEmpty()) throw SetupRefusal("No model server answered on this network.")
                 form.copy(scan = found)
             }
         } finally {  // found, failed or cancelled: the search is over
@@ -297,7 +298,7 @@ class ProviderSetup(
         }
         // has_key: a NEW key goes to the keystore. Without one, the Python half keeps an edited entry's key_env.
         val newKey = key != null && key.isNotEmpty()
-        step {
+        if (step {
             val entry = try {
                 bridge.ask(BridgeCalls.SAVE_CUSTOM_ENDPOINT, SaveCustomEndpointParams(form.editing?.id, name, baseUrl, model, newKey))
             } catch (refused: CoreError) {
@@ -305,7 +306,7 @@ class ProviderSetup(
                 throw refused
             } catch (failed: RuntimeException) {  // a bridge failure carries a traceback, not words for the user
                 key?.fill(0)
-                throw CoreError(0, "Could not save the endpoint (${failed.javaClass.simpleName}).")
+                throw SetupRefusal("Could not save the endpoint (${failed.javaClass.simpleName}).")
             }
             val keyEnv = entry.keyEnv
             if (newKey) {
@@ -316,8 +317,7 @@ class ProviderSetup(
                 entry.forget?.let { forget(entry.id, it) }  // a keyless re-save: its old key must not outlive the entry
             }
             models(ProviderChoice(entry.id, name, keyEnv.ifEmpty { null }, true, listOf(model)))
-        }
-        if (setup.value?.error == null) choose(model)
+        }) choose(model)
     }
 
     fun back() {
@@ -328,7 +328,7 @@ class ProviderSetup(
         try {
             secrets.put(name, key)
         } catch (failed: Exception) {  // the keystore's own failure; its message is not shown
-            throw CoreError(0, "Could not store the key (${failed.javaClass.simpleName}).")
+            throw SetupRefusal("Could not store the key (${failed.javaClass.simpleName}).")
         } finally {
             key.fill(0)
         }
@@ -411,14 +411,19 @@ class ProviderSetup(
     private suspend fun listed(refresh: Boolean): List<ProviderChoice> =
         core.call(Methods.MODEL_OPTIONS, ModelOptionsParams(includeUnconfigured = true, refresh = refresh)).providers.mapNotNull(::offered)
 
-    /** Runs one exchange with the core: busy meanwhile, then its next step, or the step stays and the core's error shows. */
-    private inline fun step(exchange: () -> SetupStep) {
+    /**
+     * Runs one exchange with the core: busy meanwhile, then its next step, or the step stays and the error shows.
+     * Answers whether the exchange's step was applied; callers decide from this, never from `Setup.error`.
+     */
+    private inline fun step(exchange: () -> SetupStep): Boolean {
         setup.update { it?.copy(busy = true, error = null, confirm = null) }
         try {
             val next = exchange()
             setup.update { it?.copy(step = next, busy = false) }
+            return true
         } catch (failed: Exception) {
             setup.update { it?.copy(busy = false, error = forUser(failed)) }
+            return false
         }
     }
 }

@@ -10,7 +10,12 @@ import org.junit.Test
 class FailuresTest {
     @Test
     fun theCoresRefusalIsShownInItsOwnWords() {
-        assertEquals("DeepSeek did not accept the key.", forUser(CoreError(0, "DeepSeek did not accept the key.")))
+        assertEquals("no credentials found for deepseek", forUser(CoreError(4005, "no credentials found for deepseek")))
+    }
+
+    @Test
+    fun anAppRefusalIsShownInItsOwnWords() {
+        assertEquals("DeepSeek did not accept the key.", forUser(SetupRefusal("DeepSeek did not accept the key.")))
     }
 
     @Test
