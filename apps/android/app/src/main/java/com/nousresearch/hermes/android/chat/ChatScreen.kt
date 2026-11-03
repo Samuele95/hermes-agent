@@ -1,9 +1,12 @@
 package com.nousresearch.hermes.android.chat
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -36,6 +40,7 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
@@ -43,7 +48,9 @@ import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -82,7 +89,8 @@ import kotlin.random.Random
  * bubbles, the composer at the bottom naming the model, and a drawer with the sessions and the app's other places.
  * It holds only the draft; [onSend] gets the trimmed text, [onRetry] runs the last prompt again. [onSessions] hears the drawer open (load the sessions)
  * and close; [sessionActions] is the rows' menu (rename, delete). [onContext] opens the context sheet from the meter;
- * [context] is that sheet while it is open.
+ * [context] is that sheet while it is open. The transcript follows a streaming reply only while the reader is at its end;
+ * Jump brings it back (chat-17).
  */
 @Composable
 fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifier, about: String? = null,
@@ -93,6 +101,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
                onCompress: (String?) -> Unit = {}, onCloseContext: () -> Unit = {}) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    var picked by remember { mutableIntStateOf(0) }  // a conversation picked in the drawer is shown from its end (V5)
     LaunchedEffect(drawer) { snapshotFlow { drawer.isOpen }.distinctUntilChanged().drop(1).collect(onSessions) }
     // Back closes an open drawer before it leaves the app.
     BackHandler(enabled = drawer.isOpen) { scope.launch { drawer.close() } }
@@ -110,13 +119,13 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
     ModalNavigationDrawer(drawerContent = {
         ModalDrawerSheet(Modifier.width(304.dp), drawerShape = RectangleShape,
                          drawerContainerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
-            SessionDrawerContent(links, sessions, onPick = { id -> scope.launch { drawer.close() }; onPickSession(id) }, about, sessionActions)
+            SessionDrawerContent(links, sessions, onPick = { id -> scope.launch { drawer.close() }; picked++; onPickSession(id) }, about, sessionActions)
         }
     }, modifier, drawerState = drawer, gesturesEnabled = hasDrawer) {
         Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).safeDrawingPadding()) {
             TopBar(onMenu = if (hasDrawer) ({ scope.launch { drawer.open() } }) else null, onNewChat)
             if (chat.entries.isEmpty() && !chat.running && chat.prompts.isEmpty()) Intro(Modifier.weight(1f))
-            else Transcript(chat, onRetry, Modifier.weight(1f))
+            else Transcript(chat, onRetry, picked, Modifier.weight(1f))
             // One question at a time, the oldest first: the turn waits on it.
             if (answers != null) chat.prompts.firstOrNull()?.let { PromptCard(it, answers) }
             // The agent's plan while it works through it (D1: a turn that ended leaves no stale plan pinned).
@@ -156,29 +165,61 @@ private fun Intro(modifier: Modifier) {
 }
 
 @Composable
-private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, modifier: Modifier) {
+private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, picked: Int, modifier: Modifier) {
     val list = rememberLazyListState()
+    // chat-17 (F9, DC-B16): whether the list follows its newest row belongs to the view, never to the conversation.
+    var following by rememberSaveable { mutableStateOf(true) }
+    val dragged by list.interactionSource.collectIsDraggedAsState()  // the reader's finger only, never a scroll of ours
     val retry = onRetry?.takeIf { chat.retryTarget() != null }
-    val rows = chat.entries.size + (if (chat.running) 1 else 0) + (if (chat.activity != null) 1 else 0) + (if (retry != null) 1 else 0)
-    LaunchedEffect(rows, chat.streaming) { if (rows > 0) list.animateScrollToItem(rows - 1) }
-    LazyColumn(modifier.fillMaxWidth(), list, PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-               verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        items(chat.entries) { EntryRow(it) }
-        retry?.let { item { RetryAction(failed = (chat.entries.last() as? Entry.Reply)?.status != TurnStatus.COMPLETE, it) } }
-        chat.reasoning?.takeIf { chat.running && it.isNotBlank() }?.let { text -> item { Reasoning(text, Modifier.testTag("reasoning-streaming")) } }
-        chat.streaming?.let { text ->
-            item { if (text.isEmpty()) Text("…", color = MaterialTheme.colorScheme.onSurfaceVariant) else Reply(text) }
-        }
-        chat.activity?.let { text ->
-            item {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(text, Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelMedium,
-                         color = MaterialTheme.colorScheme.onSurfaceVariant)
+    // Only the reader moves the follow: dragging back stops it, and reaching the end starts it again (Follow.kt, V1).
+    LaunchedEffect(list) {
+        snapshotFlow { Triple(dragged, list.lastScrolledBackward, list.canScrollForward) }
+            .collect { (dragging, back, more) -> following = follows(following, atEnd = !more, draggedBack = dragging && back) }
+    }
+    // A conversation picked in the drawer is shown from its end (V5). The first composition already follows.
+    LaunchedEffect(picked) { if (picked > 0) following = true }
+    // While following, every change keeps the end in view at once (V3, §6), never against the reader's finger.
+    // A drag that ends re-runs this.
+    LaunchedEffect(chat.entries.size, chat.entries.lastOrNull(), chat.streaming, chat.reasoning, chat.activity != null,
+                   retry != null, following, dragged) {
+        if (following && !dragged) list.scrollToEnd()
+    }
+    Box(modifier.fillMaxWidth()) {
+        LazyColumn(Modifier.fillMaxSize().testTag("transcript"), list, PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                   verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            items(chat.entries) { EntryRow(it) }
+            retry?.let { item { RetryAction(failed = (chat.entries.last() as? Entry.Reply)?.status != TurnStatus.COMPLETE, it) } }
+            chat.reasoning?.takeIf { chat.running && it.isNotBlank() }?.let { text -> item { Reasoning(text, Modifier.testTag("reasoning-streaming")) } }
+            chat.streaming?.let { text ->
+                item { if (text.isEmpty()) Text("…", color = MaterialTheme.colorScheme.onSurfaceVariant) else Reply(text) }
+            }
+            chat.activity?.let { text ->
+                item {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(text, Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelMedium,
+                             color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
         }
+        if (!following) JumpToLatest(Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp)) { following = true }
     }
+}
+
+/**
+ * Brings the end of the last row into view, not its top, so a reply taller than the screen is followed to its newest
+ * line (V4). This effect may start before the frame's layout. A scroll measures first and waits for the first layout,
+ * so nothing here trusts a [LazyListState.layoutInfo] read before a scroll more than it must.
+ */
+private suspend fun LazyListState.scrollToEnd() {
+    if (layoutInfo.totalItemsCount == 0) scrollBy(0f)  // not laid out yet: a scroll waits for the first layout
+    val last = layoutInfo.totalItemsCount - 1
+    if (last < 0) return
+    // Far above (a picked conversation, Jump from deep in the history): to the last row first, with no animation.
+    if ((layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1) < last) scrollToItem(last)
+    // Then on to its end, one screen at a time. A scroll measures this frame's content and stops at its end.
+    do { val moved = scrollBy(layoutInfo.viewportSize.height.toFloat()) } while (moved > 0f && canScrollForward)
 }
 
 /** Runs the last prompt again: a quiet icon under an answer, the icon and its word after a failed turn (the desktop's two). */
@@ -190,6 +231,18 @@ private fun RetryAction(failed: Boolean, onRetry: () -> Unit) {
             .padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(HermesIcons.Retry, if (failed) null else label, Modifier.size(16.dp), tint = muted)
         if (failed) Text(label, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelLarge, color = muted)
+    }
+}
+
+/** Back to the newest row, following it again (chat-17): Desktop's jump control, made round for a phone. */
+@Composable
+private fun JumpToLatest(modifier: Modifier, onClick: () -> Unit) {
+    Surface(onClick, modifier.size(40.dp).testTag("jump-latest"), shape = CircleShape,
+            color = MaterialTheme.colorScheme.surfaceContainer, contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            border = BorderStroke(1.dp, Hermes.colors.stroke), shadowElevation = 2.dp) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(HermesIcons.ArrowDown, stringResource(R.string.chat_scroll_to_bottom), Modifier.size(18.dp))
+        }
     }
 }
 

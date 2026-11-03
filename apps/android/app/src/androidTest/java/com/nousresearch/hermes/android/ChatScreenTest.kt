@@ -27,6 +27,11 @@ import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeDown
+import androidx.compose.ui.test.swipeUp
+import androidx.compose.ui.semantics.ScrollAxisRange
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.nousresearch.hermes.android.chat.Chat
 import com.nousresearch.hermes.android.chat.ChatScreen
@@ -37,6 +42,7 @@ import com.nousresearch.hermes.android.chat.TodoList
 import com.nousresearch.hermes.android.chat.TodoStatus
 import com.nousresearch.hermes.bridge.protocol.TurnStatus
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -420,5 +426,105 @@ class ChatScreenTest {
         compose.waitForIdle()
         compose.waitUntil(5_000) { closes == 1 }
         compose.onNodeWithTag("context-panel").assertDoesNotExist()
+    }
+
+    // chat-17: the transcript follows a streaming reply only while the reader is at its end.
+    private val earlier = (1..6).flatMap { listOf(Entry.User("Question $it"), Entry.Reply("Answer $it", TurnStatus.COMPLETE)) }
+    private fun reply(lines: Int) = (1..lines).joinToString("\n\n") { "Line $it of a long reply." }  // paragraphs: one per line
+    /** The transcript's position: the lazy list's estimate, equal to its maximum exactly when nothing is below (1.12.1). */
+    private fun position(): ScrollAxisRange =
+        compose.onNodeWithTag("transcript").fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange]
+    private fun atTheEnd() = position().let { it.value() == it.maxValue() }
+    private fun readBack() { compose.onNodeWithTag("transcript").performTouchInput { swipeDown() }; compose.waitForIdle() }
+    private fun streamingChat() = Chat(earlier + Entry.User("Tell me a lot"), streaming = reply(20))
+
+    @Test
+    fun aLongStreamingReplyIsFollowedToItsNewestLine() {
+        var chat by mutableStateOf(streamingChat())
+        compose.setContent { ChatScreen(chat, onSend = {}) }
+        compose.waitForIdle()
+        assertTrue("a reply taller than the screen is followed to its newest line", atTheEnd())
+        compose.onNodeWithTag("jump-latest").assertDoesNotExist()
+
+        for (grown in listOf(chat.copy(streaming = reply(40)), chat.copy(streaming = reply(60)))) {
+            chat = grown
+            compose.waitForIdle()
+            assertTrue("followed as the reply grows", atTheEnd())
+        }
+        chat = chat.copy(reasoning = "Weighing it")
+        compose.waitForIdle()
+        assertTrue("followed as the reasoning streams", atTheEnd())
+        chat = Chat(chat.entries + Entry.Reply(reply(60), TurnStatus.COMPLETE))
+        compose.waitForIdle()
+        assertTrue("followed as the reply completes", atTheEnd())
+    }
+
+    @Test
+    fun readingBackWhileAReplyStreamsKeepsThePlace() {
+        var chat by mutableStateOf(streamingChat())
+        compose.setContent { ChatScreen(chat, onSend = {}) }
+        compose.waitForIdle()
+
+        readBack()
+        val kept = position().value()
+        assertFalse(atTheEnd())
+        compose.onNodeWithTag("jump-latest").assertExists()
+        for (lines in listOf(40, 60)) {
+            chat = chat.copy(streaming = reply(lines))
+            compose.waitForIdle()
+            assertEquals("the reader's place is kept while the reply grows", kept, position().value())
+            compose.onNodeWithTag("jump-latest").assertExists()
+        }
+    }
+
+    @Test
+    fun jumpToLatestFollowsTheReplyAgain() {
+        var chat by mutableStateOf(streamingChat())
+        compose.setContent { ChatScreen(chat, onSend = {}) }
+        compose.waitForIdle()
+
+        readBack()
+        compose.onNodeWithContentDescription("Scroll to bottom").performClick()
+        compose.waitForIdle()
+        assertTrue(atTheEnd())
+        compose.onNodeWithTag("jump-latest").assertDoesNotExist()
+        chat = chat.copy(streaming = reply(60))
+        compose.waitForIdle()
+        assertTrue("following again", atTheEnd())
+    }
+
+    @Test
+    fun scrollingBackToTheEndByHandFollowsAgain() {
+        var chat by mutableStateOf(streamingChat())
+        compose.setContent { ChatScreen(chat, onSend = {}) }
+        compose.waitForIdle()
+
+        readBack()
+        repeat(12) {
+            if (!atTheEnd()) { compose.onNodeWithTag("transcript").performTouchInput { swipeUp() }; compose.waitForIdle() }
+        }
+        assertTrue(atTheEnd())
+        compose.onNodeWithTag("jump-latest").assertDoesNotExist()
+        chat = chat.copy(streaming = reply(60))
+        compose.waitForIdle()
+        assertTrue("following again", atTheEnd())
+    }
+
+    @Test
+    fun aConversationPickedInTheDrawerIsShownFromItsEnd() {
+        var chat by mutableStateOf(streamingChat())
+        val other = Chat((1..30).flatMap { listOf(Entry.User("Other $it"), Entry.Reply("Reply $it", TurnStatus.COMPLETE)) })
+        val sessions = HistoryUi(listOf(SessionListRow(id = "db-2", title = "Other", messageCount = 60,
+                                                       startedAt = System.currentTimeMillis() / 1000.0)))
+        compose.setContent { ChatScreen(chat, onSend = {}, sessions = sessions, onPickSession = { chat = other }) }
+        compose.waitForIdle()
+
+        readBack()
+        compose.onNodeWithTag("jump-latest").assertExists()
+        compose.onNodeWithTag("open-drawer").performClick()
+        compose.onNodeWithText("Other").performClick()
+        compose.waitForIdle()
+        assertTrue("a picked conversation is shown from its end", atTheEnd())
+        compose.onNodeWithTag("jump-latest").assertDoesNotExist()
     }
 }

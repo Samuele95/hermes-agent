@@ -24,6 +24,7 @@ object HermesIcons {
 
     val Menu = icon("menu", "M4 6h16", "M4 12h16", "M4 18h16")
     val Send = icon("arrow-up", "M12 5v14", "M18 11l-6-6", "M6 11l6-6")
+    val ArrowDown = icon("arrow-down", "M12 5v14", "M18 13l-6 6", "M6 13l6 6")
     val Stop = icon("player-stop", "M7 5h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z", filled = true)
     val NewChat = icon("edit", "M7 7h-1a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-1",
                        "M20.385 6.585a2.1 2.1 0 0 0-2.97-2.97l-8.415 8.385v3h3l8.385-8.415z", "M16 5l3 3")
