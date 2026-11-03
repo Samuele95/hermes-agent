@@ -89,6 +89,16 @@ class GatewayServiceTest {
         assertEquals("a planned stop read as a crash: $restarts", emptyList<String>(), restarts)
     }
 
+    /** The first `:gateway` process that appears within [ms] milliseconds, or null when none does. */
+    private fun gatewayWithin(ms: Long): Int? {
+        val until = SystemClock.elapsedRealtime() + ms
+        while (SystemClock.elapsedRealtime() < until) {
+            gatewayPid()?.let { return it }
+            SystemClock.sleep(100)
+        }
+        return null
+    }
+
     /** No `:gateway` process appears for [ms] milliseconds. */
     private fun staysAbsent(ms: Long, message: String = "a gateway started that should have stayed stopped") {
         val until = SystemClock.elapsedRealtime() + ms
@@ -233,13 +243,25 @@ class GatewayServiceTest {
     fun aGatewayKilledWhileSamsungHoldsItsRestartComesBackWhenTheAppOpens() {
         context.startForegroundService(GatewayService.start(context))
         val first = waitFor("the gateway to run") { gatewayPid()?.takeIf(::runningIn) }
+        val hold = freecessHold()
         assumeTrue("needs Samsung's Freecess holding sticky restarts for ${context.packageName} (recipe A in briefs/G2)",
-                   freecessHold() != null)
+                   hold != null)
 
         Process.killProcess(first)
         // A kill is asynchronous: the dying process stays listed for a moment.
         waitFor("the killed process to end", 10) { if (gatewayPid() != first) true else null }
-        staysAbsent(10_000, "the platform restarted it itself: the Freecess reading is wrong")
+        // The platform must hold the restart, or the app's revive is not what brings the gateway back. A freeze record
+        // can be stale (an app launch behind the keyguard or an instrumentation run logs no unfreeze), and Android
+        // then restarts the sticky service itself: that is a wrong precondition, not a failure of the revive.
+        val back = gatewayWithin(10_000)
+        if (back != null) {
+            runCatching { waitFor("the restarted gateway to run", 60) { gatewayPid()?.takeIf(::runningIn) } }  // @After drains it
+        }
+        assumeTrue(
+            "the platform restarted the killed gateway itself (pid $back): the Freecess reading was stale, no hold " +
+                "(last record: ${hold?.line}); recipe A in briefs/G2",
+            back == null,
+        )
 
         ActivityScenario.launch(MainActivity::class.java).use {
             waitFor("the gateway to run again", 120) { gatewayPid()?.takeIf { it != first && runningIn(it) } }
