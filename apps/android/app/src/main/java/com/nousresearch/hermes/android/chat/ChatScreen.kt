@@ -56,6 +56,7 @@ import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringArrayResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
@@ -80,14 +81,15 @@ import kotlin.random.Random
  * A chat in the desktop's shape: the transcript is the page, replies flat across it and the user's words in
  * bubbles, the composer at the bottom naming the model, and a drawer with the sessions and the app's other places.
  * It holds only the draft; [onSend] gets the trimmed text, [onRetry] runs the last prompt again. [onSessions] hears the drawer open (load the sessions)
- * and close.
+ * and close. [onContext] opens the context sheet from the meter; [context] is that sheet while it is open.
  */
 @Composable
 fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifier, about: String? = null,
                onSetup: (() -> Unit)? = null, answers: PromptAnswers? = null, onTerminal: (() -> Unit)? = null,
                onGateway: (() -> Unit)? = null, onStop: () -> Unit = {}, onRetry: (() -> Unit)? = null, onSettings: (() -> Unit)? = null,
                onNewChat: (() -> Unit)? = null, sessions: HistoryUi? = null, onSessions: (open: Boolean) -> Unit = {},
-               onPickSession: (String) -> Unit = {}) {
+               onPickSession: (String) -> Unit = {}, context: ContextUi? = null, onContext: (() -> Unit)? = null,
+               onCompress: (String?) -> Unit = {}, onCloseContext: () -> Unit = {}) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     LaunchedEffect(drawer) { snapshotFlow { drawer.isOpen }.distinctUntilChanged().drop(1).collect(onSessions) }
@@ -118,7 +120,8 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
             if (answers != null) chat.prompts.firstOrNull()?.let { PromptCard(it, answers) }
             // The agent's plan while it works through it (D1: a turn that ended leaves no stale plan pinned).
             chat.todos?.takeIf { chat.running && it.active }?.let { TodoStrip(it) }
-            Composer(chat, onSend, onStop, onSetup)
+            Composer(chat, onSend, onStop, onSetup, onContext)
+            context?.let { ContextSheet(it, running = chat.running, onCompress = onCompress, onClose = onCloseContext) }
         }
     }
 }
@@ -266,7 +269,7 @@ private fun Problem(text: String, modifier: Modifier = Modifier) {
 
 /** The desktop's composer: a rounded field, the model it will ask beneath, and Send — or Stop while a turn runs. */
 @Composable
-private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, onSetup: (() -> Unit)?) {
+private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, onSetup: (() -> Unit)?, onContext: (() -> Unit)?) {
     var draft by rememberSaveable { mutableStateOf("") }
     val shape = RoundedCornerShape(22.dp)
     Column(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 10.dp)
@@ -288,7 +291,7 @@ private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, o
                     }
                 }
             }
-            chat.meter?.let { ContextChip(it) }
+            chat.meter?.let { ContextChip(it, onContext) }
             if (chat.running) {
                 FilledIconButton(onStop, Modifier.size(36.dp).testTag("stop"),
                                  colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.onSurface,
@@ -350,14 +353,16 @@ private fun TodoRow(todo: Todo, depth: Int) {
     }
 }
 
-/** How full the context is: a small ring and the percent; the error colour near the window's end. */
+/** How full the context is: a small ring and the percent; the error colour near the window's end. [onClick] opens its detail. */
 @Composable
-private fun ContextChip(meter: ContextMeter) {
+private fun ContextChip(meter: ContextMeter, onClick: (() -> Unit)?) {
     val tint = if (meter.warns) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
     val approx = if (meter.estimated) "~" else ""
     val percent = "$approx${meter.percent}%"
     val said = stringResource(R.string.chat_context, percent, approx + compactTokens(meter.used), compactTokens(meter.max))
-    Row(Modifier.padding(end = 8.dp).testTag("context-meter").semantics(mergeDescendants = true) { contentDescription = said },
+    val opens = onClick?.let { Modifier.clickable(onClickLabel = stringResource(R.string.context_open), role = Role.Button, onClick = it) } ?: Modifier
+    Row(Modifier.padding(end = 8.dp).clip(CircleShape).then(opens).padding(horizontal = 6.dp, vertical = 6.dp)
+            .testTag("context-meter").semantics(mergeDescendants = true) { contentDescription = said },
         verticalAlignment = Alignment.CenterVertically) {
         CircularProgressIndicator(progress = { meter.percent / 100f }, Modifier.size(14.dp), color = tint, strokeWidth = 2.dp,
                                   trackColor = Hermes.colors.stroke)

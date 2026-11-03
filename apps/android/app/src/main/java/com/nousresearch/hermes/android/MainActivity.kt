@@ -74,6 +74,7 @@ class MainActivity : ComponentActivity() {
                             val setup by state.setup.state.collectAsState()
                             val ssh by state.ssh.state.collectAsState()
                             val history by state.history.state.collectAsState()
+                            val context by state.context.state.collectAsState()
                             val settings by state.settings.state.collectAsState()
                             settings?.let {
                                 SettingsScreen(it, onApprovals = { mode -> app.settings { choose(mode) } }, onClose = state.settings::close)
@@ -112,7 +113,10 @@ class MainActivity : ComponentActivity() {
                                        onSettings = { app.settings { open() } }, onNewChat = { app.chat { open() } },
                                        // The drawer's sessions load as it opens; a tap continues one.
                                        sessions = history, onSessions = { open -> if (open) app.history { open() } else state.history.close() },
-                                       onPickSession = { id -> app.history { pick(id) } }, onSend = { text ->
+                                       onPickSession = { id -> app.history { pick(id) } },
+                                       context = context, onContext = { app.context { open() } },
+                                       onCompress = { focus -> app.context { compress(focus) } }, onCloseContext = state.context::close,
+                                       onSend = { text ->
                                 if (Build.VERSION.SDK_INT >= 33 &&
                                     checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                                     askToNotify.launch(Manifest.permission.POST_NOTIFICATIONS)

@@ -1,5 +1,15 @@
 package com.nousresearch.hermes.android
 
+import android.accessibilityservice.AccessibilityService
+import androidx.compose.ui.test.assertHasClickAction
+import androidx.compose.ui.test.assertHasNoClickAction
+import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextClearance
+import androidx.test.platform.app.InstrumentationRegistry
+import com.nousresearch.hermes.android.chat.ContextUi
+import com.nousresearch.hermes.bridge.protocol.ContextCategory
+import com.nousresearch.hermes.bridge.protocol.SessionContextBreakdownResult
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.unit.dp
@@ -317,5 +327,98 @@ class ChatScreenTest {
         chat = Chat(listOf(Entry.User("hi"), Entry.Reply("Hello", TurnStatus.COMPLETE)))
         onRetry = null
         compose.onNodeWithTag("retry").assertDoesNotExist()  // no handler
+    }
+
+    private val meter = ContextMeter(53_800, 128_000, 42, true)
+    private val breakdown = SessionContextBreakdownResult(
+        listOf(ContextCategory("var(--context-usage-system)", "system_prompt", "System prompt", 12_000),
+               ContextCategory("var(--context-usage-conversation)", "conversation", "Conversation", 41_800)),
+        contextMax = 128_000, contextPercent = 42, contextUsed = 53_800, estimatedTotal = 53_800, contextEstimated = true,
+        contextSource = "estimate", model = "gemma4")
+    private val answered = Chat(listOf(Entry.User("hi"), Entry.Reply("Hello", TurnStatus.COMPLETE)), meter = meter)
+
+    @Test
+    fun theMeterOpensTheContextSheet() {
+        var opened = 0
+        var onContext: (() -> Unit)? by mutableStateOf(null)
+        compose.setContent { ChatScreen(answered, onSend = {}, onContext = onContext) }
+
+        compose.onNodeWithTag("context-meter").assertHasNoClickAction()  // a plain readout without a sheet to open
+
+        onContext = { opened++ }
+        compose.onNodeWithTag("context-meter").assertHasClickAction().performClick()
+
+        assertEquals(1, opened)
+    }
+
+    @Test
+    fun theSheetShowsWhatFillsTheContext() {
+        var context: ContextUi? by mutableStateOf(ContextUi(meter, breakdown))
+        compose.setContent { ChatScreen(answered, onSend = {}, context = context) }
+
+        compose.onNodeWithTag("context-panel").assertExists()
+        listOf("Context usage", "~53.8k / 128k tokens", "~42% full", "System prompt", "~12k", "Conversation", "~41.8k")
+            .forEach { compose.onNodeWithText(it).assertExists() }
+        compose.onAllNodesWithTag("context-category").assertCountEquals(2)
+
+        context = ContextUi(meter)
+        compose.onNodeWithText("Loading breakdown…").assertExists()
+
+        context = ContextUi(meter, breakdown.copy(categories = emptyList()))
+        compose.onNodeWithText("No context data yet").assertExists()
+
+        context = ContextUi(meter, error = "Could not compute context breakdown: boom")
+        compose.onNodeWithTag("context-error").assertTextEquals("Could not compute context breakdown: boom")
+
+        context = null
+        compose.onNodeWithTag("context-panel").assertDoesNotExist()
+    }
+
+    @Test
+    fun compressSendsTheFocusAndWaitsWhileItRuns() {
+        var chat by mutableStateOf(answered)
+        var context by mutableStateOf(ContextUi(meter, breakdown))
+        val focuses = mutableListOf<String?>()
+        compose.setContent { ChatScreen(chat, onSend = {}, context = context, onCompress = { focuses += it }) }
+
+        compose.onNodeWithTag("context-focus").performScrollTo().performTextInput("here 1")
+        compose.onNodeWithTag("compress").performScrollTo().performClick()
+        assertEquals(listOf<String?>("here 1"), focuses)
+
+        compose.onNodeWithTag("context-focus").performTextClearance()
+        compose.onNodeWithTag("compress").performScrollTo().performClick()
+        assertEquals(null, focuses[1])  // a blank focus is none
+
+        context = context.copy(busy = true)
+        compose.onNodeWithTag("compress").assertIsNotEnabled()
+        compose.onNodeWithTag("context-compressing").assertExists()
+
+        context = ContextUi(meter, breakdown, outcome = "Compressed: 6 → 2 messages\nApprox request size: ~9,000 → ~2,100 tokens")
+        compose.onNodeWithTag("context-outcome").assert(hasText("Compressed: 6 → 2 messages", substring = true))
+        compose.onNodeWithTag("compress").assertIsEnabled()
+
+        chat = chat.copy(streaming = "")  // a reply is being written: Compress waits
+        compose.onNodeWithTag("compress").assertIsNotEnabled()
+    }
+
+    @Test
+    fun theSheetClosesOnBackButNotWhileCompressing() {
+        var context: ContextUi? by mutableStateOf(ContextUi(meter, breakdown, busy = true))
+        var closes = 0
+        compose.setContent { ChatScreen(answered, onSend = {}, context = context, onCloseContext = { closes++; context = null }) }
+        compose.onNodeWithTag("context-panel").assertExists()
+        val ui = InstrumentationRegistry.getInstrumentation().uiAutomation
+
+        ui.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+        compose.waitForIdle()
+        compose.onNodeWithTag("context-panel").assertExists()
+        assertEquals(0, closes)
+
+        context = context!!.copy(busy = false)
+        compose.waitForIdle()
+        ui.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+        compose.waitForIdle()
+        compose.waitUntil(5_000) { closes == 1 }
+        compose.onNodeWithTag("context-panel").assertDoesNotExist()
     }
 }

@@ -13,6 +13,17 @@
     <string name="chat_retry">Retry</string>
     <string name="chat_tasks">Tasks %1$d/%2$d</string>
     <string name="chat_context">Context %1$s full, %2$s / %3$s tokens</string>
+    <string name="context_open">Show context usage</string>
+    <string name="context_title">Context usage</string>
+    <string name="context_tokens">%1$s / %2$s tokens</string>
+    <string name="context_full">%1$s full</string>
+    <string name="context_loading">Loading breakdown…</string>
+    <string name="context_empty">No context data yet</string>
+    <string name="context_compress">Compress</string>
+    <string name="context_compress_hint">Summarizes the earlier conversation so the model has room again. The chat then shows what was kept.</string>
+    <string name="context_focus">Focus (optional)</string>
+    <string name="context_focus_hint">A topic the summary should keep</string>
+    <string name="context_compressing">Compressing…</string>
     <string name="sessions_title">Sessions</string>
     <string name="sessions_today">Today</string>
     <string name="sessions_yesterday">Yesterday</string>

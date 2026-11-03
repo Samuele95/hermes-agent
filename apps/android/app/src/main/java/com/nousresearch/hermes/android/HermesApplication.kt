@@ -176,6 +176,11 @@ class HermesApplication : Application() {
         scope.launch { (state.value as? CoreState.Ready)?.history?.action() }
     }
 
+    /** Runs one context-sheet action on the app's scope, so a compression outlives the activity that asked for it. */
+    fun context(action: suspend ContextPanel.() -> Unit) {
+        scope.launch { (state.value as? CoreState.Ready)?.context?.action() }
+    }
+
     /** Runs one settings action on the app's scope, so it outlives the activity that asked for it. */
     fun settings(action: suspend ApprovalSettings.() -> Unit) {
         scope.launch { (state.value as? CoreState.Ready)?.settings?.action() }
