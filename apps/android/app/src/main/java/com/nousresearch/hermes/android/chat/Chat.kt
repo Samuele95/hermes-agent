@@ -10,6 +10,9 @@ import kotlinx.serialization.json.JsonPrimitive
 sealed interface Entry {
     data class User(val text: String) : Entry
 
+    /** The agent's commentary between tool calls, sealed as its own segment while its turn runs on (not its answer). */
+    data class Interim(val text: String) : Entry
+
     /** The agent's answer; [reasoning] is the model's reasoning for it, when the core shows reasoning. */
     data class Reply(val text: String, val status: TurnStatus, val error: String? = null, val reasoning: String? = null) : Entry
 
@@ -19,9 +22,9 @@ sealed interface Entry {
 }
 
 /**
- * A chat's transcript. While a turn runs, [streaming] is the reply written so far, [reasoning] the model's
- * reasoning so far (when the core shows it), [activity] what the agent is doing, and [prompts] what it is
- * waiting on the user for. [model] is the model the session runs, as the core last named it.
+ * A chat's transcript. While a turn runs, [streaming] is the reply written since the turn began or since its last
+ * sealed commentary, [reasoning] the model's reasoning so far (when the core shows it), [activity] what the agent is
+ * doing, and [prompts] what it is waiting on the user for. [model] is the model the session runs, as the core last named it.
  */
 data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? = null, val activity: String? = null,
                 val prompts: List<Prompt> = emptyList(), val reasoning: String? = null, val model: String? = null) {
@@ -41,6 +44,9 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
     private fun apply(event: CoreEvent): Chat = when (event.type) {
         Events.MESSAGE_START.name -> copy(streaming = "")
         Events.MESSAGE_DELTA.name -> copy(streaming = streaming.orEmpty() + event.decode(Events.MESSAGE_DELTA)!!.text)
+        // Commentary beside tool calls: sealed with the core's words, the buffer emptied (never null: the turn runs on).
+        Events.MESSAGE_INTERIM.name -> event.decode(Events.MESSAGE_INTERIM)!!.text.trim()
+            .takeIf { running && it.isNotEmpty() }?.let { copy(entries = entries + Entry.Interim(it), streaming = "") } ?: this
         Events.REASONING_DELTA.name -> copy(reasoning = reasoning.orEmpty() + event.decode(Events.REASONING_DELTA)!!.text)
         // A preview of reasoning the core will not stream: it stands in until the completion's own.
         Events.REASONING_AVAILABLE.name -> if (reasoning.isNullOrEmpty()) copy(reasoning = event.decode(Events.REASONING_AVAILABLE)!!.text) else this

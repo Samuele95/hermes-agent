@@ -126,6 +126,23 @@ class ChatSessionTest {
     }
 
     @Test
+    fun commentaryKeepsTheTurnAliveAndIsNotTheAnswer() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("what day is it?")
+
+        core.emit("message.start", "s1")
+        core.emit("message.delta", "s1", """{"text":"Let me check."}""")
+        core.emit("message.interim", "s1", """{"text":"Let me check.","already_streamed":true}""")
+        assertEquals(listOf("begin:s1"), turns)
+        assertTrue(notices.none { it.startsWith("finished:") })
+
+        core.emit("message.complete", "s1", """{"text":"It is Monday."}""")
+
+        assertEquals(listOf("begin:s1", "end:s1"), turns)
+        assertEquals("finished:It is Monday.", notices.last())
+    }
+
+    @Test
     fun aTurnTheCoreEndsWithAnErrorReleasesTheApp() = runTest(UnconfinedTestDispatcher()) {
         val chat = openChat().apply { open() }
         chat.send("hello")

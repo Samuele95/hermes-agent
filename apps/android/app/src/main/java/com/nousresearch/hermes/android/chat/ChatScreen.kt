@@ -188,6 +188,8 @@ private fun EntryRow(entry: Entry) {
             // The core often words the error into the reply itself; show it apart only when it did not.
             entry.error?.takeUnless { it in entry.text }?.let { Problem(it) }
         }
+        // Commentary reads like the agent's words, without the reply's reasoning fold (and, later, its actions).
+        is Entry.Interim -> Column(Modifier.fillMaxWidth().testTag("entry-interim")) { Reply(entry.text) }
         is Entry.Tool -> ToolRow(entry)
         is Entry.Notice -> Problem(entry.text, Modifier.testTag("entry-notice"))
     }

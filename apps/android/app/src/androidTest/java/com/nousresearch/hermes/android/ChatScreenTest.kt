@@ -62,6 +62,30 @@ class ChatScreenTest {
     }
 
     @Test
+    fun commentaryIsDrawnAsMarkdownAboveItsTool() {
+        val chat = Chat(listOf(Entry.User("what day is it?"), Entry.Interim("Let me **check** the date."),
+                               Entry.Tool("t1", "terminal", "Mon 3 Nov", done = true), Entry.Reply("It is Monday.", TurnStatus.COMPLETE)))
+
+        compose.setContent { ChatScreen(chat, onSend = {}) }
+
+        compose.onNodeWithTag("entry-interim").assertExists()
+        compose.onNodeWithText("Let me check the date.").assertExists()
+        compose.onNodeWithText("**", substring = true).assertDoesNotExist()
+        val tops = listOf(compose.onNodeWithTag("entry-interim"), compose.onNodeWithText("terminal — Mon 3 Nov"),
+                          compose.onNodeWithText("It is Monday.")).map { it.getUnclippedBoundsInRoot().top }
+        assertTrue("commentary, then its tool, then the answer: $tops", tops.zipWithNext().all { (a, b) -> a < b })
+    }
+
+    @Test
+    fun commentaryStaysWhileTheTurnRunsOn() {
+        compose.setContent { ChatScreen(Chat(listOf(Entry.User("hi"), Entry.Interim("Let me check.")), streaming = ""), onSend = {}) }
+
+        compose.onNodeWithText("Let me check.").assertExists()
+        compose.onNodeWithText("…").assertExists()
+        compose.onNodeWithTag("stop").assertExists()
+    }
+
+    @Test
     fun aStreamingReplyAndTheAgentsActivityShowWhileTheTurnRuns() {
         compose.setContent { ChatScreen(Chat(streaming = "Hel", activity = "Thinking…"), onSend = {}) }
 

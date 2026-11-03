@@ -151,6 +151,61 @@ class ChatTest {
         assertEquals(chat, chat.reduce(event("message.delta", """{"rendered":"no text field"}""")))
     }
 
+    private val dateTurn: Chat = Chat().sent("what day is it?").after(
+        event("message.start"), event("message.delta", """{"text":"Let me "}"""), event("message.delta", """{"text":"check."}"""),
+        event("message.interim", """{"text":"Let me check.","already_streamed":true}"""))
+
+    @Test
+    fun commentaryIsSealedAsItsOwnSegmentWhileTheTurnRuns() {
+        assertEquals(listOf(Entry.User("what day is it?"), Entry.Interim("Let me check.")), dateTurn.entries)
+        assertTrue(dateTurn.running)
+        assertEquals("", dateTurn.streaming)
+    }
+
+    @Test
+    fun theAnswerAfterCommentaryStreamsFreshAndBothStay() {
+        val answering = dateTurn.after(event("tool.start", """{"tool_id":"t1","name":"terminal"}"""),
+                                       event("tool.complete", """{"tool_id":"t1","name":"terminal","summary":"Mon 3 Nov"}"""),
+                                       event("message.delta", """{"text":"It is Monday."}"""))
+        assertEquals("It is Monday.", answering.streaming)
+
+        val done = answering.reduce(event("message.complete", """{"text":"It is Monday.","status":"complete"}"""))
+
+        assertEquals(listOf(Entry.User("what day is it?"), Entry.Interim("Let me check."),
+                            Entry.Tool("t1", "terminal", "Mon 3 Nov", done = true), Entry.Reply("It is Monday.", TurnStatus.COMPLETE)),
+                     done.entries)
+        assertFalse(done.running)
+    }
+
+    @Test
+    fun commentaryTheCoreDidNotStreamIsSealedWithTheCoresWords() {
+        val sealed = Chat().sent("what day is it?").after(event("message.start"), event("message.delta", """{"text":"Let me ch"}"""),
+                                                         event("message.interim", """{"text":"Let me check.","already_streamed":false}"""))
+
+        assertEquals(Entry.Interim("Let me check."), sealed.entries.last())
+        assertEquals("", sealed.streaming)
+    }
+
+    @Test
+    fun commentaryAfterItsToolStaysBelowIt() {
+        val chat = Chat().sent("what day is it?").after(event("message.start"), event("tool.start", """{"tool_id":"t1","name":"terminal"}"""),
+                                                       event("message.interim", """{"text":"Done checking.","already_streamed":true}"""))
+
+        assertEquals(listOf(Entry.User("what day is it?"), Entry.Tool("t1", "terminal"), Entry.Interim("Done checking.")), chat.entries)
+        assertTrue(chat.running)
+    }
+
+    @Test
+    fun commentaryThatIsBlankOrOutsideATurnLeavesTheChatAsItWas() {
+        val idle = Chat().sent("hi")
+        val late = idle.reduce(event("message.interim", """{"text":"Late.","already_streamed":true}"""))
+        assertEquals(idle, late)
+        assertFalse(late.running)
+
+        val running = Chat().sent("hi").after(event("message.start"), event("message.delta", """{"text":"So"}"""))
+        assertEquals(running, running.reduce(event("message.interim", """{"text":"  \n","already_streamed":true}""")))
+    }
+
     @Test
     fun aPromptWaitsInTheChatUntilTheCoreWithdrawsIt() {
         val approval = Prompt.Approval("srq-1", "r1", "rm -rf build", "", listOf(ApprovalChoice.ONCE, ApprovalChoice.DENY))
