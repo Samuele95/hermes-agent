@@ -1,5 +1,6 @@
 package com.nousresearch.hermes.android
 
+import com.nousresearch.hermes.android.chat.ContextUi
 import com.nousresearch.hermes.android.chat.FakeCoreGateway
 import com.nousresearch.hermes.android.chat.Notifier
 import com.nousresearch.hermes.android.turn.TurnHost
@@ -10,6 +11,8 @@ import com.nousresearch.hermes.bridge.FrameSink
 import com.nousresearch.hermes.bridge.HermesPaths
 import com.nousresearch.hermes.bridge.SecretStore
 import com.nousresearch.hermes.bridge.protocol.BackendContract
+import com.nousresearch.hermes.bridge.protocol.SessionContextBreakdownResult
+import kotlinx.serialization.json.Json
 import java.io.File
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -36,6 +39,7 @@ class CoreCompositionTest {
             "session.most_recent" -> """{"session_id":${recent?.let { "\"$it\"" } ?: "null"}}"""
             "session.resume" -> """{"session_id":"s-last","message_count":0,"messages":[],"session_key":"db-last",
                                    "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}}}"""
+            "session.context_breakdown" -> EMPTY_BREAKDOWN
             else -> error("unexpected $method")
         }
     }
@@ -96,5 +100,22 @@ class CoreCompositionTest {
         assertEquals("s-last", ready.chat.sessionId)
         assertFalse(core.calls.any { it.first == "session.create" })
         assertEquals("db-last", core.calls.single { it.first == "session.resume" }.second.getValue("session_id").jsonPrimitive.content)
+    }
+
+    @Test
+    fun theContextPanelReadsTheChatsSession() = runTest(UnconfinedTestDispatcher()) {
+        val ready = composeCore(runtime, paths, secrets, turns, Notifier.None, backgroundScope)
+
+        ready.context.open()
+
+        assertEquals("s1", core.calls.single { it.first == "session.context_breakdown" }.second.getValue("session_id").jsonPrimitive.content)
+        // A fresh session has no meter yet: the core reported no window.
+        assertEquals(ContextUi(null, Json.decodeFromString(SessionContextBreakdownResult.serializer(), EMPTY_BREAKDOWN)),
+                     ready.context.state.value)
+    }
+
+    private companion object {
+        const val EMPTY_BREAKDOWN = """{"categories":[],"context_max":0,"context_percent":0,"context_used":0,"estimated_total":0,
+            "context_estimated":false,"context_source":"provider_usage","model":"m"}"""
     }
 }

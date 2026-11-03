@@ -3,6 +3,7 @@ package com.nousresearch.hermes.android.chat
 import com.nousresearch.hermes.bridge.protocol.ClarifyQuestion
 import com.nousresearch.hermes.bridge.protocol.ApprovalChoice
 import com.nousresearch.hermes.bridge.CoreEvent
+import com.nousresearch.hermes.bridge.protocol.SessionCompressResult
 import com.nousresearch.hermes.bridge.protocol.TurnStatus
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -317,5 +318,37 @@ class ChatTest {
         val chat = Chat(listOf(Entry.User("a", 1), reply, Entry.User("b", 2), Entry.Notice("x")), model = "kimi-k2")
 
         assertEquals(Chat(listOf(Entry.User("a", 1), reply), model = "kimi-k2"), chat.rewound(Retry(2, "b", 2)))
+    }
+
+    private fun compression(json: String): SessionCompressResult =
+        Json { ignoreUnknownKeys = true }.decodeFromString(SessionCompressResult.serializer(), json)
+
+    @Test
+    fun aCompressionShowsTheCoresTranscriptAndFill() {
+        val long = Chat(listOf(Entry.User("a", 1), Entry.Reply("A", TurnStatus.COMPLETE), Entry.User("b", 3), Entry.Reply("B", TurnStatus.COMPLETE)),
+                        meter = ContextMeter(7_000, 8_000, 88, false))
+
+        val kept = long.compressed(compression("""{"status":"compressed","messages":[{"role":"user","text":"b","row_id":7},{"role":"assistant","text":"B"}],
+                                                   "usage":{"context_used":2000,"context_max":8000,"context_percent":25}}"""))
+
+        assertEquals(listOf(Entry.User("b", 7), Entry.Reply("B", TurnStatus.COMPLETE)), kept.entries)
+        assertEquals(ContextMeter(2_000, 8_000, 25, false), kept.meter)
+        // A lock held elsewhere answers no transcript and no usage: nothing changes.
+        assertEquals(long, long.compressed(compression("""{"compressed":false,"lock_held":true,"message":"busy elsewhere"}""")))
+        // An empty usage is no window: no meter; no transcript answered keeps the one shown.
+        val unmeasured = long.compressed(compression("""{"status":"compressed","usage":{}}"""))
+        assertEquals(null, unmeasured.meter)
+        assertEquals(long.entries, unmeasured.entries)
+    }
+
+    @Test
+    fun aStatusOutsideATurnIsNotTheAgentsActivity() {
+        val idle = Chat(listOf(Entry.User("hi"), Entry.Reply("Hello", TurnStatus.COMPLETE)))
+
+        // The core's compress pins "compressing" and ends with an idle "ready" (D5).
+        assertEquals(idle, idle.after(event("status.update", """{"kind":"compressing","text":"⠋ compressing 6 messages (~1,200 tok)…"}"""),
+                                      event("status.update", """{"kind":"status","text":"ready"}""")))
+        // The rule is the turn, not the kind.
+        assertEquals("Thinking…", idle.after(event("message.start"), event("status.update", """{"kind":"thinking","text":"Thinking…"}""")).activity)
     }
 }

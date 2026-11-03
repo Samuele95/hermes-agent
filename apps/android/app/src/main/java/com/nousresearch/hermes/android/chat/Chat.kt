@@ -3,6 +3,7 @@ package com.nousresearch.hermes.android.chat
 import com.nousresearch.hermes.bridge.CoreEvent
 import com.nousresearch.hermes.bridge.protocol.Events
 import com.nousresearch.hermes.bridge.protocol.MessageCompletePayload
+import com.nousresearch.hermes.bridge.protocol.SessionCompressResult
 import com.nousresearch.hermes.bridge.protocol.TurnStatus
 import com.nousresearch.hermes.bridge.protocol.Usage
 import kotlinx.serialization.json.JsonPrimitive
@@ -64,6 +65,10 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
     /** The transcript before [target]'s prompt: what the core keeps when it cuts before that row. */
     fun rewound(target: Retry): Chat = copy(entries = entries.take(target.index))
 
+    /** After the core compressed the session: its transcript and its fill as the core answered (invariant 5); a reply without them changes neither. */
+    fun compressed(result: SessionCompressResult): Chat =
+        (result.messages?.let { copy(entries = transcriptOf(it)) } ?: this).measured(result.usage)
+
     /** The chat after one event of its session. A payload the app cannot read leaves it unchanged. */
     fun reduce(event: CoreEvent): Chat = runCatching { apply(event) }.getOrDefault(this)
 
@@ -84,7 +89,8 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
         }
         Events.TODO_UPDATED.name -> event.decode(Events.TODO_UPDATED)!!.let { planned(TodoList.of(it.todos, it.revision)) }
         Events.SESSION_USAGE.name -> measured(event.decode(Events.SESSION_USAGE)!!.usage)
-        Events.STATUS_UPDATE.name -> copy(activity = event.decode(Events.STATUS_UPDATE)!!.text)
+        // A status outside a turn (the core's idle "ready" after a compress, a background process note) is not what the agent is doing.
+        Events.STATUS_UPDATE.name -> if (running) copy(activity = event.decode(Events.STATUS_UPDATE)!!.text) else this
         Events.SESSION_INFO.name -> event.decode(Events.SESSION_INFO)!!.let { info ->
             (info.model.takeIf { it.isNotBlank() }?.let { copy(model = it) } ?: this).measured(info.usage)
         }

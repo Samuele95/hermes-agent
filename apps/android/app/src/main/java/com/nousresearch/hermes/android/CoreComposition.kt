@@ -2,6 +2,7 @@ package com.nousresearch.hermes.android
 
 import android.content.Context
 import com.nousresearch.hermes.android.chat.ChatSession
+import com.nousresearch.hermes.android.chat.ContextPanel
 import com.nousresearch.hermes.android.chat.Notifier
 import com.nousresearch.hermes.android.chat.SessionHistory
 import com.nousresearch.hermes.android.gateway.TelegramSetup
@@ -49,10 +50,11 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, secrets: Secre
     val setup = ProviderSetup(gateway, secrets, bridge, session = { chat.sessionId }, reopenChat = chat::open, keyNames = keyNames,
                               subnet = subnet)
     val history = SessionHistory(list = chat::pastSessions, resume = chat::resume)
+    val context = ContextPanel(meter = { chat.state.value.meter }, breakdown = chat::breakdown, compress = chat::compress)
     // Undispatched: setup is showing before the core is Ready, so the chat never flashes first.
     if (setup.needed()) scope.launch(start = CoroutineStart.UNDISPATCHED) { setup.open() }
     val facts = bridge.ask(BridgeCalls.RUNTIME_FACTS)
     val fts = if (facts.fts5) "with FTS5" else "without FTS5"
-    return CoreState.Ready(gateway, chat, setup, SshSetup(secrets, bridge), TelegramSetup(secrets, bridge), history,
+    return CoreState.Ready(gateway, chat, setup, SshSetup(secrets, bridge), TelegramSetup(secrets, bridge), history, context,
                            ApprovalSettings(gateway), "Python ${facts.python} · SQLite ${facts.sqlite} $fts")
 }

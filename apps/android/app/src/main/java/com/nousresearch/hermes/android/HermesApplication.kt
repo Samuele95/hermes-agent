@@ -8,6 +8,7 @@ import android.app.Application
 import android.os.SystemClock
 import android.util.Log
 import com.nousresearch.hermes.android.chat.ChatSession
+import com.nousresearch.hermes.android.chat.ContextPanel
 import com.nousresearch.hermes.android.chat.SessionHistory
 import com.nousresearch.hermes.android.gateway.GatewayControl
 import com.nousresearch.hermes.android.gateway.PrefsGatewaySettings
@@ -43,8 +44,8 @@ sealed interface CoreState {
     data object Starting : CoreState
 
     data class Ready(val gateway: CoreGateway, val chat: ChatSession, val setup: ProviderSetup, val ssh: SshSetup,
-                     val telegram: TelegramSetup, val history: SessionHistory, val settings: ApprovalSettings,
-                     val about: String) : CoreState
+                     val telegram: TelegramSetup, val history: SessionHistory, val context: ContextPanel,
+                     val settings: ApprovalSettings, val about: String) : CoreState
 
     data class Failed(val reason: String) : CoreState
 }

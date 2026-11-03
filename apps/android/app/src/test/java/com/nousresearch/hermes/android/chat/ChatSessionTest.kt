@@ -45,6 +45,8 @@ class ChatSessionTest {
     private var config: () -> String = { """{"config":{"display":{}}}""" }
     private var mostRecent: () -> String = { """{"session_id":null}""" }
     private var history: () -> String = { """{"count":0,"messages":[]}""" }
+    private var compressReply: (JsonObject) -> String = { """{"status":"compressed","removed":0,"messages":[]}""" }
+    private var breakdownReply: () -> String = { BREAKDOWN }
     // The core continues a compressed conversation at its tip and answers that key (no top-level stored id).
     private var resume: () -> String = { """{"session_id":"s-resumed","message_count":2,"session_key":"db-old-tip",
                                    "messages":[{"role":"user","text":"what's on my calendar?"},{"role":"assistant","text":"Two meetings."}],
@@ -62,6 +64,8 @@ class ChatSessionTest {
             "session.most_recent" -> mostRecent()
             "config.get" -> config()
             "session.history" -> history()
+            "session.compress" -> compressReply(params)
+            "session.context_breakdown" -> breakdownReply()
             else -> error("unexpected $method")
         }
     }
@@ -1008,5 +1012,100 @@ class ChatSessionTest {
         unchanged("no answer yet")
         core.emit("message.start", "s1")
         unchanged("running")
+    }
+
+    @Test
+    fun theBreakdownIsAskedOfTheChatsSession() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+
+        val breakdown = chat.breakdown()
+
+        assertEquals(32_000L, breakdown.contextMax)
+        assertEquals("session.context_breakdown" to "s1", callsAfter(core.calls.size - 1).single())
+    }
+
+    @Test
+    fun compressShowsTheCoresTranscriptAndFillWhileTheTurnServiceHoldsIt() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat()
+        chat.resume("db-old")
+        compressReply = { COMPRESSED }
+
+        val said = chat.compress(" here 1 ")
+
+        assertEquals("Compressed: 4 → 2 messages\nApprox request size: ~9,000 → ~2,100 tokens", said)
+        assertEquals(listOf(Entry.User("latest", 9), Entry.Reply("ok", TurnStatus.COMPLETE)), chat.state.value.entries)
+        assertEquals(ContextMeter(2_100, 8_192, 26, false), chat.state.value.meter)
+        assertEquals(listOf("begin:compress:s-resumed", "end:compress:s-resumed"), turns)
+        val params = core.calls.single { it.first == "session.compress" }.second
+        assertEquals("s-resumed" to "here 1", params.getValue("session_id").jsonPrimitive.content to params.getValue("focus_topic").jsonPrimitive.content)
+    }
+
+    @Test
+    fun aCompressionsRotatedKeyIsTheOneTheChatDeletesBy() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat()
+        chat.resume("db-old")
+        core.emit("session.info", "s-resumed", "{}")  // its build settled: the chat may close it when it leaves
+        compressReply = { COMPRESSED }
+        chat.compress(" here 1 ")
+        val mark = core.calls.size
+
+        chat.delete("db-rotated")
+
+        // The chat knew the rotated row was its own (D4): it left it first (invariant 4), then deleted it.
+        assertEquals(listOf("session.create" to null, "session.close" to "s-resumed", "session.delete" to "db-rotated"), callsAfter(mark))
+    }
+
+    @Test
+    fun aRefusedCompressionLeavesTheTranscriptAndEndsTheHold() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        compressReply = { throw CoreError(4009, "session busy — a /compress is running; run /compress when it finishes.") }
+
+        val refused = try {
+            chat.compress("  ")
+            null
+        } catch (error: CoreError) {
+            error
+        }
+
+        assertEquals(4009, refused?.code)
+        assertEquals(listOf(Entry.User("hi")), chat.state.value.entries)
+        assertEquals(listOf("begin:compress:s1", "end:compress:s1"), turns.takeLast(2))
+        assertFalse("a blank focus is none", core.calls.single { it.first == "session.compress" }.second.containsKey("focus_topic"))
+    }
+
+    @Test
+    fun aLockHeldElsewhereSaysSoAndChangesNothing() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        core.emit("session.usage", "s1", """{"usage":{"context_used":3000,"context_max":32000,"context_percent":9}}""")
+        val before = chat.state.value
+        compressReply = { """{"compressed":false,"lock_held":true,"message":"Another process is compressing this session."}""" }
+
+        assertEquals("Another process is compressing this session.", chat.compress(null))
+        assertEquals(before.entries, chat.state.value.entries)
+        assertEquals(ContextMeter(3000, 32000, 9, false), chat.state.value.meter)
+    }
+
+    @Test
+    fun aRunningTurnIsNotCompressed() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        core.emit("message.start", "s1")
+
+        val refused = runCatching { chat.compress(null) }.exceptionOrNull()
+
+        assertTrue("$refused", refused is SetupRefusal)
+        assertEquals(ChatSession.STILL_REPLYING, refused?.message)
+        assertFalse(core.calls.any { it.first == "session.compress" })
+        assertEquals(listOf("begin:s1"), turns)
+    }
+
+    private companion object {
+        const val BREAKDOWN = """{"categories":[{"color":"var(--context-usage-system)","id":"system_prompt","label":"System prompt","tokens":4000}],
+            "context_max":32000,"context_used":4000,"context_percent":13,"estimated_total":4000,"context_estimated":false,
+            "context_source":"provider_usage","model":"m"}"""
+        const val COMPRESSED = """{"status":"compressed","removed":2,"before_messages":4,"after_messages":2,
+            "summary":{"headline":"Compressed: 4 → 2 messages","token_line":"Approx request size: ~9,000 → ~2,100 tokens"},
+            "usage":{"context_used":2100,"context_max":8192,"context_percent":26},"info":{"stored_session_id":"db-rotated"},
+            "messages":[{"role":"user","text":"latest","row_id":9},{"role":"assistant","text":"ok"}]}"""
     }
 }

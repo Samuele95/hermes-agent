@@ -17,6 +17,9 @@ import com.nousresearch.hermes.bridge.protocol.Methods
 import com.nousresearch.hermes.bridge.protocol.PromptSubmitParams
 import com.nousresearch.hermes.bridge.protocol.SessionCloseParams
 import com.nousresearch.hermes.bridge.protocol.Requests
+import com.nousresearch.hermes.bridge.protocol.SessionCompressParams
+import com.nousresearch.hermes.bridge.protocol.SessionContextBreakdownParams
+import com.nousresearch.hermes.bridge.protocol.SessionContextBreakdownResult
 import com.nousresearch.hermes.bridge.protocol.SessionCreateParams
 import com.nousresearch.hermes.bridge.protocol.SessionDeleteParams
 import com.nousresearch.hermes.bridge.protocol.SessionHistoryParams
@@ -65,6 +68,8 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         const val SOURCE = "android"
         /** Said when a session cannot be deleted because a reply is still being written in it. */
         const val STILL_WORKING = "It is still working; delete it when it finishes."
+        /** Said when Compress is asked for while a reply is being written. */
+        const val STILL_REPLYING = "Hermes is still replying; compress when the reply has ended."
     }
 
     /**
@@ -169,6 +174,10 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     /** Past conversations with something in them, as the core lists them (newest first). */
     suspend fun pastSessions(): List<SessionListRow> =
         core.call(Methods.SESSION_LIST, SessionListParams(limit = 100)).sessions.filter { it.messageCount > 0 }
+
+    /** What fills the session's context, computed by the core when asked (`session.context_breakdown`). */
+    suspend fun breakdown(): SessionContextBreakdownResult =
+        core.call(Methods.SESSION_CONTEXT_BREAKDOWN, SessionContextBreakdownParams(sessionId = sessionId))
 
     /**
      * Deletes stored session [storedId] (a drawer row's id). The core refuses a session live here, so the chat's own is
@@ -359,6 +368,34 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
                 now.chat.running -> now.copy(chat = now.chat.notice(words))  // a turn began after all: its events are the truth
                 else -> now.copy(chat = now.chat.copy(entries = entries).notice(words))
             }
+        }
+    }
+
+    /**
+     * Compresses the chat's session, as the desktop's /compress does: the core summarizes the earlier conversation (on
+     * [focus] when given; its own forms like `here 2` too) and answers with what it kept, which the chat then shows with
+     * the new fill (invariant 5). Not while a turn runs. [turns] keeps the app alive meanwhile under its own key: a
+     * compression is a model call (DC-B10). Returns what it did, in the core's words; a refusal is thrown.
+     */
+    suspend fun compress(focus: String?): String? {
+        val (session, running) = synchronized(lock) { live.ref?.runtime to live.chat.running }
+        if (session == null) return null
+        if (running) throw SetupRefusal(STILL_REPLYING)
+        val hold = "compress:$session"
+        turns.begin(hold)
+        try {
+            val result = core.call(Methods.SESSION_COMPRESS,
+                                   SessionCompressParams(sessionId = session, focusTopic = focus?.trim()?.ifEmpty { null }))
+            change { now ->
+                // The chat left, or a turn began meanwhile: that session's own frames are the truth (as resync).
+                val ref = now.ref
+                if (ref?.runtime != session || now.chat.running) now
+                else now.copy(ref = result.info?.storedSessionId?.ifBlank { null }?.let { ref.copy(stored = it) } ?: ref,  // D4
+                              chat = now.chat.compressed(result))
+            }
+            return compressionOutcome(result)
+        } finally {
+            turns.end(hold)
         }
     }
 
