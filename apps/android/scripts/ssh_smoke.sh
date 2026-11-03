@@ -59,7 +59,7 @@ began=$(date +%s)
 result=$(adb shell am instrument -w -r -e class com.nousresearch.hermes.android.SshSmokeTest \
     -e baseUrl "$base_url" -e model "$model" -e key "$key" \
     -e sshPort "$ssh_port" -e fingerprint "$fingerprint" -e marker "$marker" \
-    "$app.test/androidx.test.runner.AndroidJUnitRunner")
+    "$app.test/androidx.test.runner.AndroidJUnitRunner") || true  # a failed run is the check's to report
 echo "instrumentation finished in $(( $(date +%s) - began )) s"
 adb logcat -d -s HermesSmoke:I | grep "turn after" | sed 's/^.*HermesSmoke: /  /' || true
 # The chat as the test left it (SshSmokeTest saves it); SSH_SMOKE_SCREENSHOT names where it goes.
@@ -71,14 +71,17 @@ fi
 # OK (1 test) also follows a test that did not really pass: -1 error, -2 failure, -3 ignored, -4 assumption.
 check "the ssh smoke test ran and passed" \
     sh -c 'printf "%s" "$1" | grep -q "OK (1 test)" && ! printf "%s" "$1" | grep -q "INSTRUMENTATION_STATUS_CODE: -[1234]"' _ "$result"
-[ "$failed" = 0 ] || printf '%s\n' "$result" | grep -E "INSTRUMENTATION_STATUS: stack=|^\s+at |Error" | head -20
+# Under pipefail, head's early exit (SIGPIPE, 141) or no matching line (grep, 1) must not end the script here.
+if [ "$failed" != 0 ]; then
+    printf '%s\n' "$result" | grep -E "INSTRUMENTATION_STATUS: stack=|^\s+at |Error" | head -20 || true
+fi
 
 log=$(adb logcat -d)
 shown_key=$(printf '%s\n' "$log" | sed -n 's/^.*HermesSmoke: public key [^ ]* \([^ ]*\).*$/\1/p' | tail -1)
 check "the host was logged in to with the public key the app showed" \
     sh -c '[ -n "$1" ] && [ "$1" = "$(cat "$2" 2>/dev/null)" ]' _ "$shown_key" "$host/logged-in-key"
 # The turn's log entry (SshSmokeTest) spans one logcat line per line of the reply.
-turn=$(printf '%s\n' "$log" | sed -n '/HermesSmoke: turn after/,$p' | grep 'HermesSmoke: ')
+turn=$(printf '%s\n' "$log" | sed -n '/HermesSmoke: turn after/,$p' | grep 'HermesSmoke: ' || true)  # none: the next check reports it
 check "the host's command output came back in the reply" sh -c 'printf "%s" "$1" | grep -qF "Reply(text=" && printf "%s" "$1" | grep -qF "$2"' _ "$turn" "$marker"
 check "nothing on the core's stdout (python.stdout)" test "$(printf '%s\n' "$log" | grep -c 'python.stdout' || true)" = 0
 check "no crash" test -z "$(adb logcat -d -b crash)"

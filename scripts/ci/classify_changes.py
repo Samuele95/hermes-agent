@@ -111,7 +111,9 @@ _PY_RELEVANT_SITE = (
 )
 # Python source shipped inside an app tree: the Android app's interpreter imports
 # apps/android/python/hermes_android, and tests/android/ is its suite.
-_PY_RELEVANT_APPS = ("apps/android/python/",)
+# apps/android/scripts/ holds the device smoke scripts that
+# tests/scripts/test_android_smoke_scripts.py runs against a fake adb.
+_PY_RELEVANT_APPS = ("apps/android/python/", "apps/android/scripts/")
 # Cross-language contract files: data committed under a frontend tree that a
 # pytest pins against the Python side (emitter inventory, command registry).
 # Editing only the JSON in an apps/-only PR would otherwise skip the one test

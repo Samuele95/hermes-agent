@@ -134,6 +134,11 @@ CASES = {
         ["apps/android/python/hermes_android/__init__.py"],
         _lanes(python=True, frontend=True, scan=True),
     ),
+    # The device smoke scripts are run against a fake adb by tests/scripts/test_android_smoke_scripts.py.
+    "android smoke script → python + frontend": (
+        ["apps/android/scripts/smoke.sh"],
+        _lanes(python=True, frontend=True),
+    ),
     "generated Android Kotlin client → python + frontend": (
         ["apps/android/bridge/src/main/java/com/nousresearch/hermes/bridge/protocol/Protocol.kt"],
         _lanes(python=True, frontend=True),

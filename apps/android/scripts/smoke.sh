@@ -34,14 +34,17 @@ adb logcat -c
 echo "smoke: $model at $base_url on device $(adb get-serialno)"
 began=$(date +%s)
 result=$(adb shell am instrument -w -r -e class com.nousresearch.hermes.android.SmokeTest,com.nousresearch.hermes.android.StopSmokeTest,com.nousresearch.hermes.android.HistorySmokeTest,com.nousresearch.hermes.android.BackgroundQuestionSmokeTest \
-    -e baseUrl "$base_url" -e model "$model" -e key "$key" "$app.test/androidx.test.runner.AndroidJUnitRunner")
+    -e baseUrl "$base_url" -e model "$model" -e key "$key" "$app.test/androidx.test.runner.AndroidJUnitRunner") || true  # a failed run is the check's to report
 echo "instrumentation finished in $(( $(date +%s) - began )) s"
 adb logcat -d -s HermesSmoke:I | grep -E "reply after|stopped turn|resumed reply|notified" | sed 's/^.*HermesSmoke: /  /' | cut -c1-300 || true
 
 # OK (4 tests) also follows a test that did not really pass: -1 error, -2 failure, -3 ignored, -4 assumption.
 check "the smoke test ran and passed" \
     sh -c 'printf "%s" "$1" | grep -q "OK (4 tests)" && ! printf "%s" "$1" | grep -q "INSTRUMENTATION_STATUS_CODE: -[1234]"' _ "$result"
-[ "$failed" = 0 ] || printf '%s\n' "$result" | grep -E "INSTRUMENTATION_STATUS: stack=|^\s+at |Error" | head -20
+# Under pipefail, head's early exit (SIGPIPE, 141) or no matching line (grep, 1) must not end the script here.
+if [ "$failed" != 0 ]; then
+    printf '%s\n' "$result" | grep -E "INSTRUMENTATION_STATUS: stack=|^\s+at |Error" | head -20 || true
+fi
 
 log=$(adb logcat -d)
 check "nothing on the core's stdout (python.stdout)" test "$(printf '%s\n' "$log" | grep -c 'python.stdout' || true)" = 0

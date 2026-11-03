@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Restart smoke on a device: on a clean install, turns make a memory, a skill and a conversation
-# (RestartSmokeTest phase A); the app is killed; in a new process the core finds all three (phase B).
+# (RestartSmokeTest phase A); the app is killed; in a new process the core finds all three (phase B);
+# a failed phase A skips phase B; the log checks run either way.
 #
 # Build first:  ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest
 # Same endpoint settings as scripts/smoke.sh: SMOKE_BASE_URL  SMOKE_MODEL  SMOKE_REVERSE_PORT  SMOKE_KEY  ANDROID_SERIAL
@@ -38,16 +39,19 @@ adb logcat -c
 
 echo "restart smoke at $(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown): $model at $base_url on device $(adb get-serialno), token $token"
 began=$(date +%s)
-made=$(phase aMemoryASkillAndAConversationAreMadeInTurns)
+# Under pipefail, an excerpt (head's SIGPIPE, or grep with no match) or a failed run must not end the script.
+made=$(phase aMemoryASkillAndAConversationAreMadeInTurns) || true
 check "phase A: a memory, a skill and a conversation made in turns" passed "$made"
-[ "$failed" = 0 ] || { printf '%s\n' "$made" | grep -E "INSTRUMENTATION_STATUS: stack=|AssertionError" | head -5; exit 1; }
-
-adb shell am force-stop "$app"
-check "the app's process is gone" test -z "$(adb shell pidof "$app" || true)"
-
-found=$(phase afterAProcessKillTheCoreStillFindsThem)
-check "phase B: after the kill the core finds the memory, the skill and the conversation" passed "$found"
-[ "$failed" = 0 ] || printf '%s\n' "$found" | grep -E "INSTRUMENTATION_STATUS: stack=|AssertionError" | head -5
+if [ "$failed" = 0 ]; then
+    adb shell am force-stop "$app"
+    check "the app's process is gone" test -z "$(adb shell pidof "$app" || true)"
+    found=$(phase afterAProcessKillTheCoreStillFindsThem) || true
+    check "phase B: after the kill the core finds the memory, the skill and the conversation" passed "$found"
+    [ "$failed" = 0 ] || printf '%s\n' "$found" | grep -E "INSTRUMENTATION_STATUS: stack=|AssertionError" | head -5 || true
+else
+    printf '%s\n' "$made" | grep -E "INSTRUMENTATION_STATUS: stack=|AssertionError" | head -5 || true
+    echo "phase B not run: it reads what phase A made"
+fi
 echo "both phases in $(( $(date +%s) - began )) s"
 adb logcat -d -s HermesSmoke:I | grep "turn after" | sed 's/^.*HermesSmoke: /  /' | cut -c1-220 || true
 
