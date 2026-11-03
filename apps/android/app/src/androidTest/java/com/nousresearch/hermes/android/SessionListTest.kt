@@ -117,6 +117,6 @@ class SessionListTest {
         compose.onNodeWithText("Calendar").performTouchInput { longClick() }
 
         compose.onNodeWithTag("session-rename").assertDoesNotExist()
-        assertEquals(emptyList<String>(), picked)
+        assertEquals(listOf("db-1"), picked)  // no menu: the long press is a tap (no onLongClick, no long-press job)
     }
 }
