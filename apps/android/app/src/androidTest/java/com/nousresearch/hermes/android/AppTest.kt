@@ -29,14 +29,19 @@ class AppTest {
         }
     }
 
+    private fun app() = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as HermesApplication
+
     @Test
     fun aMessageSentFromTheScreenIsAnsweredByTheEmbeddedCore() {
-        // A fresh install opens on provider setup; "Later" leads to the chat.
+        // A fresh install opens on provider setup; "Later" leads to the chat (a reopened one, when the core has a last conversation).
         compose.waitUntil(60_000) {
             listOf("draft", "setup").any { compose.onAllNodes(hasTestTag(it)).fetchSemanticsNodes().isNotEmpty() }
         }
         if (compose.onAllNodes(hasTestTag("setup")).fetchSemanticsNodes().isNotEmpty()) compose.onNodeWithTag("setup-close").performClick()
         compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("draft")).fetchSemanticsNodes().isNotEmpty() }
+        // The app may have reopened a conversation with replies in it: ask in a new one, so the reply awaited is this one's.
+        compose.onNodeWithTag("new-chat").performClick()
+        compose.waitUntil(30_000) { ((app().core.value as? CoreState.Ready)?.chat?.state?.value?.entries).isNullOrEmpty() }
 
         compose.onNodeWithTag("draft").performTextInput("hello")
         compose.onNodeWithTag("send").performClick()

@@ -42,6 +42,12 @@ class ChatSessionTest {
     private var close: (JsonObject) -> String = { """{"closed":true}""" }
     private var delete: (String) -> String = { id -> """{"deleted":"$id"}""" }
     private var contract = """"desktop_contract":${BackendContract.BACKEND_CONTRACT}"""
+    private var config: () -> String = { """{"config":{"display":{}}}""" }
+    private var mostRecent: () -> String = { """{"session_id":null}""" }
+    // The core continues a compressed conversation at its tip and answers that key (no top-level stored id).
+    private var resume: () -> String = { """{"session_id":"s-resumed","message_count":2,"session_key":"db-old-tip",
+                                   "messages":[{"role":"user","text":"what's on my calendar?"},{"role":"assistant","text":"Two meetings."}],
+                                   "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT},"model":"kimi-k2"}}""" }
     private val core = FakeCoreGateway { method, params ->
         when (method) {
             "session.create" -> """{"session_id":"s${++sessions}","stored_session_id":"db$sessions","message_count":0,"messages":[],"info":{$contract}}"""
@@ -51,10 +57,9 @@ class ChatSessionTest {
             "session.interrupt" -> """{"status":"interrupted"}"""
             "session.list" -> """{"sessions":[{"id":"db-old","title":"Calendar","message_count":3,"started_at":1.0},
                                                  {"id":"db-empty","message_count":0,"started_at":2.0}]}"""
-            // The core continues a compressed conversation at its tip and answers that key (no top-level stored id).
-            "session.resume" -> """{"session_id":"s-resumed","message_count":2,"session_key":"db-old-tip",
-                                   "messages":[{"role":"user","text":"what's on my calendar?"},{"role":"assistant","text":"Two meetings."}],
-                                   "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT},"model":"kimi-k2"}}"""
+            "session.resume" -> resume()
+            "session.most_recent" -> mostRecent()
+            "config.get" -> config()
             else -> error("unexpected $method")
         }
     }
@@ -727,5 +732,88 @@ class ChatSessionTest {
         delete = { throw CoreError(5036, "delete failed: disk") }
         val failed = runCatching { chat.delete("db-old") }.exceptionOrNull()
         assertEquals(5036, (failed as? CoreError)?.code)
+    }
+
+    @Test
+    fun aChatStartsInTheCoresMostRecentConversation() = runTest(UnconfinedTestDispatcher()) {
+        mostRecent = { """{"session_id":"db-old","title":"Calendar","source":"cli"}""" }
+        val chat = openChat()
+
+        chat.start()
+
+        assertEquals(listOf("config.get" to null, "session.most_recent" to null, "session.resume" to "db-old"), callsAfter(0))
+        assertEquals("full", core.calls.single { it.first == "config.get" }.second.getValue("key").jsonPrimitive.content)
+        assertEquals("android", core.calls.single { it.first == "session.resume" }.second.getValue("source").jsonPrimitive.content)
+        assertEquals("s-resumed", chat.sessionId)
+        assertEquals(listOf(Entry.User("what's on my calendar?"), Entry.Reply("Two meetings.", TurnStatus.COMPLETE)), chat.state.value.entries)
+    }
+
+    @Test
+    fun aChatStartsNewWhenTheCoreHasNoRecentConversation() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat()
+
+        chat.start()
+
+        assertEquals("session.create", core.calls.last().first)
+        assertFalse(core.calls.any { it.first == "session.resume" })
+        assertEquals("s1", chat.sessionId)
+        assertEquals(emptyList<Entry>(), chat.state.value.entries)
+    }
+
+    @Test
+    fun aChatStartsNewWhenTheCoreSaysNotToReopen() = runTest(UnconfinedTestDispatcher()) {
+        config = { """{"config":{"display":{"resume_last_session":false}}}""" }
+        mostRecent = { """{"session_id":"db-old","title":"Calendar","source":"cli"}""" }
+        val chat = openChat()
+
+        chat.start()
+
+        assertEquals(listOf("config.get", "session.create"), callsAfter(0).map { it.first })  // the core is not even asked
+        assertEquals("s1", chat.sessionId)
+    }
+
+    @Test
+    fun anUnsetOrUnreadableSettingReopens() = runTest(UnconfinedTestDispatcher()) {
+        mostRecent = { """{"session_id":"db-old","title":"Calendar","source":"cli"}""" }
+        val answers: List<() -> String> = listOf(
+            { """{"config":{}}""" },                                             // no display section: the default
+            { """{"config":{"display":{"resume_last_session":"false"}}}""" },    // a string, not false
+            { throw CoreError(4002, "unknown config key: full") },               // unreadable (D1)
+        )
+        for ((i, answer) in answers.withIndex()) {
+            config = answer
+            val mark = core.calls.size
+            val chat = openChat()
+
+            chat.start()
+
+            assertEquals("answer $i", listOf("config.get", "session.most_recent", "session.resume"), callsAfter(mark).map { it.first })
+            assertEquals("answer $i", "s-resumed", chat.sessionId)
+        }
+    }
+
+    @Test
+    fun aLastConversationThatCannotBeResumedLeavesANewChat() = runTest(UnconfinedTestDispatcher()) {
+        mostRecent = { """{"session_id":"db-old","title":"Calendar","source":"cli"}""" }
+        resume = { throw CoreError(4007, "session not found") }
+        val chat = openChat()
+
+        chat.start()
+
+        assertEquals(listOf("config.get", "session.most_recent", "session.resume", "session.create"), callsAfter(0).map { it.first })
+        assertEquals("s1", chat.sessionId)
+        assertEquals(emptyList<Entry>(), chat.state.value.entries)  // quietly: no notice
+        assertEquals(emptyList<String>(), closed())
+    }
+
+    @Test
+    fun aCoreWithoutMostRecentStartsNew() = runTest(UnconfinedTestDispatcher()) {
+        mostRecent = { throw CoreError(-32601, "method not found: session.most_recent") }
+        val chat = openChat()
+
+        chat.start()
+
+        assertEquals(listOf("config.get", "session.most_recent", "session.create"), callsAfter(0).map { it.first })
+        assertEquals("s1", chat.sessionId)
     }
 }

@@ -16,6 +16,7 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -24,12 +25,17 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class CoreCompositionTest {
     private var configured = true
+    private var recent: String? = null
     private val core = FakeCoreGateway { method, _ ->
         when (method) {
             "session.create" -> """{"session_id":"s1","stored_session_id":"db1","message_count":0,"messages":[],
                                    "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}}}"""
             "setup.status" -> """{"provider_configured":$configured}"""
             "model.options" -> """{"providers":[]}"""
+            "config.get" -> """{"config":{}}"""
+            "session.most_recent" -> """{"session_id":${recent?.let { "\"$it\"" } ?: "null"}}"""
+            "session.resume" -> """{"session_id":"s-last","message_count":0,"messages":[],"session_key":"db-last",
+                                   "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}}}"""
             else -> error("unexpected $method")
         }
     }
@@ -79,5 +85,16 @@ class CoreCompositionTest {
         val ready = composeCore(runtime, paths, secrets, turns, Notifier.None, backgroundScope)
 
         assertNull(ready.setup.state.value)
+    }
+
+    @Test
+    fun theComposedChatReopensTheCoresMostRecentConversation() = runTest(UnconfinedTestDispatcher()) {
+        recent = "db-last"
+
+        val ready = composeCore(runtime, paths, secrets, turns, Notifier.None, backgroundScope)
+
+        assertEquals("s-last", ready.chat.sessionId)
+        assertFalse(core.calls.any { it.first == "session.create" })
+        assertEquals("db-last", core.calls.single { it.first == "session.resume" }.second.getValue("session_id").jsonPrimitive.content)
     }
 }

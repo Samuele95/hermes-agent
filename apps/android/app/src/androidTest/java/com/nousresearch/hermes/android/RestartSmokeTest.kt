@@ -2,15 +2,19 @@ package com.nousresearch.hermes.android
 
 import android.os.Process
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.nousresearch.hermes.android.chat.Entry
 import com.nousresearch.hermes.bridge.protocol.Methods
 import com.nousresearch.hermes.bridge.protocol.SessionListParams
 import com.nousresearch.hermes.bridge.protocol.SessionMostRecentParams
+import com.nousresearch.hermes.bridge.protocol.SessionTitleParams
 import com.nousresearch.hermes.bridge.protocol.SkillsManageParams
 import java.io.File
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -20,7 +24,8 @@ import org.junit.runner.RunWith
 
 /**
  * CP5: what a turn makes survives the app's process. `scripts/restart_smoke.sh` runs [aMemoryASkillAndAConversationAreMadeInTurns]
- * on a clean install, kills the app (`am force-stop`), then runs [afterAProcessKillTheCoreStillFindsThem] in a new process.
+ * on a clean install, kills the app (`am force-stop`), then runs [afterAProcessKillTheCoreStillFindsThem] in a new process,
+ * which reopens phase A's conversation.
  * A test cannot outlive its own process, so the two phases share what they need through a file of the app.
  */
 @Smoke
@@ -81,6 +86,15 @@ class RestartSmokeTest {
         assertNotEquals("a new process", before.getInt("pid"), Process.myPid())
         steps.awaitChat()
 
+        // Started in the conversation from before the kill (sessions-04): the core's most recent, reopened at start.
+        val chat = (steps.app.core.value as CoreState.Ready).chat
+        val reopened = runBlocking { gateway().call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = chat.sessionId)) }.sessionKey
+        assertEquals("the app reopened phase A's conversation", before.getString("session"), reopened)
+        assertTrue("its transcript is back", steps.chat().entries.filterIsInstance<Entry.User>().any { spotWord in it.text })
+        // The checks below ask a NEW conversation: the reopened one holds all three words in its transcript.
+        compose.onNodeWithTag("new-chat").performClick()
+        compose.waitUntil(30_000) { steps.chat().entries.isEmpty() }
+
         // On disk, and in the core's own listings (no model involved).
         assertTrue("the memory is on disk", memoryWord in memories())
         assertTrue("the skill is on disk", skillFile() != null)
@@ -89,7 +103,7 @@ class RestartSmokeTest {
         val sessions = runBlocking { gateway().call(Methods.SESSION_LIST, SessionListParams(limit = 50)) }.sessions.map { it.id }
         assertTrue("the conversation is listed: $sessions", before.getString("session") in sessions)
 
-        // And in turns of a new session: the memory is in its prompt, the skill and the old conversation are found.
+        // And in turns of a new conversation: the memory is in its prompt, the skill and the old conversation are found.
         val recalled = steps.say("What is my test word? Answer with the word only, without using any tool.")
         assertTrue("recalled from the prompt's memory, no tool: $recalled", recalled.tools().isEmpty() && memoryWord in recalled.replyText())
         val viewed = steps.say("Use the skill_view tool to read the skill $skill and tell me the word it holds.")

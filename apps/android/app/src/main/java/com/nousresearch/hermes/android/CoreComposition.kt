@@ -32,7 +32,8 @@ fun installRuntime(context: Context): HermesPaths {
 
 /**
  * The chat process's composition root: starts [runtime]'s core and builds what the screens drive over it. The
- * chat's session is open on return, and setup is showing already when the core has no provider yet. [subnet] names the
+ * chat is in the core's most recent conversation on return (a new one when there is none, or the core's setting says
+ * not to reopen), and setup is showing already when the core has no provider yet. [subnet] names the
  * phone's Wi-Fi network for the endpoint search.
  */
 suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, secrets: SecretStore, turns: TurnHost,
@@ -44,7 +45,7 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, secrets: Secre
         secrets.put(name, value)
         bridge.secretsChanged()
     }
-    val chat = ChatSession(gateway, turns, scope, keepSecret, notifier).apply { open() }
+    val chat = ChatSession(gateway, turns, scope, keepSecret, notifier).apply { start() }
     val setup = ProviderSetup(gateway, secrets, bridge, session = { chat.sessionId }, reopenChat = chat::open, keyNames = keyNames,
                               subnet = subnet)
     val history = SessionHistory(list = chat::pastSessions, resume = chat::resume)

@@ -11,6 +11,7 @@ import com.nousresearch.hermes.bridge.answer
 import com.nousresearch.hermes.bridge.protocol.ApprovalChoice
 import com.nousresearch.hermes.bridge.protocol.ApprovalResult
 import com.nousresearch.hermes.bridge.protocol.ClarifyResult
+import com.nousresearch.hermes.bridge.protocol.ConfigGetParams
 import com.nousresearch.hermes.bridge.protocol.Events
 import com.nousresearch.hermes.bridge.protocol.Methods
 import com.nousresearch.hermes.bridge.protocol.PromptSubmitParams
@@ -21,8 +22,10 @@ import com.nousresearch.hermes.bridge.protocol.SessionDeleteParams
 import com.nousresearch.hermes.bridge.protocol.SessionResumeParams
 import com.nousresearch.hermes.bridge.protocol.SessionListRow
 import com.nousresearch.hermes.bridge.protocol.SessionListParams
+import com.nousresearch.hermes.bridge.protocol.SessionMostRecentParams
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import com.nousresearch.hermes.bridge.protocol.BackendContract
 import com.nousresearch.hermes.bridge.protocol.SessionInterruptParams
 import com.nousresearch.hermes.bridge.protocol.ValueResult
@@ -109,6 +112,42 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
                 asked?.let(notifier::promptPending) ?: core.decline(raw, "not available in the Android app")
             }
         }
+    }
+
+    /**
+     * Opens the chat at process start in the conversation the core says was last (`session.most_recent`), as the
+     * desktop's "Reopen last chat on launch" does; a new one when the core's `display.resume_last_session` is
+     * `false`, when it has none, or when that one cannot be resumed. Which conversation is last is the core's to say:
+     * the app keeps no copy, so a session the gateway process held counts too.
+     */
+    suspend fun start() {
+        val last = lastSession()
+        if (last != null) {
+            try {
+                resumed(last)
+                return
+            } catch (gone: CoreError) {  // deleted or unreadable since it was listed: a new chat, quietly (the TUI's rule)
+            }
+        }
+        opened()
+    }
+
+    /** The stored id to reopen, or null: the setting is off, or the core has none (D2). An ordinary value (EJ-69). */
+    private suspend fun lastSession(): String? {
+        if (!reopensLast()) return null
+        return try {
+            core.call(Methods.SESSION_MOST_RECENT, SessionMostRecentParams()).sessionId?.ifBlank { null }
+        } catch (refused: CoreError) {  // a core without the method: nothing to reopen
+            null
+        }
+    }
+
+    /** `display.resume_last_session` is not `false`: unset means the default (on), as does an unreadable config (D1). */
+    private suspend fun reopensLast(): Boolean = try {
+        val display = core.call(Methods.CONFIG_GET, ConfigGetParams(key = "full")).config?.get("display") as? JsonObject
+        display?.get("resume_last_session") != JsonPrimitive(false)
+    } catch (refused: CoreError) {
+        true
     }
 
     /**
