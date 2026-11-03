@@ -13,6 +13,7 @@ import com.nousresearch.hermes.bridge.protocol.ClarifyResult
 import com.nousresearch.hermes.bridge.protocol.Events
 import com.nousresearch.hermes.bridge.protocol.Methods
 import com.nousresearch.hermes.bridge.protocol.PromptSubmitParams
+import com.nousresearch.hermes.bridge.protocol.SessionCloseParams
 import com.nousresearch.hermes.bridge.protocol.Requests
 import com.nousresearch.hermes.bridge.protocol.SessionCreateParams
 import com.nousresearch.hermes.bridge.protocol.SessionResumeParams
@@ -25,10 +26,16 @@ import com.nousresearch.hermes.bridge.protocol.SessionInterruptParams
 import com.nousresearch.hermes.bridge.protocol.ValueResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.serialization.json.JsonPrimitive
 
 /**
@@ -36,7 +43,7 @@ import kotlinx.serialization.json.JsonPrimitive
  * a turn asks, which [notifier] hears of along with finished turns. A secret the agent asks for goes to
  * [keepSecret] (the keystore), never back to the core: the core would write an answered value to `.env`.
  */
-class ChatSession(private val core: CoreGateway, private val turns: TurnHost, scope: CoroutineScope,
+class ChatSession(private val core: CoreGateway, private val turns: TurnHost, private val scope: CoroutineScope,
                   private val keepSecret: suspend (name: String, value: ByteArray) -> Unit,
                   private val notifier: Notifier = Notifier.None) {
     companion object {
@@ -58,6 +65,10 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, sc
     private var live = Live()  // guarded by lock
     private val shown = MutableStateFlow(Chat())
     val state: StateFlow<Chat> = shown.asStateFlow()
+    /** Sessions whose agent build has announced itself (`session.info`) or failed (`error`): only those are closed (D2). */
+    private val settled = MutableStateFlow<Set<String>>(emptySet())
+    /** Open/resume and the close of a left session, one at a time: a resume of the left session cannot race its close (D3). */
+    private val switching = Mutex()
 
     /** Replaces the live value by [next] of it, atomically; returns the value before and after. Pure and quick inside. */
     private inline fun change(next: (Live) -> Live): Pair<Live, Live> = synchronized(lock) {
@@ -88,8 +99,16 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, sc
         }
     }
 
-    /** Opens a new core session; reopening leaves the previous one, and its transcript, behind. */
+    /**
+     * Opens a new core session; reopening leaves the previous session behind, closed in the core unless a turn still
+     * runs in it (its stored row stays resumable).
+     */
     suspend fun open() {
+        opened()
+    }
+
+    /** [open]'s work; returns the close of the session it left, if any, which the screen does not wait for. */
+    private suspend fun opened(): Job? = switching.withLock {
         val created = core.call(Methods.SESSION_CREATE, SessionCreateParams(source = SOURCE))
         switchTo(created.sessionId, Chat(model = created.info.model.ifBlank { null }), created.info.desktopContract)
     }
@@ -103,6 +122,11 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, sc
      * in a turn comes back running (the reply so far, Stop, the foreground service), with the questions it waits on.
      */
     suspend fun resume(sessionId: String) {
+        resumed(sessionId)
+    }
+
+    /** [resume]'s work; returns the close of the session it left, if any. */
+    private suspend fun resumed(sessionId: String): Job? = switching.withLock {
         val resumed = core.call(Methods.SESSION_RESUME, SessionResumeParams(sessionId = sessionId, source = SOURCE))
         val inTurn = resumed.running == true
         val chat = Chat(entries = transcriptOf(resumed.messages),
@@ -113,9 +137,10 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, sc
 
     /**
      * Makes [session] the chat's session, showing [chat] with the cards of the [open] requests it can show; the previous
-     * session's turn and questions are let go.
+     * session's turn and questions are let go, and the session itself is closed in the core if it was idle: the
+     * returned job is that close.
      */
-    private fun switchTo(session: String, chat: Chat, reportedContract: JsonElement?, open: List<InTurnPrompt> = emptyList()) {
+    private fun switchTo(session: String, chat: Chat, reportedContract: JsonElement?, open: List<InTurnPrompt> = emptyList()): Job? {
         val notice = contractNotice(reportedContract)
         val (before, after) = change { now ->
             val opened = open.mapNotNull { raw -> prompt(raw, session)?.let { it to raw } }
@@ -126,6 +151,8 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, sc
             Live(session, cards.fold(notice?.let(chat::notice) ?: chat) { shownChat, (p, _) -> shownChat.asked(p) },
                  cards.associate { (p, raw) -> p.id to raw })
         }
+        // Invariant 3, decided from the one atomic swap (EJ-78): an idle session the chat left is closed; a running one runs on.
+        val left = before.session?.takeIf { !before.chat.running && it != after.session }
         // The previous session's turn would end in events this chat no longer follows: it ends here for the app.
         syncTurn()
         // Questions that lost their card are settled rather than left waiting; one carried over (the same session
@@ -134,6 +161,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, sc
         dropped.values.forEach { core.decline(it, "the chat moved to a new session") }
         if (dropped.isNotEmpty()) notifier.promptsSettled()
         after.chat.prompts.filter { it.id !in before.waiting }.forEach(notifier::promptPending)
+        return left?.let(::closeWhenSettled)
     }
 
     private val turnLock = Any()
@@ -151,6 +179,20 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, sc
         activeTurn?.let(turns::end)
         wanted?.let(turns::begin)
         activeTurn = wanted
+    }
+
+    /** Closes [left] once its agent build has settled (D2), unless the chat came back to it meanwhile (D3). Best-effort (D5). */
+    private fun closeWhenSettled(left: String): Job = scope.launch {
+        settled.first { left in it }
+        switching.withLock {
+            if (synchronized(lock) { live.session } == left) return@withLock
+            try {
+                core.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = left))
+                settled.update { it - left }
+            } catch (failed: Exception) {
+                if (failed is CancellationException) throw failed  // a failed close leaves it live, as before (D5)
+            }
+        }
     }
 
     /**
@@ -228,6 +270,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, sc
      */
     private fun on(event: CoreEvent) {
         val session = event.sessionId ?: return
+        if (event.type == Events.SESSION_INFO.name || event.type == Events.ERROR.name) settled.update { it + session }
         val (before, after) = change { now -> if (now.session != session) now else now.copy(chat = now.chat.reduce(event)).withdrawn() }
         if (before === after) return
         if (before.chat.running != after.chat.running) syncTurn()

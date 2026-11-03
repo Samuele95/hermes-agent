@@ -21,6 +21,7 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
@@ -37,11 +38,13 @@ class ChatSessionTest {
     }
     private var submit: () -> String = { """{"status":"streaming"}""" }
     private var sessions = 0
+    private var close: (JsonObject) -> String = { """{"closed":true}""" }
     private var contract = """"desktop_contract":${BackendContract.BACKEND_CONTRACT}"""
-    private val core = FakeCoreGateway { method, _ ->
+    private val core = FakeCoreGateway { method, params ->
         when (method) {
-            "session.create" -> """{"session_id":"s${++sessions}","stored_session_id":"db1","message_count":0,"messages":[],"info":{$contract}}"""
+            "session.create" -> """{"session_id":"s${++sessions}","stored_session_id":"db$sessions","message_count":0,"messages":[],"info":{$contract}}"""
             "prompt.submit" -> submit()
+            "session.close" -> close(params)
             "session.interrupt" -> """{"status":"interrupted"}"""
             "session.list" -> """{"sessions":[{"id":"db-old","title":"Calendar","message_count":3,"started_at":1.0},
                                                  {"id":"db-empty","message_count":0,"started_at":2.0}]}"""
@@ -61,6 +64,9 @@ class ChatSessionTest {
         override fun promptsSettled() { notices += "settled" }
         override fun turnFinished(reply: Entry.Reply?) { notices += "finished:${reply?.text}" }
     }
+
+    /** The runtime ids the chat asked the core to close, in order. */
+    private fun closed() = core.calls.filter { it.first == "session.close" }.map { it.second.getValue("session_id").jsonPrimitive.content }
 
     private fun TestScope.openChat() =
         ChatSession(core, host, backgroundScope, keepSecret = { name, value -> keepSecret(name, value) }, notifier = notifier)
@@ -524,5 +530,104 @@ class ChatSessionTest {
         chat.open()
 
         assertEquals(listOf("pending:srq-1", "settled"), notices)
+    }
+
+    @Test
+    fun aChatClosesTheIdleSessionItLeaves() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        core.emit("session.info", "s1", "{}")  // its agent is built
+
+        chat.resume("db-old")
+
+        assertEquals(listOf("s1"), closed())
+        assertEquals("s-resumed", chat.sessionId)
+        assertEquals(listOf(Entry.User("what's on my calendar?"), Entry.Reply("Two meetings.", TurnStatus.COMPLETE)), chat.state.value.entries)
+    }
+
+    @Test
+    fun aLeftSessionStillInATurnStaysOpen() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        core.emit("session.info", "s1", "{}")
+        chat.send("hello")
+        core.emit("message.start", "s1")
+
+        chat.open()
+
+        assertEquals(emptyList<String>(), closed())  // the core keeps running it
+        assertEquals(listOf("begin:s1", "end:s1"), turns)  // the app lets the turn go
+        assertEquals("s2", chat.sessionId)
+    }
+
+    @Test
+    fun resumingTheSessionTheChatIsInClosesNothing() = runTest(UnconfinedTestDispatcher()) {
+        var created = 0
+        val fresh = FakeCoreGateway { method, _ ->
+            when (method) {
+                "session.create" -> """{"session_id":"s${++created}","stored_session_id":"db$created","message_count":0,"messages":[],"info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}}}"""
+                // The core hands back the live session it already has for this key.
+                "session.resume" -> """{"session_id":"s1","message_count":0,"messages":[],"info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}}}"""
+                "session.close" -> """{"closed":true}"""
+                else -> submit()
+            }
+        }
+        val chat = ChatSession(fresh, host, backgroundScope, keepSecret = { _, _ -> }).apply { open() }
+
+        chat.resume("db1")  // before s1's build has settled: a close decided now would fire whenever it settles
+        assertEquals("s1", chat.sessionId)
+        chat.send("hello")
+        fresh.emit("message.start", "s1")
+        chat.open()  // s1 left while its turn runs: it runs on
+        fresh.emit("session.info", "s1", "{}")
+
+        assertEquals(emptyList<String>(), fresh.calls.filter { it.first == "session.close" }.map { it.second.toString() })
+    }
+
+    @Test
+    fun aSessionIsClosedOnlyOnceItsBuildHasSettled() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }  // s1's agent is still being built
+
+        chat.open()
+        assertEquals(emptyList<String>(), closed())  // a close now would leave the build's frame no transport
+
+        core.emit("error", "s1", """{"message":"Hermes could not start the assistant"}""")
+
+        assertEquals(listOf("s1"), closed())
+        assertEquals("s2", chat.sessionId)
+        assertEquals(emptyList<Entry>(), chat.state.value.entries)  // s1's error, not the chat's
+    }
+
+    @Test
+    fun aSessionTheChatCameBackToIsNotClosed() = runTest(UnconfinedTestDispatcher()) {
+        var created = 0
+        val fresh = FakeCoreGateway { method, _ ->
+            when (method) {
+                "session.create" -> """{"session_id":"s${++created}","stored_session_id":"db$created","message_count":0,"messages":[],"info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}}}"""
+                "session.resume" -> """{"session_id":"s1","message_count":0,"messages":[],"info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}}}"""
+                "session.close" -> """{"closed":true}"""
+                else -> error("unexpected $method")
+            }
+        }
+        val chat = ChatSession(fresh, host, backgroundScope, keepSecret = { _, _ -> }).apply { open() }
+        chat.resume("db1")  // the session the chat is in: nothing to close
+        chat.open()  // s1 left before its build settled: its close waits
+        chat.resume("db1")  // back on s1, which the core still has live
+
+        fresh.emit("session.info", "s1", "{}")
+
+        assertEquals(emptyList<String>(), fresh.calls.filter { it.first == "session.close" }.map { it.first })
+        assertEquals("s1", chat.sessionId)
+    }
+
+    @Test
+    fun aFailedCloseLeavesTheChatAsItWas() = runTest(UnconfinedTestDispatcher()) {
+        close = { throw CoreError(4001, "session not found") }
+        val chat = openChat().apply { open() }
+        core.emit("session.info", "s1", "{}")
+
+        chat.open()  // the close fails in the background; runTest fails on an uncaught exception there
+
+        assertEquals(listOf("s1"), closed())
+        assertEquals("s2", chat.sessionId)
+        assertEquals(emptyList<Entry>(), chat.state.value.entries)
     }
 }
