@@ -22,6 +22,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nousresearch.hermes.android.R
 
+/** Code colours from the desktop's Shiki themes (shiki-config.ts:9): github-light-default and github-dark-dimmed. */
+@Immutable
+data class CodeColors(val keyword: Color, val string: Color, val number: Color, val comment: Color)
+
 /**
  * The desktop's default identity, `nous` (apps/shared/src/theme-presets.ts: GitHub chrome, Nous blue accent), as
  * Material 3 colours, plus the desktop tokens Material has no slot for. Light and dark follow the system.
@@ -35,6 +39,7 @@ data class HermesColors(
     /** Inline chat widgets: question cards, tool details (`--ui-widget-surface-background`). */
     val widget: Color,
     val textTertiary: Color,
+    val code: CodeColors,
     val dark: Boolean,
 )
 
@@ -69,9 +74,16 @@ private val NousDark = darkColorScheme(
 )
 
 private val LightTokens = HermesColors(userBubble = Color(0xFFDAE7FD), userBubbleBorder = Color(0xFFD0D7DE), stroke = Color(0xFFD8DEE4),
-                                       widget = Color(0xFFF6F8FA), textTertiary = Color(0xFF8C959F), dark = false)
+                                       widget = Color(0xFFF6F8FA), textTertiary = Color(0xFF8C959F),
+                                       // Comments take the desktop's contrast remap of the theme's #6e7781 (shiki-config.ts:19-21).
+                                       code = CodeColors(keyword = Color(0xFFCF222E), string = Color(0xFF0A3069),
+                                                         number = Color(0xFF0550AE), comment = Color(0xFF57606A)),
+                                       dark = false)
 private val DarkTokens = HermesColors(userBubble = Color(0xFF07162C), userBubbleBorder = Color(0xFF30363D), stroke = Color(0xFF30363D),
-                                      widget = Color(0xFF161B22), textTertiary = Color(0xFF6E7681), dark = true)
+                                      widget = Color(0xFF161B22), textTertiary = Color(0xFF6E7681),
+                                      code = CodeColors(keyword = Color(0xFFF47067), string = Color(0xFF96D0FF),
+                                                        number = Color(0xFF6CB6FF), comment = Color(0xFF768390)),
+                                      dark = true)
 
 /** JetBrains Mono, bundled like the desktop's (SIL OFL 1.1), for code and commands. */
 val CodeFont = FontFamily(Font(R.font.jetbrains_mono_regular, FontWeight.Normal), Font(R.font.jetbrains_mono_bold, FontWeight.Bold))

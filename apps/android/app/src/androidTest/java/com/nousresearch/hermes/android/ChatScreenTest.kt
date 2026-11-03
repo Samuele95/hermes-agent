@@ -30,6 +30,7 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.test.longClick
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.semantics.ScrollAxisRange
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -592,5 +593,31 @@ class ChatScreenTest {
 
         assertEquals(listOf("ls -la ~/notes"), copies)
         compose.onNodeWithTag("copy-message").assertDoesNotExist()
+    }
+
+    private val kotlinReply = Entry.Reply("Run:\n\n```kotlin\nval x = \"hi\" // note\n```", TurnStatus.COMPLETE)
+
+    @Test
+    fun aCodeBlockIsColouredByItsLanguage() {
+        compose.setContent { ChatScreen(Chat(listOf(kotlinReply)), onSend = {}) }
+
+        val spans = compose.onNodeWithText("val x = \"hi\" // note").fetchSemanticsNode()
+            .config[SemanticsProperties.Text].first().spanStyles
+        assertTrue("val", spans.any { it.start == 0 && it.end == 3 && it.item.color == Color(0xFFCF222E) })
+        assertTrue("string", spans.any { it.item.color == Color(0xFF0A3069) })
+        assertTrue("comment", spans.any { it.item.color == Color(0xFF57606A) })
+    }
+
+    @Test
+    fun aCodeBlocksCopyHandsOverTheCodeAlone() {
+        val copies = mutableListOf<String>()
+        compose.setContent { ChatScreen(Chat(listOf(kotlinReply)), onSend = {}, onCopy = { copies += it }) }
+
+        compose.onNodeWithContentDescription("Copy code").assertExists()
+        compose.onNodeWithTag("copy-code").performClick()
+        assertEquals(listOf("val x = \"hi\" // note"), copies)
+
+        compose.onNodeWithTag("copy-reply").performClick()
+        assertEquals(listOf("val x = \"hi\" // note", kotlinReply.text), copies)
     }
 }

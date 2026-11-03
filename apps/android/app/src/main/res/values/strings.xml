@@ -14,6 +14,7 @@
     <string name="chat_scroll_to_bottom">Scroll to bottom</string>
     <string name="chat_copy">Copy</string>
     <string name="chat_copied">Copied</string>
+    <string name="chat_copy_code">Copy code</string>
     <string name="chat_message_actions">Message actions</string>
     <string name="chat_tasks">Tasks %1$d/%2$d</string>
     <string name="chat_context">Context %1$s full, %2$s / %3$s tokens</string>

@@ -23,6 +23,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
@@ -38,8 +40,10 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import com.nousresearch.hermes.android.R
 import com.nousresearch.hermes.android.chat.Markdown.Block
 import com.nousresearch.hermes.android.chat.Markdown.Span
+import com.nousresearch.hermes.android.ui.CodeColors
 import com.nousresearch.hermes.android.ui.CodeFont
 import com.nousresearch.hermes.android.ui.Hermes
 
@@ -67,7 +71,7 @@ fun MarkdownText(text: String, modifier: Modifier = Modifier, style: TextStyle =
                     2 -> typography.titleMedium.copy(fontSize = 18.sp)
                     else -> typography.titleSmall.copy(fontSize = 16.sp)
                 })
-                is Block.Code -> CodeBlock(block, spaced)
+                is Block.Code -> CodeBlock(block, spaced, onCopy)
                 is Block.ListItem -> Row(spaced.padding(start = (block.depth * 18).dp)) {
                     Text(block.number?.let { "$it." } ?: if (block.depth == 0) "•" else "◦", Modifier.widthIn(min = 20.dp),
                          style = style, color = muted)
@@ -84,15 +88,39 @@ fun MarkdownText(text: String, modifier: Modifier = Modifier, style: TextStyle =
     }
 }
 
+/** A token's colour. Plain text and punctuation keep the code's own colour, as GitHub's themes draw them (V4). */
+private fun CodeColors.of(kind: TokenKind): Color = when (kind) {
+    TokenKind.PLAIN, TokenKind.PUNCTUATION -> Color.Unspecified
+    TokenKind.KEYWORD -> keyword
+    TokenKind.STRING -> string
+    TokenKind.NUMBER -> number
+    TokenKind.COMMENT -> comment
+}
+
 @Composable
-private fun CodeBlock(block: Block.Code, modifier: Modifier) {
+private fun CodeBlock(block: Block.Code, modifier: Modifier, onCopy: ((String) -> Unit)?) {
     val shape = RoundedCornerShape(8.dp)
-    Column(modifier.fillMaxWidth().background(Hermes.colors.widget, shape).border(1.dp, Hermes.colors.stroke, shape)) {
-        if (block.language.isNotEmpty()) {
+    val colors = Hermes.colors.code
+    // Lexed once per block text (§6): earlier blocks keep their tokens while the last one streams.
+    val code = remember(block.language, block.text, colors) {
+        buildAnnotatedString {
+            CodeHighlighter.tokens(block.language, block.text).forEach { t -> withStyle(SpanStyle(color = colors.of(t.kind))) { append(t.text) } }
+        }
+    }
+    val copy = onCopy?.takeIf { block.text.isNotBlank() }
+    Column(modifier.fillMaxWidth().background(Hermes.colors.widget, shape).border(1.dp, Hermes.colors.stroke, shape).testTag("code-block")) {
+        if (copy != null) {
+            // The header: the language on the left, Copy code on the right (desktop's card copy, shiki-highlighter.tsx:189-198).
+            Row(Modifier.fillMaxWidth().padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(block.language, Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, color = Hermes.colors.textTertiary)
+                CopyButton(block.text, copy, stringResource(R.string.chat_copy_code), Modifier.testTag("copy-code"))
+            }
+        } else if (block.language.isNotEmpty()) {
             Text(block.language, Modifier.padding(start = 12.dp, top = 8.dp), style = MaterialTheme.typography.labelSmall,
                  color = Hermes.colors.textTertiary)
         }
-        Text(block.text, Modifier.horizontalScroll(rememberScrollState()).padding(12.dp),
+        Text(code, Modifier.horizontalScroll(rememberScrollState()).padding(start = 12.dp, end = 12.dp, bottom = 12.dp,
+                                                                            top = if (copy != null) 0.dp else 12.dp),
              style = TextStyle(fontFamily = CodeFont, fontSize = 13.sp, lineHeight = 19.sp), softWrap = false)
     }
 }
