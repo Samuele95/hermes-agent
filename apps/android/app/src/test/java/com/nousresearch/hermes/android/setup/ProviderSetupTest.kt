@@ -1,6 +1,7 @@
 package com.nousresearch.hermes.android.setup
 
 import com.nousresearch.hermes.bridge.CoreError
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.launch
@@ -235,5 +236,51 @@ class ProviderSetupTest : SetupFakes() {
 
         assertEquals(false, (setup.step() as SetupStep.Models).keyHeld)
         assertTrue(log.none { it == "model.disconnect" })
+    }
+
+    @Test
+    fun aScreenOpenedDuringAnotherExchangeIsNotBusy() = runTest {
+        answers["probe_endpoint"] = """{"found":{"base_url":"http://spark-98d1:11434/v1","kind":"ollama","models":["m1"]},"failure":null}"""
+        val answer = CompletableDeferred<Unit>()
+        beforeBridge = { if (it == "probe_endpoint") answer.await() }
+        setup.open(); setup.addEndpoint()
+        val finding = launch { setup.findServer("spark-98d1", null) }
+        runCurrent()
+
+        setup.pick("copilot")
+        assertEquals(false, setup.state.value?.busy)
+
+        answer.complete(Unit)
+        finding.join()
+        assertEquals("copilot", (setup.step() as SetupStep.Models).provider.slug)
+        assertEquals(false, setup.state.value?.busy)
+        assertNull(setup.state.value?.error)
+    }
+
+    @Test
+    fun aSignInStartedAfterTheUserLeftIsCancelledAtTheCore() = runTest {
+        onCoreCall = { if (it == "nous.login.start") setup.back() }  // the user leaves while the core starts it
+        setup.open()
+
+        setup.pick("nous")
+
+        assertEquals("nous.login.cancel", log.last())
+        assertEquals("L1", core.calls.last().second.getValue("login_id").jsonPrimitive.content)
+        assertTrue("nous.login.poll" !in log)
+        assertTrue(setup.step().toString(), setup.step() is SetupStep.Providers)
+        assertEquals(false, setup.state.value?.busy)
+    }
+
+    @Test
+    fun aSignInThatExpiresAfterTheUserLeftDoesNotMoveSetup() = runTest {
+        polls.clear()
+        polls += """{"status":"expired","error_message":"The sign-in code expired."}"""
+        onCoreCall = { if (it == "nous.login.poll") setup.addEndpoint() }  // the user leaves while the core polls
+        setup.open()
+
+        setup.pick("nous")
+
+        assertTrue(setup.step().toString(), setup.step() is SetupStep.Endpoint)
+        assertNull(setup.state.value?.error)
     }
 }

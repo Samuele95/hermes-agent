@@ -15,6 +15,7 @@ import com.nousresearch.hermes.bridge.protocol.ModelOptionProvider
 import com.nousresearch.hermes.bridge.protocol.ModelOptionsParams
 import com.nousresearch.hermes.bridge.protocol.NousLoginParams
 import com.nousresearch.hermes.bridge.protocol.NousLoginStartParams
+import com.nousresearch.hermes.bridge.protocol.NousLoginStartResult
 import com.nousresearch.hermes.bridge.protocol.ProfileParams
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.delay
@@ -62,11 +63,19 @@ sealed interface SetupStep {
 data class Confirm(val model: String, val message: String)
 
 /**
+ * One showing of a setup screen. A step's answer, its error and its busy flag land only on the showing that asked
+ * for it: a screen left (Back, Later, another choice) or opened again is a new showing. Compared by identity.
+ */
+class Showing
+
+/**
  * What setup shows. [list]: the provider list Back returns to: the core's choices, the endpoints saved on this phone,
  * and whether the default model's endpoint was deleted since setup opened. Setup keeps no list outside this value.
+ * [showing]: which showing this is (see [Showing]).
  */
 data class Setup(val step: SetupStep = SetupStep.Loading, val busy: Boolean = false, val error: String? = null,
-                 val confirm: Confirm? = null, val list: SetupStep.Providers = SetupStep.Providers(emptyList()))
+                 val confirm: Confirm? = null, val list: SetupStep.Providers = SetupStep.Providers(emptyList()),
+                 val showing: Showing = Showing())
 
 /**
  * Provider setup driven by the core (D17): the core lists the providers and their models, a pasted key
@@ -75,6 +84,7 @@ data class Setup(val step: SetupStep = SetupStep.Loading, val busy: Boolean = fa
  * defaults). That session then gives way to a new one ([reopenChat]): a session created before the switch
  * runs its first turn on the old default model. Custom endpoints are [EndpointSetup]'s; this class keeps provider
  * auth and the default model, and delegates the endpoint actions to it. [state] is null while setup is closed.
+ * A step's answer lands only on the showing that asked for it ([Showing]).
  */
 class ProviderSetup(
     private val core: CoreGateway,
@@ -102,8 +112,9 @@ class ProviderSetup(
     suspend fun needed(): Boolean = core.call(Methods.SETUP_STATUS, ProfileParams()).providerConfigured != true
 
     suspend fun open() {
-        setup.value = Setup()
-        step { providers(refresh = false) }
+        val opened = Setup()
+        setup.value = opened
+        step(opened.showing) { providers(refresh = false) }
     }
 
     fun close() {
@@ -111,11 +122,12 @@ class ProviderSetup(
     }
 
     suspend fun pick(slug: String) {
-        val provider = setup.value?.list?.choices?.firstOrNull { it.slug == slug } ?: return
+        val shown = setup.value ?: return
+        val provider = shown.list.choices.firstOrNull { it.slug == slug } ?: return
         when {
-            provider.ready -> setup.update { it?.copy(step = models(provider), error = null) }
-            provider.signIn -> signIn(provider)
-            else -> setup.update { it?.copy(step = SetupStep.Key(provider), error = null) }
+            provider.ready -> show(models(provider))
+            provider.signIn -> signIn(provider, shown.showing)
+            else -> show(SetupStep.Key(provider))
         }
     }
 
@@ -123,48 +135,59 @@ class ProviderSetup(
      * Runs the core's Nous Portal sign-in: shows the code, polls until the user approved it in the browser,
      * then lists the account's models. Leaving the step (back, close) cancels the sign-in at the core.
      */
-    private suspend fun signIn(provider: ProviderChoice) {
-        step {
-            val started = core.call(Methods.NOUS_LOGIN_START, NousLoginStartParams())
-            SetupStep.SignIn(provider, started.loginId, started.userCode, started.verificationUrl)
+    private suspend fun signIn(provider: ProviderChoice, origin: Showing) {
+        var started: NousLoginStartResult? = null
+        val waiting = step(origin) {
+            core.call(Methods.NOUS_LOGIN_START, NousLoginStartParams()).also { started = it }
+                .let { SetupStep.SignIn(provider, it.loginId, it.userCode, it.verificationUrl) }
         }
-        val waiting = setup.value?.step as? SetupStep.SignIn ?: return
+        val loginId = started?.loginId ?: return
+        if (waiting == null) {  // started after the user left: nobody will approve it
+            cancelLogin(loginId)
+            return
+        }
         while (true) {
             delay(POLL_INTERVAL)
-            if ((setup.value?.step as? SetupStep.SignIn)?.loginId != waiting.loginId) {
-                try {
-                    core.call(Methods.NOUS_LOGIN_CANCEL, NousLoginParams(loginId = waiting.loginId))
-                } catch (_: CoreError) {
-                    // nothing left to cancel
-                }
+            if (setup.value?.showing !== waiting) {
+                cancelLogin(loginId)
                 return
             }
             val polled = try {
-                core.call(Methods.NOUS_LOGIN_POLL, NousLoginParams(loginId = waiting.loginId))
+                core.call(Methods.NOUS_LOGIN_POLL, NousLoginParams(loginId = loginId))
             } catch (refused: CoreError) {
-                setup.update { it?.copy(step = it.list, error = refused.message) }
+                on(waiting) { it.copy(step = it.list, error = refused.message, showing = Showing()) }
                 return
             }
             when (polled.status) {
                 "pending" -> continue
-                "approved" -> step {
+                "approved" -> step(waiting) {
                     val signedIn = listed(refresh = true).firstOrNull { it.slug == provider.slug && it.ready }
                         ?: throw SetupRefusal("${provider.name} did not list the account.")
                     models(signedIn)
                 }
-                else -> setup.update {
-                    it?.copy(step = it.list, error = polled.errorMessage ?: "${provider.name} sign-in ${polled.status}.")
+                else -> on(waiting) {
+                    it.copy(step = it.list, error = polled.errorMessage ?: "${provider.name} sign-in ${polled.status}.",
+                            showing = Showing())
                 }
             }
             return
         }
     }
 
+    private suspend fun cancelLogin(loginId: String) {
+        try {
+            core.call(Methods.NOUS_LOGIN_CANCEL, NousLoginParams(loginId = loginId))
+        } catch (_: CoreError) {
+            // nothing left to cancel
+        }
+    }
+
     /** Stores [key] under the provider's variable and wipes the caller's copy; a key the core does not take is forgotten. */
     suspend fun submitKey(key: ByteArray) {
-        val provider = (setup.value?.step as? SetupStep.Key)?.provider ?: return
+        val shown = setup.value ?: return
+        val provider = (shown.step as? SetupStep.Key)?.provider ?: return
         val name = checkNotNull(provider.keyEnv)
-        step {
+        step(shown.showing) {
             store(name, key)
             bridge.secretsChanged()
             val signedIn = listed(refresh = true).firstOrNull { it.slug == provider.slug && it.ready }
@@ -179,29 +202,31 @@ class ProviderSetup(
 
     /** Makes [model] the default; setup closes once the core took it. */
     suspend fun choose(model: String, confirmed: Boolean = false) {
-        val provider = (setup.value?.step as? SetupStep.Models)?.provider ?: return
-        step {
+        val shown = setup.value ?: return
+        val provider = (shown.step as? SetupStep.Models)?.provider ?: return
+        val origin = shown.showing
+        step(origin) {
             val set = core.call(Methods.CONFIG_SET, ConfigSetParams(
                 sessionId = session(), key = "model", value = JsonPrimitive("$model --provider ${provider.slug} --global"),
                 confirmExpensiveModel = confirmed))
             if (set.confirmRequired == true) {
-                setup.update { it?.copy(confirm = Confirm(model, set.confirmMessage.orEmpty())) }
+                on(origin) { it.copy(confirm = Confirm(model, set.confirmMessage.orEmpty())) }
                 return@step models(provider)
             }
-            reopenChat()
-            setup.value = null
+            reopenChat()  // the core's default changed whoever is looking (L11)
+            on(origin) { null }
             return
         }
     }
 
     fun addEndpoint() {
-        setup.update { it?.copy(step = SetupStep.Endpoint(), error = null) }
+        show(SetupStep.Endpoint())
     }
 
     /** Opens the form on the saved endpoint [id]; saving it keeps its id (and its key unless a new one is typed). */
     fun editEndpoint(id: String) {
         val form = setup.value?.let { endpoints.edit(it.list, id) } ?: return
-        setup.update { it?.copy(step = form, error = null) }
+        show(form)
     }
 
     /**
@@ -209,22 +234,25 @@ class ProviderSetup(
      * probe only and wiped after; nothing is stored until [saveEndpoint].
      */
     suspend fun findServer(address: String, key: ByteArray?) {
-        val form = setup.value?.step as? SetupStep.Endpoint ?: return run { key?.fill(0) }
-        step {
+        val shown = setup.value
+        val form = shown?.step as? SetupStep.Endpoint ?: return run { key?.fill(0) }
+        step(shown.showing) {
             // What an earlier probe found belongs to another address: saved with this one, it would name a wrong model.
-            setup.update { it?.copy(step = form.copy(found = null)) }
+            on(shown.showing) { it.copy(step = form.copy(found = null)) }
             endpoints.find(form, address, key)
         }
     }
 
     /** Looks for model servers on the phone's Wi-Fi network (only when the user asks: it knocks on every host). */
     suspend fun searchNetwork() {
-        val form = setup.value?.step as? SetupStep.Endpoint ?: return
-        setup.update { it?.copy(step = form.copy(scanning = true), error = null) }
+        val shown = setup.value
+        val form = shown?.step as? SetupStep.Endpoint ?: return
+        val origin = shown.showing
+        on(origin) { it.copy(step = form.copy(scanning = true), error = null) }
         try {
-            step { endpoints.search(form) }
+            step(origin) { endpoints.search(form) }
         } finally {  // found, failed or cancelled: the search is over
-            setup.update { s -> (s?.step as? SetupStep.Endpoint)?.let { s.copy(step = it.copy(scanning = false)) } ?: s }
+            on(origin) { s -> (s.step as? SetupStep.Endpoint)?.let { s.copy(step = it.copy(scanning = false)) } ?: s }
         }
     }
 
@@ -233,13 +261,14 @@ class ProviderSetup(
      * model, the chat starts afresh: its live session would keep the model it was opened with (L11).
      */
     suspend fun deleteEndpoint(id: String) {
-        step {
+        val origin = setup.value?.showing
+        step(origin) {
             val deleted = endpoints.delete(id)
             val defaultGone = deleted.wasDefault || setup.value?.list?.defaultGone == true
             deleted.notForgotten?.let { notForgotten ->  // the endpoint is gone all the same: the list must not offer it
                 val list = (setup.value?.list ?: SetupStep.Providers(emptyList()))
                     .copy(saved = endpoints.saved(), defaultGone = defaultGone)
-                setup.update { it?.copy(step = list, list = list) }
+                on(origin) { it.copy(step = list, list = list) }
                 throw notForgotten
             }
             providers(refresh = true, defaultGone = defaultGone)
@@ -252,12 +281,14 @@ class ProviderSetup(
      * [model] the default.
      */
     suspend fun saveEndpoint(name: String, baseUrl: String, model: String, key: ByteArray?) {
-        val form = setup.value?.step as? SetupStep.Endpoint ?: return run { key?.fill(0) }
-        if (step { models(endpoints.save(form, name, baseUrl, model, key)) }) choose(model)
+        val shown = setup.value
+        val form = shown?.step as? SetupStep.Endpoint ?: return run { key?.fill(0) }
+        // Saved even when the user left meanwhile; only a save whose step landed makes its model the default.
+        if (step(shown.showing) { models(endpoints.save(form, name, baseUrl, model, key)) } != null) choose(model)
     }
 
     fun back() {
-        setup.update { it?.copy(step = it.list, error = null, confirm = null) }
+        setup.update { it?.copy(step = it.list, busy = false, error = null, confirm = null, showing = Showing()) }
     }
 
     /** Keeps an endpoint's newly typed [key] as a pasted provider key is kept: keystore, core, then its name. */
@@ -294,9 +325,10 @@ class ProviderSetup(
 
     /** Takes the shown provider's key off the phone (keystore and core); the list then shows the provider as it now is. */
     suspend fun forgetKey() {
-        val shown = setup.value?.step as? SetupStep.Models ?: return
+        val shownSetup = setup.value ?: return
+        val shown = shownSetup.step as? SetupStep.Models ?: return
         val name = keyName(shown.provider)?.takeIf { shown.keyHeld } ?: return
-        step {
+        step(shownSetup.showing) {
             forget(shown.provider.slug, name)
             providers(refresh = false)
         }
@@ -316,20 +348,42 @@ class ProviderSetup(
         core.call(Methods.MODEL_OPTIONS, ModelOptionsParams(includeUnconfigured = true, refresh = refresh)).providers.mapNotNull(::offered)
 
     /**
-     * Runs one exchange with the core: busy meanwhile, then its next step, or the step stays and the error shows.
-     * Answers whether the exchange's step was applied; callers decide from this, never from `Setup.error`.
+     * Runs one exchange with the core for the showing [origin]: busy meanwhile, then its next step as a new showing, or
+     * the step stays and the error shows — each only while setup still shows [origin]. Answers the showing the next
+     * step opened, or null when nothing landed; callers decide from this, never from `Setup.error`.
      */
-    private inline fun step(exchange: () -> SetupStep): Boolean {
-        setup.update { it?.copy(busy = true, error = null, confirm = null) }
+    private inline fun step(origin: Showing?, exchange: () -> SetupStep): Showing? {
+        on(origin) { it.copy(busy = true, error = null, confirm = null) }
         try {
             val next = exchange()
-            // A provider list that is shown is also the one Back returns to.
-            setup.update { it?.copy(step = next, list = next as? SetupStep.Providers ?: it.list, busy = false) }
-            return true
+            val opened = Showing()
+            // A provider list that is shown is also the one Back returns to; a confirm the exchange asked for stays.
+            val landed = on(origin) {
+                it.copy(step = next, list = next as? SetupStep.Providers ?: it.list, busy = false, showing = opened)
+            }
+            return opened.takeIf { landed }
         } catch (failed: Exception) {
-            setup.update { it?.copy(busy = false, error = forUser(failed)) }
-            return false
+            val words = forUser(failed)  // rethrows a cancellation: not a failure to show
+            on(origin) { it.copy(busy = false, error = words) }
+            return null
+        } finally {  // after a landing the origin is gone; after a cancellation this ends the busy state
+            on(origin) { it.copy(busy = false) }
         }
+    }
+
+    /** Writes [change] only while setup still shows [origin]; answers whether it landed. */
+    private fun on(origin: Showing?, change: (Setup) -> Setup?): Boolean {
+        var landed = false
+        setup.update { s ->  // update may run this more than once: landed is the last attempt's
+            landed = s != null && s.showing === origin
+            if (s != null && s.showing === origin) change(s) else s
+        }
+        return landed
+    }
+
+    /** Shows [step] as a new showing: not busy, no error, no confirm (those belong to the showing they came from). */
+    private fun show(step: SetupStep) {
+        setup.update { it?.copy(step = step, busy = false, error = null, confirm = null, showing = Showing()) }
     }
 }
 

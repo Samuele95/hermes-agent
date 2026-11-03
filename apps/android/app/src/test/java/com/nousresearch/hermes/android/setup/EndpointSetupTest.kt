@@ -5,6 +5,7 @@ import com.nousresearch.hermes.bridge.CoreError
 import com.nousresearch.hermes.bridge.contract.EndpointProbe
 import com.nousresearch.hermes.bridge.contract.ServerKind
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
@@ -137,7 +138,9 @@ class EndpointSetupTest : SetupFakes() {
 
         setup.saveEndpoint("", "http://127.0.0.1:11434/v1", "gemma4", null)
 
-        assertEquals("An endpoint needs a name, a model and an http(s) base URL.", setup.state.value?.error)
+        // The refusal belongs to the form the user left: the Models step they moved to does not show it.
+        assertNull(setup.state.value?.error)
+        assertEquals("copilot", (setup.step() as SetupStep.Models).provider.slug)
         assertTrue("config.set" !in log)
     }
 
@@ -307,6 +310,97 @@ class EndpointSetupTest : SetupFakes() {
         searching.join()
 
         assertEquals(false, (setup.step() as SetupStep.Endpoint).scanning)
+        assertEquals(false, setup.state.value?.busy)
+    }
+
+    @Test
+    fun aServerFoundAfterSetupWasClosedAndOpenedAgainIsNotShown() = runTest {
+        answers["probe_endpoint"] = """{"found":{"base_url":"http://spark-98d1:11434/v1","kind":"ollama","models":["m1"]},"failure":null}"""
+        val answer = CompletableDeferred<Unit>()
+        beforeBridge = { if (it == "probe_endpoint") answer.await() }
+        setup.open(); setup.addEndpoint()
+        val finding = launch { setup.findServer("spark-98d1", null) }
+        runCurrent()
+        assertEquals(true, setup.state.value?.busy)
+
+        setup.close(); setup.open()
+        answer.complete(Unit)
+        finding.join()
+
+        assertTrue(setup.step().toString(), setup.step() is SetupStep.Providers)
+        assertEquals(false, setup.state.value?.busy)
+        assertNull(setup.state.value?.error)
+    }
+
+    @Test
+    fun aSearchThatAnswersOnAFormOpenedSinceIsNotShown() = runTest {
+        subnet = "192.168.1.37/24"
+        answers["discover_endpoints"] = """{"found":[{"base_url":"http://192.168.1.20:11434/v1","kind":"ollama","models":["m1"]}]}"""
+        val answer = CompletableDeferred<Unit>()
+        beforeBridge = { if (it == "discover_endpoints") answer.await() }
+        setup.open(); setup.addEndpoint()
+        val searching = launch { setup.searchNetwork() }
+        runCurrent()
+
+        setup.close(); setup.open(); setup.addEndpoint()  // a fresh form, equal to the one the search started on
+        answer.complete(Unit)
+        searching.join()
+
+        val form = setup.step() as SetupStep.Endpoint
+        assertNull(form.scan)
+        assertFalse(form.scanning)
+        assertEquals(false, setup.state.value?.busy)
+    }
+
+    @Test
+    fun aRefusalThatAnswersAfterTheUserWentBackIsNotShown() = runTest {
+        answers["probe_endpoint"] = """{"found":null,"failure":"unreachable"}"""
+        val answer = CompletableDeferred<Unit>()
+        beforeBridge = { if (it == "probe_endpoint") answer.await() }
+        setup.open(); setup.addEndpoint()
+        val finding = launch { setup.findServer("spark-98d1", null) }
+        runCurrent()
+
+        setup.back()
+        answer.complete(Unit)
+        finding.join()
+
+        assertTrue(setup.step().toString(), setup.step() is SetupStep.Providers)
+        assertNull(setup.state.value?.error)
+    }
+
+    @Test
+    fun aSaveThatAnswersAfterTheUserLeftMakesNothingTheDefault() = runTest {
+        val answer = CompletableDeferred<Unit>()
+        onSave = { answer.await() }
+        setup.open(); setup.addEndpoint()
+        val saving = launch { setup.saveEndpoint("Host Ollama", "http://127.0.0.1:11434/v1", "gemma4", null) }
+        runCurrent()
+
+        setup.close(); setup.open()
+        answer.complete(Unit)
+        saving.join()
+
+        assertTrue("save_endpoint" in log)  // saved all the same: listed the next time
+        assertTrue("config.set" !in log)
+        assertTrue("reopen_chat" !in log)
+        assertTrue(setup.step().toString(), setup.step() is SetupStep.Providers)
+        assertEquals(false, setup.state.value?.busy)
+    }
+
+    @Test
+    fun aCancelledProbeLeavesTheFormUsable() = runTest {
+        beforeBridge = { if (it == "probe_endpoint") awaitCancellation() }
+        setup.open(); setup.addEndpoint()
+        val finding = launch { setup.findServer("spark-98d1", null) }
+        runCurrent()
+        assertEquals(true, setup.state.value?.busy)
+
+        finding.cancel()
+        finding.join()
+
+        assertEquals(false, setup.state.value?.busy)
+        assertTrue(setup.step() is SetupStep.Endpoint)
     }
 
     @Test

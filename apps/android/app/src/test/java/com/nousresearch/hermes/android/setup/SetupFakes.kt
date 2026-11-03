@@ -38,7 +38,9 @@ abstract class SetupFakes {
     protected val polls = ArrayDeque(listOf("""{"status":"pending"}""", """{"status":"approved"}"""))
     protected var disconnect: (JsonObject) -> String = { """{"slug":"deepseek","name":"DeepSeek","disconnected":true}""" }
     protected var configSet: (JsonObject) -> String = { """{"key":"model","value":"deepseek-v4-pro","scope":"global"}""" }
+    protected var onCoreCall: (method: String) -> Unit = {}  // runs first in each core call (the reply is not suspend)
     protected val core = FakeCoreGateway { method, params ->
+        onCoreCall(method)
         log += method
         when (method) {
             "setup.status" -> """{"provider_configured":false}"""
@@ -58,7 +60,9 @@ abstract class SetupFakes {
     protected var secretsChanged: () -> Unit = { log += "secrets_changed" }
     protected var onList: () -> Unit = {}  // runs while the Python half reads the list
     protected var onSave: suspend () -> Unit = {}  // runs while the Python half saves an endpoint
+    protected var beforeBridge: suspend (function: String) -> Unit = {}  // runs first in each bridge call: may hold its answer
     protected val bridge = AppBridge { function, request ->
+        beforeBridge(function)
         if (function == "list_custom_endpoints") onList()
         if (function == "delete_custom_endpoint") dropListed(Json.parseToJsonElement(request).jsonObject.getValue("id").jsonPrimitive.content)
         answers[function]?.let { sent += function to request; return@AppBridge it }
