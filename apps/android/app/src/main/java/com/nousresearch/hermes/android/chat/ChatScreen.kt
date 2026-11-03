@@ -66,6 +66,7 @@ import com.nousresearch.hermes.android.ui.CodeFont
 import com.nousresearch.hermes.android.ui.Hermes
 import com.nousresearch.hermes.android.ui.HermesIcons
 import com.nousresearch.hermes.android.ui.Wordmark
+import com.nousresearch.hermes.bridge.protocol.TurnStatus
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
@@ -74,13 +75,13 @@ import kotlin.random.Random
 /**
  * A chat in the desktop's shape: the transcript is the page, replies flat across it and the user's words in
  * bubbles, the composer at the bottom naming the model, and a drawer with the sessions and the app's other places.
- * It holds only the draft; [onSend] gets the trimmed text. [onSessions] hears the drawer open (load the sessions)
+ * It holds only the draft; [onSend] gets the trimmed text, [onRetry] runs the last prompt again. [onSessions] hears the drawer open (load the sessions)
  * and close.
  */
 @Composable
 fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifier, about: String? = null,
                onSetup: (() -> Unit)? = null, answers: PromptAnswers? = null, onTerminal: (() -> Unit)? = null,
-               onGateway: (() -> Unit)? = null, onStop: () -> Unit = {}, onSettings: (() -> Unit)? = null,
+               onGateway: (() -> Unit)? = null, onStop: () -> Unit = {}, onRetry: (() -> Unit)? = null, onSettings: (() -> Unit)? = null,
                onNewChat: (() -> Unit)? = null, sessions: HistoryUi? = null, onSessions: (open: Boolean) -> Unit = {},
                onPickSession: (String) -> Unit = {}) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
@@ -108,7 +109,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
         Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).safeDrawingPadding()) {
             TopBar(onMenu = if (hasDrawer) ({ scope.launch { drawer.open() } }) else null, onNewChat)
             if (chat.entries.isEmpty() && !chat.running && chat.prompts.isEmpty()) Intro(Modifier.weight(1f))
-            else Transcript(chat, Modifier.weight(1f))
+            else Transcript(chat, onRetry, Modifier.weight(1f))
             // One question at a time, the oldest first: the turn waits on it.
             if (answers != null) chat.prompts.firstOrNull()?.let { PromptCard(it, answers) }
             Composer(chat, onSend, onStop, onSetup)
@@ -145,13 +146,15 @@ private fun Intro(modifier: Modifier) {
 }
 
 @Composable
-private fun Transcript(chat: Chat, modifier: Modifier) {
+private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, modifier: Modifier) {
     val list = rememberLazyListState()
-    val rows = chat.entries.size + (if (chat.running) 1 else 0) + (if (chat.activity != null) 1 else 0)
+    val retry = onRetry?.takeIf { chat.retryTarget() != null }
+    val rows = chat.entries.size + (if (chat.running) 1 else 0) + (if (chat.activity != null) 1 else 0) + (if (retry != null) 1 else 0)
     LaunchedEffect(rows, chat.streaming) { if (rows > 0) list.animateScrollToItem(rows - 1) }
     LazyColumn(modifier.fillMaxWidth(), list, PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                verticalArrangement = Arrangement.spacedBy(14.dp)) {
         items(chat.entries) { EntryRow(it) }
+        retry?.let { item { RetryAction(failed = (chat.entries.last() as? Entry.Reply)?.status != TurnStatus.COMPLETE, it) } }
         chat.reasoning?.takeIf { chat.running && it.isNotBlank() }?.let { text -> item { Reasoning(text, Modifier.testTag("reasoning-streaming")) } }
         chat.streaming?.let { text ->
             item { if (text.isEmpty()) Text("…", color = MaterialTheme.colorScheme.onSurfaceVariant) else Reply(text) }
@@ -165,6 +168,18 @@ private fun Transcript(chat: Chat, modifier: Modifier) {
                 }
             }
         }
+    }
+}
+
+/** Runs the last prompt again: a quiet icon under an answer, the icon and its word after a failed turn (the desktop's two). */
+@Composable
+private fun RetryAction(failed: Boolean, onRetry: () -> Unit) {
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    val label = stringResource(R.string.chat_retry)
+    Row(Modifier.clip(CircleShape).clickable(onClick = onRetry).testTag("retry").heightIn(min = 48.dp)
+            .padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(HermesIcons.Retry, if (failed) null else label, Modifier.size(16.dp), tint = muted)
+        if (failed) Text(label, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelLarge, color = muted)
     }
 }
 

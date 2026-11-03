@@ -108,6 +108,7 @@ class MainActivity : ComponentActivity() {
                                                         secret = { p, value -> app.chat { secret(p, value) } })
                             ChatScreen(chat, about = state.about, onSetup = { app.setup { open() } }, answers = answers,
                                        onTerminal = { app.ssh { open() } }, onGateway = app::openGateway, onStop = { app.chat { cancel() } },
+                                       onRetry = { app.chat { retry() } },
                                        onSettings = { app.settings { open() } }, onNewChat = { app.chat { open() } },
                                        // The drawer's sessions load as it opens; a tap continues one.
                                        sessions = history, onSessions = { open -> if (open) app.history { open() } else state.history.close() },

@@ -43,4 +43,5 @@ object HermesIcons {
     val Tool = icon("tool", "M7 10h3v-3l-3.5-3.5a6 6 0 0 1 8 8l6 6a2 2 0 0 1-3 3l-6-6a6 6 0 0 1-8-8l3.5 3.5")
     val Check = icon("check", "M5 12l5 5l10-10")
     val Alert = icon("alert-circle", "M3 12a9 9 0 1 0 18 0a9 9 0 0 0-18 0", "M12 8v4", "M12 16h.01")
+    val Retry = icon("refresh", "M20 11a8.1 8.1 0 0 0-15.5-2m-.5-4v4h4", "M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4")
 }

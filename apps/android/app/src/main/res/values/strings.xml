@@ -10,6 +10,7 @@
     <string name="chat_stop">Stop</string>
     <string name="chat_new">New chat</string>
     <string name="chat_menu">Menu</string>
+    <string name="chat_retry">Retry</string>
     <string name="sessions_title">Sessions</string>
     <string name="sessions_today">Today</string>
     <string name="sessions_yesterday">Yesterday</string>

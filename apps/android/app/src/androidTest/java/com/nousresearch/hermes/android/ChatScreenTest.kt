@@ -9,6 +9,7 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -222,5 +223,43 @@ class ChatScreenTest {
         compose.onNodeWithTag("open-setup").performClick()
 
         assertEquals(1, opened)
+    }
+
+    @Test
+    fun theLastAnswerOffersRetryAndATapAsksForIt() {
+        var taps = 0
+        compose.setContent {
+            ChatScreen(Chat(listOf(Entry.User("hi", 1), Entry.Reply("Hello", TurnStatus.COMPLETE))), onSend = {}, onRetry = { taps++ })
+        }
+
+        compose.onNodeWithTag("retry").performClick()
+
+        assertEquals(1, taps)
+        compose.onNodeWithContentDescription("Retry").assertExists()
+        compose.onNodeWithText("Retry").assertDoesNotExist()  // under an ordinary answer: the icon alone
+    }
+
+    @Test
+    fun aFailedTurnOffersRetryInWords() {
+        var chat by mutableStateOf(Chat(listOf(Entry.User("hi"), Entry.Notice("Provider unavailable"))))
+        compose.setContent { ChatScreen(chat, onSend = {}, onRetry = {}) }
+
+        compose.onNodeWithText("Retry").assertExists()
+        chat = Chat(listOf(Entry.User("hi"), Entry.Reply("", TurnStatus.ERROR, error = "timed out")))
+        compose.onNodeWithText("Retry").assertExists()
+    }
+
+    @Test
+    fun noRetryWhileATurnRunsBeforeAnAnswerOrWithoutAHandler() {
+        var chat by mutableStateOf(Chat(listOf(Entry.User("hi")), streaming = "He"))
+        var onRetry by mutableStateOf<(() -> Unit)?>({})
+        compose.setContent { ChatScreen(chat, onSend = {}, onRetry = onRetry) }
+
+        compose.onNodeWithTag("retry").assertDoesNotExist()  // running
+        chat = Chat(listOf(Entry.User("hi")))
+        compose.onNodeWithTag("retry").assertDoesNotExist()  // sent, no answer yet
+        chat = Chat(listOf(Entry.User("hi"), Entry.Reply("Hello", TurnStatus.COMPLETE)))
+        onRetry = null
+        compose.onNodeWithTag("retry").assertDoesNotExist()  // no handler
     }
 }
