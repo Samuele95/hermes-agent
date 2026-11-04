@@ -4,6 +4,8 @@ import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.nousresearch.hermes.android.chat.ChatSession
+import com.nousresearch.hermes.android.chat.RuntimeSessionId
+import com.nousresearch.hermes.android.chat.StoredSessionId
 import com.nousresearch.hermes.android.turn.TurnHost
 import com.nousresearch.hermes.bridge.CoreError
 import com.nousresearch.hermes.bridge.CoreGateway
@@ -44,16 +46,16 @@ class SessionLivenessDeviceTest {
     }
 
     /** Titles live session [runtime] (which persists its row) and answers its stored key. */
-    private suspend fun persisted(runtime: String): String {
-        gateway.call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = runtime, title = "b3 left ${System.nanoTime()}"))
-        return checkNotNull(gateway.call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = runtime)).sessionKey) { "no stored key" }
+    private suspend fun persisted(runtime: RuntimeSessionId): StoredSessionId {
+        gateway.call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = runtime.value, title = "b3 left ${System.nanoTime()}"))
+        return StoredSessionId(checkNotNull(gateway.call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = runtime.value)).sessionKey) { "no stored key" })
     }
 
     /** Deletes stored row [stored], asking again while the core still has its session live (4023). */
-    private suspend fun deleteOnceClosed(stored: String): String {
+    private suspend fun deleteOnceClosed(stored: StoredSessionId): String {
         while (true) {
             try {
-                return gateway.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = stored)).deleted
+                return gateway.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = stored.value)).deleted
             } catch (live: CoreError) {
                 if (live.code != 4023) throw live
                 delay(200)
@@ -65,8 +67,8 @@ class SessionLivenessDeviceTest {
     fun aSessionTheChatLeavesIdleCanBeDeleted() = runBlocking<Unit> {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val chat = ChatSession(gateway, noTurns, scope, keepSecret = { _, _ -> })
-        var left: String? = null
-        var stored: String? = null
+        var left: RuntimeSessionId? = null
+        var stored: StoredSessionId? = null
         try {
             chat.open()
             left = chat.sessionId
@@ -76,20 +78,20 @@ class SessionLivenessDeviceTest {
             val since = System.nanoTime()
             val deleted = withTimeout(120_000) { deleteOnceClosed(stored) }
 
-            assertEquals(stored, deleted)
+            assertEquals(stored.value, deleted)
             Log.i("SessionLiveness", "left session deletable after ${(System.nanoTime() - since) / 1_000_000} ms")
         } finally {
             // A failed run leaves no session or row behind on the shared phone.
-            runCatching { gateway.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = chat.sessionId)) }
-            left?.let { runCatching { gateway.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = it)) } }
-            stored?.let { runCatching { gateway.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = it)) } }
+            runCatching { gateway.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = chat.sessionId.value)) }
+            left?.let { runCatching { gateway.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = it.value)) } }
+            stored?.let { runCatching { gateway.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = it.value)) } }
             scope.cancel()
         }
     }
 
     /** The core's answer to deleting [stored] now: its refusal code. */
-    private fun refusalOf(stored: String): Int = assertThrows(CoreError::class.java) {
-        runBlocking { gateway.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = stored)) }
+    private fun refusalOf(stored: StoredSessionId): Int = assertThrows(CoreError::class.java) {
+        runBlocking { gateway.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = stored.value)) }
     }.code
 
     @Test
@@ -97,21 +99,21 @@ class SessionLivenessDeviceTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val chat = ChatSession(gateway, noTurns, scope, keepSecret = { _, _ -> })
         val runtimes = mutableListOf<String>()
-        val rows = mutableListOf<String>()
+        val rows = mutableListOf<StoredSessionId>()
         try {
             chat.open()
-            val own = chat.sessionId.also(runtimes::add)
+            val own = chat.sessionId.also { runtimes += it.value }
             val stored = persisted(own).also(rows::add)
 
             chat.delete(stored)  // the chat's own: a new chat first, the old session closed, then the row
 
-            assertNotEquals(own, chat.sessionId.also(runtimes::add))
+            assertNotEquals(own, chat.sessionId.also { runtimes += it.value })
             assertEquals(4007, refusalOf(stored))  // gone
             chat.delete(stored)  // gone already counts as deleted
 
             val other = persisted(chat.sessionId).also(rows::add)
             chat.open()  // leaves it idle; its close waits for its agent build
-            runtimes += chat.sessionId
+            runtimes += chat.sessionId.value
             val since = System.nanoTime()
             withTimeout(120_000) { chat.delete(other) }  // waits for the left session's close itself (W7)
             Log.i("SessionLiveness", "other session deleted after ${(System.nanoTime() - since) / 1_000_000} ms")
@@ -119,33 +121,33 @@ class SessionLivenessDeviceTest {
         } finally {
             // A failed run leaves no session or row behind on the shared phone.
             runtimes.forEach { runCatching { gateway.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = it)) } }
-            rows.forEach { runCatching { gateway.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = it)) } }
+            rows.forEach { runCatching { gateway.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = it.value)) } }
             scope.cancel()
         }
     }
 
     /** The stored row the core lists under exactly [title]. */
-    private suspend fun rowTitled(title: String): String =
-        gateway.call(Methods.SESSION_LIST, SessionListParams(title = title)).sessions.single().let { it.resolvedId ?: it.id }
+    private suspend fun rowTitled(title: String): StoredSessionId =
+        gateway.call(Methods.SESSION_LIST, SessionListParams(title = title)).sessions.single().let { StoredSessionId(it.resolvedId ?: it.id) }
 
     @Test
     fun aStoredRowIsRenamedAsideAndLetGo() = runBlocking<Unit> {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val chat = ChatSession(gateway, noTurns, scope, keepSecret = { _, _ -> })
         val runtimes = mutableListOf<String>()
-        val rows = mutableListOf<String>()
+        val rows = mutableListOf<StoredSessionId>()
         try {
             chat.open()
-            val left = chat.sessionId.also(runtimes::add)
+            val left = chat.sessionId.also { runtimes += it.value }
             val stored = persisted(left).also(rows::add)
             chat.open()  // leaves `left` idle
-            runtimes += chat.sessionId
+            runtimes += chat.sessionId.value
 
             // The left session's own close first, so the rename meets a fresh lazy mount, not a reuse.
             withTimeout(120_000) {
                 while (true) {
                     try {
-                        gateway.call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = left))
+                        gateway.call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = left.value))
                         delay(200)
                     } catch (gone: CoreError) {
                         assertEquals(4001, gone.code)  // the runtime is gone
@@ -159,7 +161,7 @@ class SessionLivenessDeviceTest {
 
             assertEquals(stored, rowTitled(named))
             // Let go after the title: the first delete is not refused as live (4023).
-            assertEquals(stored, gateway.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = stored)).deleted)
+            assertEquals(stored.value, gateway.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = stored.value)).deleted)
 
             val running = chat.sessionId
             val own = persisted(running).also(rows::add)
@@ -170,7 +172,7 @@ class SessionLivenessDeviceTest {
         } finally {
             // A failed run leaves no session or row behind on the shared phone.
             runtimes.forEach { runCatching { gateway.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = it)) } }
-            rows.forEach { runCatching { gateway.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = it)) } }
+            rows.forEach { runCatching { gateway.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = it.value)) } }
             scope.cancel()
         }
     }

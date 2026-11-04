@@ -103,7 +103,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
                onGateway: (() -> Unit)? = null, onStop: () -> Unit = {}, onRetry: (() -> Unit)? = null, onCopy: ((String) -> Unit)? = null,
                onSettings: (() -> Unit)? = null,
                onNewChat: (() -> Unit)? = null, sessions: HistoryUi? = null, onSessions: (open: Boolean) -> Unit = {},
-               onPickSession: (String) -> Unit = {}, sessionActions: SessionActions? = null, context: ContextUi? = null, onContext: (() -> Unit)? = null,
+               onPickSession: (StoredSessionId) -> Unit = {}, sessionActions: SessionActions? = null, context: ContextUi? = null, onContext: (() -> Unit)? = null,
                onCompress: (String?) -> Unit = {}, onCloseContext: () -> Unit = {}) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()

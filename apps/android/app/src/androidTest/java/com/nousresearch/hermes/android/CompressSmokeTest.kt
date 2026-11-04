@@ -46,7 +46,7 @@ class CompressSmokeTest {
         steps.setUpEndpoint()
         val ready = steps.app.core.value as CoreState.Ready
         fun coreUsers() = runBlocking {
-            ready.gateway.call(Methods.SESSION_HISTORY, SessionHistoryParams(sessionId = ready.chat.sessionId))
+            ready.gateway.call(Methods.SESSION_HISTORY, SessionHistoryParams(sessionId = ready.chat.sessionId.value))
         }.messages.filter { it.role == "user" && it.displayKind == null }.map { it.text.orEmpty() }
         fun shownUsers() = steps.chat().entries.filterIsInstance<Entry.User>().map { it.text }
         val statuses = Collections.synchronizedList(mutableListOf<String>())

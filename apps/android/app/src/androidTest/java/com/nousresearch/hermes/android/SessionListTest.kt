@@ -13,6 +13,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.nousresearch.hermes.android.chat.HistoryUi
 import com.nousresearch.hermes.android.chat.SessionActions
 import com.nousresearch.hermes.android.chat.SessionList
+import com.nousresearch.hermes.android.chat.StoredSessionId
 import com.nousresearch.hermes.bridge.protocol.SessionListRow
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -32,12 +33,12 @@ class SessionListTest {
     private val now = System.currentTimeMillis() / 1000.0
 
     private val heard = mutableListOf<String>()
-    private val actions = SessionActions(edit = { heard += "edit:$it" }, saveTitle = { heard += "save:$it" },
-                                         askDelete = { heard += "ask:$it" }, confirmDelete = { heard += "confirm" })
+    private val actions = SessionActions(edit = { heard += "edit:${it?.value}" }, saveTitle = { heard += "save:$it" },
+                                         askDelete = { heard += "ask:${it?.value}" }, confirmDelete = { heard += "confirm" })
     private val calendar = listOf(SessionListRow(id = "db-1", title = "Calendar", messageCount = 3, startedAt = now - 60))
 
     private fun show(ui: HistoryUi, actions: SessionActions? = null) =
-        compose.setContent { SessionList(ui, onPick = { picked += it }, actions = actions) }
+        compose.setContent { SessionList(ui, onPick = { picked += it.value }, actions = actions) }
 
     @Test
     fun aPastSessionIsListedUnderItsHeadingAndContinuedOnATap() {
@@ -85,7 +86,7 @@ class SessionListTest {
 
     @Test
     fun theRowBeingRenamedIsAFieldThatSavesItsTitle() {
-        show(HistoryUi(calendar, editing = "db-1"), actions)
+        show(HistoryUi(calendar, editing = StoredSessionId("db-1")), actions)
 
         compose.onNodeWithTag("rename-field").assertTextEquals("Calendar")
         compose.onNodeWithTag("rename-field").performTextReplacement("Trip plans")
@@ -100,7 +101,7 @@ class SessionListTest {
 
     @Test
     fun aDeleteAsksBeforeItDeletes() {
-        show(HistoryUi(calendar, confirmDelete = "db-1"), actions)
+        show(HistoryUi(calendar, confirmDelete = StoredSessionId("db-1")), actions)
 
         compose.onNodeWithTag("delete-dialog").assertExists()
         compose.onNodeWithText("This will permanently delete “Calendar”", substring = true).assertExists()

@@ -4,6 +4,8 @@ import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.nousresearch.hermes.android.chat.ChatSession
+import com.nousresearch.hermes.android.chat.RuntimeSessionId
+import com.nousresearch.hermes.android.chat.StoredSessionId
 import com.nousresearch.hermes.android.turn.TurnHost
 import com.nousresearch.hermes.bridge.CoreError
 import com.nousresearch.hermes.bridge.CoreGateway
@@ -43,14 +45,14 @@ class ReopenLastSessionDeviceTest {
     }
 
     /** Titles live session [runtime] with [title] (which persists its row) and answers its stored key. */
-    private suspend fun persisted(runtime: String, title: String): String {
-        gateway.call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = runtime, title = title))
-        return checkNotNull(gateway.call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = runtime)).sessionKey) { "no stored key" }
+    private suspend fun persisted(runtime: RuntimeSessionId, title: String): StoredSessionId {
+        gateway.call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = runtime.value, title = title))
+        return StoredSessionId(checkNotNull(gateway.call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = runtime.value)).sessionKey) { "no stored key" })
     }
 
     /** True while the core still has runtime session [runtime] live. */
-    private suspend fun live(runtime: String): Boolean = try {
-        gateway.call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = runtime))
+    private suspend fun live(runtime: RuntimeSessionId): Boolean = try {
+        gateway.call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = runtime.value))
         true
     } catch (gone: CoreError) {
         false
@@ -61,8 +63,8 @@ class ReopenLastSessionDeviceTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val chatA = ChatSession(gateway, noTurns, scope, keepSecret = { _, _ -> })
         val chatB = ChatSession(gateway, noTurns, scope, keepSecret = { _, _ -> })
-        var left: String? = null
-        var stored: String? = null
+        var left: RuntimeSessionId? = null
+        var stored: StoredSessionId? = null
         try {
             chatA.open()
             left = chatA.sessionId
@@ -72,23 +74,23 @@ class ReopenLastSessionDeviceTest {
             chatA.open()  // leaves `left` idle: the chat closes it once its agent build has settled
             withTimeout(120_000) { while (live(left)) delay(200) }  // so the start below resumes it cold
 
-            assertEquals("the titled row is the core's most recent", stored,
+            assertEquals("the titled row is the core's most recent", stored.value,
                          gateway.call(Methods.SESSION_MOST_RECENT, SessionMostRecentParams()).sessionId)
 
             val since = System.nanoTime()
             chatB.start()
             Log.i("ReopenLast", "start reopened in ${(System.nanoTime() - since) / 1_000_000} ms")
 
-            val reopened = gateway.call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = chatB.sessionId))
-            assertEquals(stored, reopened.sessionKey)
+            val reopened = gateway.call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = chatB.sessionId.value))
+            assertEquals(stored.value, reopened.sessionKey)
             assertEquals(title, reopened.title)
             assertNotEquals(left, chatB.sessionId)
         } finally {
             // A failed run leaves no session or row behind on the shared phone.
-            runCatching { gateway.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = chatA.sessionId)) }
-            runCatching { gateway.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = chatB.sessionId)) }
-            left?.let { runCatching { gateway.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = it)) } }
-            stored?.let { runCatching { gateway.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = it)) } }
+            runCatching { gateway.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = chatA.sessionId.value)) }
+            runCatching { gateway.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = chatB.sessionId.value)) }
+            left?.let { runCatching { gateway.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = it.value)) } }
+            stored?.let { runCatching { gateway.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = it.value)) } }
             scope.cancel()
         }
     }

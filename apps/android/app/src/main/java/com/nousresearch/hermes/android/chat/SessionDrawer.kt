@@ -68,9 +68,9 @@ import java.util.Locale
 /** One place the drawer leads to. */
 data class DrawerLink(val icon: ImageVector, val label: String, val tag: String, val go: () -> Unit)
 
-/** What a session row's menu does (sessions-05/06): [edit] / [askDelete] take a stored id, null to stop. */
-class SessionActions(val edit: (storedId: String?) -> Unit, val saveTitle: (String) -> Unit,
-                     val askDelete: (storedId: String?) -> Unit, val confirmDelete: () -> Unit)
+/** What a session row's menu does (sessions-05/06): [edit] / [askDelete] take a row's stored key, null to stop. */
+class SessionActions(val edit: (stored: StoredSessionId?) -> Unit, val saveTitle: (String) -> Unit,
+                     val askDelete: (stored: StoredSessionId?) -> Unit, val confirmDelete: () -> Unit)
 
 /**
  * The drawer the chat slides out, in the shape of the desktop's sidebar: the brand, a new chat and the places the
@@ -78,7 +78,7 @@ class SessionActions(val edit: (storedId: String?) -> Unit, val saveTitle: (Stri
  * a long press on a session offers to rename or delete it.
  */
 @Composable
-fun ColumnScope.SessionDrawerContent(links: List<DrawerLink>, sessions: HistoryUi?, onPick: (String) -> Unit, about: String?,
+fun ColumnScope.SessionDrawerContent(links: List<DrawerLink>, sessions: HistoryUi?, onPick: (StoredSessionId) -> Unit, about: String?,
                                      actions: SessionActions? = null) {
     Row(Modifier.padding(start = 20.dp, end = 16.dp, top = 20.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         Image(painterResource(if (Hermes.colors.dark) R.drawable.brand_mark_dark else R.drawable.brand_mark), null,
@@ -124,10 +124,10 @@ private fun Caption(label: String, modifier: Modifier = Modifier) {
  * row's menu (Rename… · Delete), the row being renamed is a title field, and a delete asks first.
  */
 @Composable
-fun SessionList(ui: HistoryUi, onPick: (String) -> Unit, modifier: Modifier = Modifier, actions: SessionActions? = null) {
+fun SessionList(ui: HistoryUi, onPick: (StoredSessionId) -> Unit, modifier: Modifier = Modifier, actions: SessionActions? = null) {
     val now = remember(ui) { System.currentTimeMillis() }
     val groups = remember(ui.sessions, now) { groupSessions(ui.sessions, now) }
-    var menuFor by remember { mutableStateOf<String?>(null) }  // the row whose menu is open: transient UI (D7)
+    var menuFor by remember { mutableStateOf<StoredSessionId?>(null) }  // the row whose menu is open: transient UI (D7)
     Column(modifier.fillMaxWidth().testTag("history")) {
         if (ui.busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp).height(2.dp))
         ui.error?.let {
@@ -145,19 +145,19 @@ fun SessionList(ui: HistoryUi, onPick: (String) -> Unit, modifier: Modifier = Mo
                          style = MaterialTheme.typography.labelMedium, color = Hermes.colors.textTertiary)
                 }
                 items(group.sessions, key = { it.id }) { row ->
-                    if (actions != null && ui.editing == row.id) RenameField(row, ui.busy, actions)
+                    if (actions != null && ui.editing == row.stored) RenameField(row, ui.busy, actions)
                     else Box {
-                        SessionRow(row, now, enabled = !ui.busy, onPick = { onPick(row.id) },
-                                   onMenu = actions?.let { { menuFor = row.id } })
-                        if (actions != null) RowMenu(open = menuFor == row.id, onDismiss = { menuFor = null },
-                                                     onRename = { menuFor = null; actions.edit(row.id) },
-                                                     onDelete = { menuFor = null; actions.askDelete(row.id) })
+                        SessionRow(row, now, enabled = !ui.busy, onPick = { onPick(row.stored) },
+                                   onMenu = actions?.let { { menuFor = row.stored } })
+                        if (actions != null) RowMenu(open = menuFor == row.stored, onDismiss = { menuFor = null },
+                                                     onRename = { menuFor = null; actions.edit(row.stored) },
+                                                     onDelete = { menuFor = null; actions.askDelete(row.stored) })
                     }
                 }
             }
         }
     }
-    if (actions != null) ui.confirmDelete?.let { id -> DeleteDialog(ui.sessions.find { it.id == id }?.label() ?: id, actions) }
+    if (actions != null) ui.confirmDelete?.let { id -> DeleteDialog(ui.sessions.find { it.stored == id }?.label() ?: id.value, actions) }
 }
 
 /** What a row is called: its title, else the start of its first message, else its id. */

@@ -108,6 +108,9 @@ class ChatSessionTest {
     /** The params of the last call of [method]. */
     private fun lastOf(method: String) = core.calls.last { it.first == method }.second
 
+    private fun runtime(id: String) = RuntimeSessionId(id)
+    private fun stored(id: String) = StoredSessionId(id)
+
     private fun TestScope.openChat() =
         ChatSession(core, host, backgroundScope, keepSecret = { name, value -> keepSecret(name, value) }, notifier = notifier)
 
@@ -136,7 +139,7 @@ class ChatSessionTest {
         val chat = openChat().apply { open() }
         assertEquals("deepseek-chat", chat.state.value.model)
 
-        chat.resume("db-old")  // a stored session runs the model it was resumed with
+        chat.resume(stored("db-old"))  // a stored session runs the model it was resumed with
 
         assertEquals("kimi-k2", chat.state.value.model)
     }
@@ -160,7 +163,7 @@ class ChatSessionTest {
                               "usage":{"context_used":6000,"context_max":32000,"context_percent":19}}}""" }
         val chat = openChat().apply { open() }
 
-        chat.resume("db-old")
+        chat.resume(stored("db-old"))
 
         assertEquals(TodoList(listOf(Todo("1", "Read the calendar", TodoStatus.COMPLETED), Todo("2", "Answer", TodoStatus.IN_PROGRESS)), 4),
                      chat.state.value.todos)
@@ -280,7 +283,7 @@ class ChatSessionTest {
     fun resumingASessionBringsItsTranscriptBackAndSendsToIt() = runTest(UnconfinedTestDispatcher()) {
         val chat = openChat().apply { open() }
 
-        chat.resume("db-old")
+        chat.resume(stored("db-old"))
         chat.send("and tomorrow?")
 
         assertEquals(listOf(Entry.User("what's on my calendar?"), Entry.Reply("Two meetings.", TurnStatus.COMPLETE),
@@ -296,7 +299,7 @@ class ChatSessionTest {
         chat.send("hello")
         core.emit("message.start", "s1")
 
-        chat.resume("db-old")
+        chat.resume(stored("db-old"))
 
         assertEquals(listOf("begin:s1", "end:s1"), turns)
         assertFalse(chat.state.value.running)
@@ -403,7 +406,7 @@ class ChatSessionTest {
 
         chat.open()
 
-        assertEquals("s2", chat.sessionId)
+        assertEquals(runtime("s2"), chat.sessionId)
         assertEquals(emptyList<Entry>(), chat.state.value.entries)
     }
 
@@ -551,7 +554,7 @@ class ChatSessionTest {
         }
         val chat = ChatSession(fresh, host, backgroundScope, keepSecret = { _, _ -> }, notifier = notifier).apply { open() }
 
-        chat.resume("db-live")
+        chat.resume(stored("db-live"))
 
         val shown = chat.state.value
         assertEquals("Monday: ", shown.streaming)  // running: Stop is offered, the reply goes on
@@ -577,7 +580,7 @@ class ChatSessionTest {
         val chat = ChatSession(fresh, host, backgroundScope, keepSecret = { _, _ -> }).apply { open() }
         fresh.ask("srq-1", "clarify", """{"session_id":"s1","questions":[{"qid":"q1","question":"Which day?"}]}""")
 
-        chat.resume("db1")  // History → the conversation already on screen
+        chat.resume(stored("db1"))  // History → the conversation already on screen
 
         assertEquals(emptyList<Pair<String, String>>(), fresh.settled)  // nothing declined behind the user's back
         chat.clarify(chat.state.value.prompts.single() as Prompt.Clarify, mapOf("q1" to "Tue"))
@@ -598,7 +601,7 @@ class ChatSessionTest {
         val chat = ChatSession(fresh, host, backgroundScope, keepSecret = { _, _ -> }).apply { open() }
         fresh.ask("srq-7", "approval", """{"session_id":"s1","request_id":"r7","command":"rm -rf build"}""")
 
-        chat.resume("db1")
+        chat.resume(stored("db1"))
 
         assertEquals(emptyList<Pair<String, String>>(), fresh.settled)  // not declined (an approval declined = denied)
         chat.approve(chat.state.value.prompts.single() as Prompt.Approval, ApprovalChoice.ONCE)
@@ -666,10 +669,10 @@ class ChatSessionTest {
         val chat = openChat().apply { open() }
         core.emit("session.info", "s1", "{}")  // its agent is built
 
-        chat.resume("db-old")
+        chat.resume(stored("db-old"))
 
         assertEquals(listOf("s1"), closed())
-        assertEquals("s-resumed", chat.sessionId)
+        assertEquals(runtime("s-resumed"), chat.sessionId)
         assertEquals(listOf(Entry.User("what's on my calendar?"), Entry.Reply("Two meetings.", TurnStatus.COMPLETE)), chat.state.value.entries)
     }
 
@@ -684,23 +687,23 @@ class ChatSessionTest {
 
         assertEquals(emptyList<String>(), closed())  // the core keeps running it
         assertEquals(listOf("begin:s1", "end:s1"), turns)  // the app lets the turn go
-        assertEquals("s2", chat.sessionId)
+        assertEquals(runtime("s2"), chat.sessionId)
     }
 
     @Test
     fun aConversationLeftBeforeItsTurnStartsStaysOpen() = runTest(UnconfinedTestDispatcher()) {
-        val waysOut: List<suspend (ChatSession) -> Unit> = listOf({ it.open() }, { it.resume("db-old") })
+        val waysOut: List<suspend (ChatSession) -> Unit> = listOf({ it.open() }, { it.resume(stored("db-old")) })
         for ((i, wayOut) in waysOut.withIndex()) {
             val chat = openChat().apply { open() }
             val left = chat.sessionId
-            core.emit("session.info", left, "{}")  // its build settled: an idle session would be closed now
+            core.emit("session.info", left.value, "{}")  // its build settled: an idle session would be closed now
             chat.send("hello")  // prompt.submit answered, no message.start yet
 
             wayOut(chat)
 
             assertEquals("way out $i: the turn about to start runs on (V1)", emptyList<String>(), closed())
-            core.emit("message.start", left)
-            core.emit("message.complete", left, """{"text":"hi"}""")
+            core.emit("message.start", left.value)
+            core.emit("message.complete", left.value, """{"text":"hi"}""")
             assertEquals("way out $i: its turn ran in the core", emptyList<String>(), closed())
             assertTrue("way out $i", chat.sessionId != left)
         }
@@ -720,8 +723,8 @@ class ChatSessionTest {
         }
         val chat = ChatSession(fresh, host, backgroundScope, keepSecret = { _, _ -> }).apply { open() }
 
-        chat.resume("db1")  // before s1's build has settled: a close decided now would fire whenever it settles
-        assertEquals("s1", chat.sessionId)
+        chat.resume(stored("db1"))  // before s1's build has settled: a close decided now would fire whenever it settles
+        assertEquals(runtime("s1"), chat.sessionId)
         chat.send("hello")
         fresh.emit("message.start", "s1")
         chat.open()  // s1 left while its turn runs: it runs on
@@ -740,7 +743,7 @@ class ChatSessionTest {
         core.emit("error", "s1", """{"message":"Hermes could not start the assistant"}""")
 
         assertEquals(listOf("s1"), closed())
-        assertEquals("s2", chat.sessionId)
+        assertEquals(runtime("s2"), chat.sessionId)
         assertEquals(emptyList<Entry>(), chat.state.value.entries)  // s1's error, not the chat's
     }
 
@@ -756,14 +759,14 @@ class ChatSessionTest {
             }
         }
         val chat = ChatSession(fresh, host, backgroundScope, keepSecret = { _, _ -> }).apply { open() }
-        chat.resume("db1")  // the session the chat is in: nothing to close
+        chat.resume(stored("db1"))  // the session the chat is in: nothing to close
         chat.open()  // s1 left before its build settled: its close waits
-        chat.resume("db1")  // back on s1, which the core still has live
+        chat.resume(stored("db1"))  // back on s1, which the core still has live
 
         fresh.emit("session.info", "s1", "{}")
 
         assertEquals(emptyList<String>(), fresh.calls.filter { it.first == "session.close" }.map { it.first })
-        assertEquals("s1", chat.sessionId)
+        assertEquals(runtime("s1"), chat.sessionId)
     }
 
     @Test
@@ -775,7 +778,7 @@ class ChatSessionTest {
         chat.open()  // the close fails in the background; runTest fails on an uncaught exception there
 
         assertEquals(listOf("s1"), closed())
-        assertEquals("s2", chat.sessionId)
+        assertEquals(runtime("s2"), chat.sessionId)
         assertEquals(emptyList<Entry>(), chat.state.value.entries)
     }
 
@@ -784,17 +787,17 @@ class ChatSessionTest {
         val chat = openChat().apply { open() }
         core.emit("session.info", "s1", "{}")
 
-        chat.delete("db1")
+        chat.delete(stored("db1"))
 
         // The core refuses to delete a live session: a new chat first, the old session closed, then its row deleted.
         assertEquals(listOf("session.create" to null, "session.close" to "s1", "session.delete" to "db1"), callsAfter(1))
-        assertEquals("s2", chat.sessionId)
+        assertEquals(runtime("s2"), chat.sessionId)
         assertEquals(emptyList<Entry>(), chat.state.value.entries)
 
-        chat.resume("db-old")  // a resumed session goes by the stored key the core answered, its compression tip
+        chat.resume(stored("db-old"))  // a resumed session goes by the stored key the core answered, its compression tip
         core.emit("session.info", "s-resumed", "{}")
         val mark = core.calls.size
-        chat.delete("db-old-tip")
+        chat.delete(stored("db-old-tip"))
 
         assertEquals(listOf("session.create" to null, "session.close" to "s-resumed", "session.delete" to "db-old-tip"), callsAfter(mark))
     }
@@ -806,12 +809,12 @@ class ChatSessionTest {
         core.emit("message.start", "s1")
         val mark = core.calls.size
 
-        val refused = runCatching { chat.delete("db1") }.exceptionOrNull()
+        val refused = runCatching { chat.delete(stored("db1")) }.exceptionOrNull()
 
         assertTrue("$refused", refused is SetupRefusal)
         assertEquals(ChatSession.STILL_WORKING, refused?.message)
         assertEquals(emptyList<Pair<String, String?>>(), callsAfter(mark))
-        assertEquals("s1", chat.sessionId)
+        assertEquals(runtime("s1"), chat.sessionId)
         assertTrue(chat.state.value.running)
     }
 
@@ -825,22 +828,22 @@ class ChatSessionTest {
         assertTrue("$compressing", compressing is SetupRefusal)
         assertEquals(ChatSession.STILL_REPLYING, compressing?.message)
 
-        val deleting = runCatching { chat.delete("db1") }.exceptionOrNull()
+        val deleting = runCatching { chat.delete(stored("db1")) }.exceptionOrNull()
         assertTrue("$deleting", deleting is SetupRefusal)
         assertEquals(ChatSession.STILL_WORKING, deleting?.message)
 
         assertEquals(emptyList<Pair<String, String?>>(), callsAfter(mark))  // neither session.compress nor session.create
-        assertEquals("s1", chat.sessionId)
+        assertEquals(runtime("s1"), chat.sessionId)
     }
 
     @Test
     fun anotherSessionIsDeletedByItsKeyAndTheChatStays() = runTest(UnconfinedTestDispatcher()) {
         val chat = openChat().apply { open() }
 
-        chat.delete("db-old")
+        chat.delete(stored("db-old"))
 
         assertEquals(listOf("session.delete" to "db-old"), callsAfter(1))
-        assertEquals("s1", chat.sessionId)
+        assertEquals(runtime("s1"), chat.sessionId)
     }
 
     @Test
@@ -848,20 +851,20 @@ class ChatSessionTest {
         val chat = openChat().apply { open() }
         core.emit("session.info", "s1", """{"stored_session_id":"db1b"}""")  // a compression rotated the key
 
-        chat.delete("db1b")
+        chat.delete(stored("db1b"))
 
         assertEquals(listOf("session.create" to null, "session.close" to "s1", "session.delete" to "db1b"), callsAfter(1))
 
         core.emit("session.info", "s2", """{"stored_session_id":""}""")  // no key named: the one the chat has stays
         var mark = core.calls.size
-        chat.delete("db2")
+        chat.delete(stored("db2"))
         assertEquals(listOf("session.create" to null, "session.close" to "s2", "session.delete" to "db2"), callsAfter(mark))
 
         core.emit("session.info", "s9", """{"stored_session_id":"db9"}""")  // another session's key is not the chat's
         mark = core.calls.size
-        chat.delete("db9")
+        chat.delete(stored("db9"))
         assertEquals(listOf("session.delete" to "db9"), callsAfter(mark))
-        assertEquals("s3", chat.sessionId)
+        assertEquals(runtime("s3"), chat.sessionId)
     }
 
     @Test
@@ -869,7 +872,7 @@ class ChatSessionTest {
         delete = { throw CoreError(4007, "session not found") }
         val chat = openChat().apply { open() }
 
-        chat.delete("db-old")  // returns: the row is gone, as asked
+        chat.delete(stored("db-old"))  // returns: the row is gone, as asked
 
         assertEquals(listOf("session.delete" to "db-old"), callsAfter(1))
     }
@@ -879,12 +882,12 @@ class ChatSessionTest {
         delete = { throw CoreError(4023, "cannot delete an active session") }
         val chat = openChat().apply { open() }
 
-        val refused = runCatching { chat.delete("db-old") }.exceptionOrNull()
+        val refused = runCatching { chat.delete(stored("db-old")) }.exceptionOrNull()
         assertTrue("$refused", refused is SetupRefusal)
         assertEquals(ChatSession.STILL_WORKING, refused?.message)
 
         delete = { throw CoreError(5036, "delete failed: disk") }
-        val failed = runCatching { chat.delete("db-old") }.exceptionOrNull()
+        val failed = runCatching { chat.delete(stored("db-old")) }.exceptionOrNull()
         assertEquals(5036, (failed as? CoreError)?.code)
     }
 
@@ -896,9 +899,9 @@ class ChatSessionTest {
         val chat = openChat().apply { open() }  // s1, its build not yet announced
         chat.open()  // s2: s1 left, its close waits for the build
         resume = backToS1
-        chat.resume("db1")  // back on s1 before it settled
+        chat.resume(stored("db1"))  // back on s1 before it settled
 
-        val deleting = launch { withTimeout(5.minutes) { chat.delete("db1") } }  // own: s3 opens, s1 left again
+        val deleting = launch { withTimeout(5.minutes) { chat.delete(stored("db1")) } }  // own: s3 opens, s1 left again
         core.emit("session.info", "s1", "{}")
         deleting.join()
 
@@ -906,7 +909,7 @@ class ChatSessionTest {
         val closedAt = core.calls.indexOfFirst { it.first == "session.close" && it.second["session_id"]?.jsonPrimitive?.content == "s1" }
         val deletedAt = core.calls.indexOfFirst { it.first == "session.delete" && it.second["session_id"]?.jsonPrimitive?.content == "db1" }
         assertTrue("close at $closedAt, delete at $deletedAt", closedAt in 0 until deletedAt)
-        assertEquals("s3", chat.sessionId)
+        assertEquals(runtime("s3"), chat.sessionId)
     }
 
     @Test
@@ -914,13 +917,13 @@ class ChatSessionTest {
         resume = backToS1
         val chat = openChat().apply { open() }  // s1, whose build never announces itself
 
-        val refused = runCatching { withTimeout(5.minutes) { chat.delete("db1") } }.exceptionOrNull()
+        val refused = runCatching { withTimeout(5.minutes) { chat.delete(stored("db1")) } }.exceptionOrNull()
 
         assertTrue("$refused", refused is SetupRefusal)
         assertEquals(ChatSession.NOT_CLOSED, refused?.message)
         assertFalse(core.calls.any { it.first == "session.delete" })
         assertFalse("s1" in closed())
-        assertEquals("s1", chat.sessionId)  // back on it, as the desktop goes back to a row it could not delete
+        assertEquals(runtime("s1"), chat.sessionId)  // back on it, as the desktop goes back to a row it could not delete
 
         // The body was woken by the bounded wait, from the scheduler: what an event wakes now runs once the body suspends.
         core.emit("session.info", "s2", "{}")
@@ -939,14 +942,14 @@ class ChatSessionTest {
         val chat = openChat().apply { open() }
         core.emit("session.info", "s1", "{}")
 
-        val refused = runCatching { withTimeout(5.minutes) { chat.delete("db1") } }.exceptionOrNull()
+        val refused = runCatching { withTimeout(5.minutes) { chat.delete(stored("db1")) } }.exceptionOrNull()
 
         assertTrue("$refused", refused is SetupRefusal)
         assertEquals(ChatSession.NOT_CLOSED, refused?.message)
         assertNotEquals(ChatSession.STILL_WORKING, refused?.message)
         assertEquals(listOf("s1"), closed())  // it was tried
         assertFalse(core.calls.any { it.first == "session.delete" })
-        assertEquals("s1", chat.sessionId)
+        assertEquals(runtime("s1"), chat.sessionId)
     }
 
     @Test
@@ -955,14 +958,14 @@ class ChatSessionTest {
         chat.open()  // s2: s1 left, its close pending
         val mark = core.calls.size
 
-        val deleting = launch { withTimeout(5.minutes) { chat.delete("db1") } }
+        val deleting = launch { withTimeout(5.minutes) { chat.delete(stored("db1")) } }
         assertFalse(callsAfter(mark).any { it.first == "session.delete" })
 
         core.emit("session.info", "s1", "{}")
         deleting.join()
 
         assertEquals(listOf("session.close" to "s1", "session.delete" to "db1"), callsAfter(mark))
-        assertEquals("s2", chat.sessionId)
+        assertEquals(runtime("s2"), chat.sessionId)
     }
 
     @Test
@@ -975,7 +978,7 @@ class ChatSessionTest {
         core.emit("message.complete", "s1", """{"text":"hi"}""")  // another session's now
 
         resume = backToS1
-        chat.resume("db1")  // reuse-live: no build, no new session.info
+        chat.resume(stored("db1"))  // reuse-live: no build, no new session.info
         chat.open()  // s3: s1 left idle
 
         assertTrue("${closed()}", "s1" in closed())
@@ -991,7 +994,7 @@ class ChatSessionTest {
         assertEquals(listOf("config.get" to null, "session.most_recent" to null, "session.resume" to "db-old"), callsAfter(0))
         assertEquals("full", core.calls.single { it.first == "config.get" }.second.getValue("key").jsonPrimitive.content)
         assertEquals("android", core.calls.single { it.first == "session.resume" }.second.getValue("source").jsonPrimitive.content)
-        assertEquals("s-resumed", chat.sessionId)
+        assertEquals(runtime("s-resumed"), chat.sessionId)
         assertEquals(listOf(Entry.User("what's on my calendar?"), Entry.Reply("Two meetings.", TurnStatus.COMPLETE)), chat.state.value.entries)
     }
 
@@ -1003,7 +1006,7 @@ class ChatSessionTest {
 
         assertEquals("session.create", core.calls.last().first)
         assertFalse(core.calls.any { it.first == "session.resume" })
-        assertEquals("s1", chat.sessionId)
+        assertEquals(runtime("s1"), chat.sessionId)
         assertEquals(emptyList<Entry>(), chat.state.value.entries)
     }
 
@@ -1016,7 +1019,7 @@ class ChatSessionTest {
         chat.start()
 
         assertEquals(listOf("config.get", "session.create"), callsAfter(0).map { it.first })  // the core is not even asked
-        assertEquals("s1", chat.sessionId)
+        assertEquals(runtime("s1"), chat.sessionId)
     }
 
     @Test
@@ -1035,7 +1038,7 @@ class ChatSessionTest {
             chat.start()
 
             assertEquals("answer $i", listOf("config.get", "session.most_recent", "session.resume"), callsAfter(mark).map { it.first })
-            assertEquals("answer $i", "s-resumed", chat.sessionId)
+            assertEquals("answer $i", runtime("s-resumed"), chat.sessionId)
         }
     }
 
@@ -1048,7 +1051,7 @@ class ChatSessionTest {
         chat.start()
 
         assertEquals(listOf("config.get", "session.most_recent", "session.resume", "session.create"), callsAfter(0).map { it.first })
-        assertEquals("s1", chat.sessionId)
+        assertEquals(runtime("s1"), chat.sessionId)
         assertEquals(emptyList<Entry>(), chat.state.value.entries)  // quietly: no notice
         assertEquals(emptyList<String>(), closed())
     }
@@ -1061,7 +1064,7 @@ class ChatSessionTest {
         chat.start()
 
         assertEquals(listOf("config.get", "session.most_recent", "session.create"), callsAfter(0).map { it.first })
-        assertEquals("s1", chat.sessionId)
+        assertEquals(runtime("s1"), chat.sessionId)
     }
 
     @Test
@@ -1083,7 +1086,7 @@ class ChatSessionTest {
 
             assertEquals("answer $i", listOf("config.get", "session.most_recent", "session.resume", "session.create"),
                          callsAfter(mark).map { it.first })
-            assertEquals("answer $i: the new chat", "s$sessions", chat.sessionId)
+            assertEquals("answer $i: the new chat", runtime("s$sessions"), chat.sessionId)
             assertEquals("answer $i: quietly", emptyList<Entry>(), chat.state.value.entries)
             assertFalse("answer $i: nothing to close", callsAfter(mark).any { it.first == "session.close" })
         }
@@ -1109,7 +1112,7 @@ class ChatSessionTest {
             chat.start()
 
             assertEquals(name, expected, callsAfter(mark).map { it.first })
-            assertEquals(name, if (expected == reopened) "s-resumed" else "s$sessions", chat.sessionId)
+            assertEquals(name, runtime(if (expected == reopened) "s-resumed" else "s$sessions"), chat.sessionId)
         }
     }
 
@@ -1165,7 +1168,7 @@ class ChatSessionTest {
                                  {"role":"user","text":"and tomorrow?","row_id":12},{"role":"assistant","text":"One.","row_id":13}],
                      "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT},"model":"kimi-k2"}}""" }
         val chat = openChat().apply { open() }
-        chat.resume("db-old")
+        chat.resume(stored("db-old"))
         submit = { """{"status":"streaming","user_row_id":61}""" }
 
         chat.retry()
@@ -1200,7 +1203,7 @@ class ChatSessionTest {
         )
         for ((i, answer) in answers.withIndex()) {
             val chat = openChat().apply { open() }
-            val session = chat.sessionId
+            val session = chat.sessionId.value
             chat.send("ok")
             core.emit("message.start", session)
             core.emit("message.complete", session, """{"text":"done"}""")
@@ -1239,7 +1242,7 @@ class ChatSessionTest {
         )
         for ((i, answer) in answers.withIndex()) {
             val chat = openChat().apply { open() }
-            val session = chat.sessionId
+            val session = chat.sessionId.value
             chat.send("ok")
             core.emit("message.start", session)
             core.emit("message.complete", session, """{"text":"done"}""")
@@ -1320,7 +1323,7 @@ class ChatSessionTest {
     @Test
     fun compressShowsTheCoresTranscriptAndFillWhileTheTurnServiceHoldsIt() = runTest(UnconfinedTestDispatcher()) {
         val chat = openChat()
-        chat.resume("db-old")
+        chat.resume(stored("db-old"))
         compressReply = { COMPRESSED }
 
         val said = chat.compress(" here 1 ")
@@ -1337,13 +1340,13 @@ class ChatSessionTest {
     @Test
     fun aCompressionsRotatedKeyIsTheOneTheChatDeletesBy() = runTest(UnconfinedTestDispatcher()) {
         val chat = openChat()
-        chat.resume("db-old")
+        chat.resume(stored("db-old"))
         core.emit("session.info", "s-resumed", "{}")  // its build settled: the chat may close it when it leaves
         compressReply = { COMPRESSED }
         chat.compress(" here 1 ")
         val mark = core.calls.size
 
-        chat.delete("db-rotated")
+        chat.delete(stored("db-rotated"))
 
         // The chat knew the rotated row was its own (D4): it left it first (invariant 4), then deleted it.
         assertEquals(listOf("session.create" to null, "session.close" to "s-resumed", "session.delete" to "db-rotated"), callsAfter(mark))
@@ -1375,8 +1378,8 @@ class ChatSessionTest {
     private suspend fun ChatSession.answered(): ChatSession = apply {
         open()
         send("hi")
-        core.emit("message.start", sessionId)
-        core.emit("message.complete", sessionId, """{"text":"hello"}""")
+        core.emit("message.start", sessionId.value)
+        core.emit("message.complete", sessionId.value, """{"text":"hello"}""")
     }
 
     /** The calls made after the session.compress call, as method and id: what was asked of the core during the compression. */
@@ -1417,7 +1420,7 @@ class ChatSessionTest {
         core.emit("session.info", "s1", "{}")  // its build settled: a left s1 would be closed
         var refused: List<String?> = emptyList()
         compressReply = {
-            refused = listOf<suspend () -> Unit>({ chat.open() }, { chat.resume("db-old") }, { chat.delete("db1") })
+            refused = listOf<suspend () -> Unit>({ chat.open() }, { chat.resume(stored("db-old")) }, { chat.delete(stored("db1")) })
                 .map { runCatching { runBlocking { it() } }.exceptionOrNull()?.message }
             COMPRESSED
         }
@@ -1428,11 +1431,11 @@ class ChatSessionTest {
         val switches = setOf("session.create", "session.resume", "session.close", "session.delete")
         assertEquals(emptyList<Pair<String, String?>>(), callsDuringCompression().filter { it.first in switches })
         assertEquals(emptyList<String>(), closed())
-        assertEquals("s1", chat.sessionId)
+        assertEquals(runtime("s1"), chat.sessionId)
 
         chat.open()  // once it has finished, a switch goes through
 
-        assertEquals("s2", chat.sessionId)
+        assertEquals(runtime("s2"), chat.sessionId)
     }
 
     @Test
@@ -1498,7 +1501,7 @@ class ChatSessionTest {
 
         assertTrue("$cancelled", cancelled is CancellationException)
         assertFalse(fresh.state.value.compressing)
-        assertTrue(turns.last(), turns.last().startsWith("end:compress:${fresh.sessionId}"))
+        assertTrue(turns.last(), turns.last().startsWith("end:compress:${fresh.sessionId.value}"))
     }
 
     @Test
@@ -1556,12 +1559,12 @@ class ChatSessionTest {
     fun renamingTheChatsOwnSessionTitlesItInPlace() = runTest(UnconfinedTestDispatcher()) {
         val chat = openChat().apply { open() }
 
-        chat.rename("db1", "Trip plans")
+        chat.rename(stored("db1"), "Trip plans")
 
         assertEquals(listOf("session.title" to "s1"), callsAfter(1))
         assertEquals("Trip plans", lastOf("session.title").getValue("title").jsonPrimitive.content)
         assertEquals(emptyList<String>(), closed())
-        assertEquals("s1", chat.sessionId)
+        assertEquals(runtime("s1"), chat.sessionId)
     }
 
     @Test
@@ -1570,7 +1573,7 @@ class ChatSessionTest {
         resume = sideResume
         val shown = chat.state.value
 
-        chat.rename("db-old", "Calendar 2")
+        chat.rename(stored("db-old"), "Calendar 2")
 
         assertEquals(listOf("session.resume" to "db-old", "session.title" to "s-side", "session.close" to "s-side"), callsAfter(1))
         val resumed = lastOf("session.resume")
@@ -1578,7 +1581,7 @@ class ChatSessionTest {
                      Triple(resumed["lazy"]?.jsonPrimitive?.content, resumed["omit_messages"]?.jsonPrimitive?.content,
                             resumed["source"]?.jsonPrimitive?.content))
         assertEquals("Calendar 2", lastOf("session.title").getValue("title").jsonPrimitive.content)
-        assertEquals("s1", chat.sessionId)
+        assertEquals(runtime("s1"), chat.sessionId)
         assertEquals(shown, chat.state.value)  // the row was never shown
     }
 
@@ -1587,7 +1590,7 @@ class ChatSessionTest {
         val chat = openChat().apply { open() }
         resume = { """{"session_id":"s-busy","message_count":0,"messages":[],"session_key":"db-old","running":true,"info":{}}""" }
 
-        chat.rename("db-old", "Calendar 2")
+        chat.rename(stored("db-old"), "Calendar 2")
 
         assertEquals(listOf("session.resume" to "db-old", "session.title" to "s-busy"), callsAfter(1))
         assertEquals(emptyList<String>(), closed())  // its turn runs on (invariant 3)
@@ -1599,11 +1602,11 @@ class ChatSessionTest {
         // Another key of the chat's lineage: the core follows it and hands back the live session it has.
         resume = { """{"session_id":"s1","message_count":0,"messages":[],"session_key":"db1","running":false,"info":{}}""" }
 
-        chat.rename("db1-root", "Trip plans")
+        chat.rename(stored("db1-root"), "Trip plans")
 
         assertEquals(listOf("session.resume" to "db1-root", "session.title" to "s1"), callsAfter(1))
         assertEquals(emptyList<String>(), closed())
-        assertEquals("s1", chat.sessionId)
+        assertEquals(runtime("s1"), chat.sessionId)
     }
 
     @Test
@@ -1612,7 +1615,7 @@ class ChatSessionTest {
         resume = sideResume
         title = { throw CoreError(4022, "Title 'Trip' is already in use by session db-x") }
 
-        val refused = runCatching { chat.rename("db-old", "Trip") }.exceptionOrNull()
+        val refused = runCatching { chat.rename(stored("db-old"), "Trip") }.exceptionOrNull()
 
         assertTrue("$refused", refused is CoreError)
         assertEquals(4022 to "Title 'Trip' is already in use by session db-x", (refused as CoreError).code to refused.message)
@@ -1628,17 +1631,17 @@ class ChatSessionTest {
         resume = {
             if (!renaming) {
                 renaming = true
-                backgroundScope.launch { chat.rename("db-old-tip", "Calendar 2") }
+                backgroundScope.launch { chat.rename(stored("db-old-tip"), "Calendar 2") }
             }
             asked()
         }
 
-        chat.resume("db-old")
+        chat.resume(stored("db-old"))
 
         // After the switch the row is the chat's own: titled where it is, never attached aside and closed under the chat.
         assertEquals(listOf("session.resume" to "db-old", "session.title" to "s-resumed"), callsAfter(1))
         assertEquals(emptyList<String>(), closed())
-        assertEquals("s-resumed", chat.sessionId)
+        assertEquals(runtime("s-resumed"), chat.sessionId)
     }
 
     @Test
@@ -1650,18 +1653,46 @@ class ChatSessionTest {
         resume = {
             if (!deleting) {
                 deleting = true
-                backgroundScope.launch { chat.delete("db-old-tip") }
+                backgroundScope.launch { chat.delete(stored("db-old-tip")) }
             }
             asked()
         }
 
-        chat.resume("db-old")
+        chat.resume(stored("db-old"))
 
         // After the switch the row is the chat's own: the chat moves off it, and nothing is deleted yet.
         assertEquals(listOf("session.resume" to "db-old", "session.create" to null), callsAfter(1))
 
         core.emit("session.info", "s-resumed", "{}")
         assertEquals(listOf("session.close" to "s-resumed", "session.delete" to "db-old-tip"), callsAfter(core.calls.size - 2))
+    }
+
+    @Test
+    fun noIdReachesTheCoreOrTheTurnHostByItsTypeName() = runTest(UnconfinedTestDispatcher()) {
+        mostRecent = { """{"session_id":"db-old"}""" }
+        val chat = openChat().apply { start() }  // most_recent → resume db-old → s-resumed
+        chat.send("hi")
+        core.emit("message.start", "s-resumed")
+        core.emit("message.complete", "s-resumed", """{"text":"hello"}""")
+        core.emit("session.info", "s-resumed", "{}")  // its build settled: the chat may close it when it leaves
+        compressReply = { COMPRESSED }
+        chat.compress(null)
+        chat.breakdown()
+        chat.retry()  // the compressed transcript's user row 9
+        core.emit("message.start", "s-resumed")
+        core.emit("message.complete", "s-resumed", """{"text":"again"}""")
+        resume = sideResume
+        chat.rename(stored("db-old"), "Trip")  // another row now (the key rotated to db-rotated): attached aside and closed
+        chat.delete(stored("db-x"))
+
+        chat.open()  // leaves s-resumed, settled and idle: closed
+
+        assertFalse(core.calls.toString(), "SessionId(" in core.calls.toString())
+        assertFalse(turns.toString(), "SessionId(" in turns.toString())
+        assertEquals(listOf("s-side", "s-resumed"), closed())
+        assertEquals("db-x", lastOf("session.delete").getValue("session_id").jsonPrimitive.content)
+        assertEquals(listOf("db-old", "db-old"),
+                     core.calls.filter { it.first == "session.resume" }.map { it.second.getValue("session_id").jsonPrimitive.content })
     }
 
     private companion object {

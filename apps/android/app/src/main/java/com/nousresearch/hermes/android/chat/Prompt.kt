@@ -23,12 +23,12 @@ sealed interface Prompt {
 }
 
 /** The prompt [raw] asks for, or null when it is a request the app does not show (or [session]'s is another). */
-internal fun prompt(raw: InTurnPrompt, session: String?): Prompt? {
-    raw.decode(Requests.APPROVAL)?.takeIf { it.sessionId == session }?.let {
+internal fun prompt(raw: InTurnPrompt, session: RuntimeSessionId?): Prompt? {
+    raw.decode(Requests.APPROVAL)?.takeIf { it.sessionId == session?.value }?.let {
         return Prompt.Approval(raw.id, it.requestId, it.command, it.description, it.choices ?: listOf(ApprovalChoice.ONCE, ApprovalChoice.DENY))
     }
-    raw.decode(Requests.CLARIFY)?.takeIf { it.sessionId == session }?.let { return Prompt.Clarify(raw.id, it.questions) }
-    raw.decode(Requests.SECRET)?.takeIf { it.sessionId == session }?.let { return Prompt.Secret(raw.id, it.envVar, it.prompt) }
+    raw.decode(Requests.CLARIFY)?.takeIf { it.sessionId == session?.value }?.let { return Prompt.Clarify(raw.id, it.questions) }
+    raw.decode(Requests.SECRET)?.takeIf { it.sessionId == session?.value }?.let { return Prompt.Secret(raw.id, it.envVar, it.prompt) }
     return null
 }
 

@@ -24,13 +24,13 @@ import java.util.concurrent.atomic.AtomicInteger
 @OptIn(ExperimentalCoroutinesApi::class) // UnconfinedTestDispatcher: a launched change runs until it suspends
 class SessionHistoryTest {
     private val rows = listOf(SessionListRow(id = "db-old", title = "Calendar", messageCount = 3))
-    private val resumed = mutableListOf<String>()
-    private val renamed = mutableListOf<Pair<String, String>>()
-    private val deleted = mutableListOf<String>()
+    private val resumed = mutableListOf<StoredSessionId>()
+    private val renamed = mutableListOf<Pair<StoredSessionId, String>>()
+    private val deleted = mutableListOf<StoredSessionId>()
     private var list: suspend () -> List<SessionListRow> = { rows }
-    private var rename: suspend (String, String) -> Unit = { _, _ -> }
-    private var delete: suspend (String) -> Unit = { }
-    private var resume: suspend (String) -> Unit = { }
+    private var rename: suspend (StoredSessionId, String) -> Unit = { _, _ -> }
+    private var delete: suspend (StoredSessionId) -> Unit = { }
+    private var resume: suspend (StoredSessionId) -> Unit = { }
     private val history = SessionHistory(list = { list() }, resume = { resumed += it; resume(it) },
                                          rename = { id, t -> renamed += id to t; rename(id, t) },
                                          delete = { deleted += it; delete(it) })
@@ -46,9 +46,9 @@ class SessionHistoryTest {
     fun pickingASessionContinuesItAndClosesTheList() = runTest {
         history.open()
 
-        history.pick("db-old")
+        history.pick(StoredSessionId("db-old"))
 
-        assertEquals(listOf("db-old"), resumed)
+        assertEquals(listOf(StoredSessionId("db-old")), resumed)
         assertNull(history.state.value)
     }
 
@@ -64,42 +64,42 @@ class SessionHistoryTest {
     @Test
     fun savingATitleRenamesTheRowAndListsTheRowsAgain() = runTest {
         history.open()
-        history.edit("db-old")
-        assertEquals("db-old", history.state.value?.editing)
+        history.edit(StoredSessionId("db-old"))
+        assertEquals(StoredSessionId("db-old"), history.state.value?.editing)
         val newRows = listOf(SessionListRow(id = "db-old", title = "Trip", messageCount = 3))
         list = { newRows }
 
         history.saveTitle("  Trip  ")
 
-        assertEquals(listOf("db-old" to "Trip"), renamed)
+        assertEquals(listOf(StoredSessionId("db-old") to "Trip"), renamed)
         assertEquals(HistoryUi(newRows), history.state.value)  // the core's title, not a predicted one
     }
 
     @Test
     fun anUnchangedOrBlankTitleSendsNothing() = runTest {
         history.open()
-        history.edit("db-old")
+        history.edit(StoredSessionId("db-old"))
 
         history.saveTitle("Calendar")  // unchanged: the field closes
-        assertEquals(emptyList<Pair<String, String>>(), renamed)
+        assertEquals(emptyList<Pair<StoredSessionId, String>>(), renamed)
         assertNull(history.state.value?.editing)
 
-        history.edit("db-old")
+        history.edit(StoredSessionId("db-old"))
         history.saveTitle("   ")  // blank: the core would refuse it
-        assertEquals(emptyList<Pair<String, String>>(), renamed)
-        assertEquals("db-old", history.state.value?.editing)
+        assertEquals(emptyList<Pair<StoredSessionId, String>>(), renamed)
+        assertEquals(StoredSessionId("db-old"), history.state.value?.editing)
     }
 
     @Test
     fun aRefusedTitleKeepsTheFieldWithTheCoresWords() = runTest {
         rename = { _, _ -> throw CoreError(4022, "Title 'Trip' is already in use by session db-x") }
         history.open()
-        history.edit("db-old")
+        history.edit(StoredSessionId("db-old"))
 
         history.saveTitle("Trip")
 
         val ui = history.state.value
-        assertEquals("db-old", ui?.editing)
+        assertEquals(StoredSessionId("db-old"), ui?.editing)
         assertEquals("Title 'Trip' is already in use by session db-x", ui?.error)
         assertEquals(false, ui?.busy)
         assertEquals(rows, ui?.sessions)
@@ -109,20 +109,20 @@ class SessionHistoryTest {
     fun deletingAsksFirstAndDeletesOnlyWhenConfirmed() = runTest {
         history.open()
 
-        history.askDelete("db-old")
-        assertEquals("db-old", history.state.value?.confirmDelete)
-        assertEquals(emptyList<String>(), deleted)
+        history.askDelete(StoredSessionId("db-old"))
+        assertEquals(StoredSessionId("db-old"), history.state.value?.confirmDelete)
+        assertEquals(emptyList<StoredSessionId>(), deleted)
 
         history.askDelete(null)  // the user cancelled
         assertNull(history.state.value?.confirmDelete)
         history.confirmDelete()
-        assertEquals(emptyList<String>(), deleted)
+        assertEquals(emptyList<StoredSessionId>(), deleted)
 
-        history.askDelete("db-old")
+        history.askDelete(StoredSessionId("db-old"))
         list = { emptyList() }
         history.confirmDelete()
 
-        assertEquals(listOf("db-old"), deleted)
+        assertEquals(listOf(StoredSessionId("db-old")), deleted)
         assertEquals(HistoryUi(emptyList()), history.state.value)
     }
 
@@ -130,7 +130,7 @@ class SessionHistoryTest {
     fun aRefusedDeleteIsShownAndTheRowsStay() = runTest {
         delete = { throw SetupRefusal(ChatSession.STILL_WORKING) }
         history.open()
-        history.askDelete("db-old")
+        history.askDelete(StoredSessionId("db-old"))
 
         history.confirmDelete()
 
@@ -145,14 +145,14 @@ class SessionHistoryTest {
     fun renamingAndDeletingAreOneAtATime() = runTest {
         history.open()
 
-        history.edit("db-old")
-        history.askDelete("db-old")
+        history.edit(StoredSessionId("db-old"))
+        history.askDelete(StoredSessionId("db-old"))
         assertNull(history.state.value?.editing)
-        assertEquals("db-old", history.state.value?.confirmDelete)
+        assertEquals(StoredSessionId("db-old"), history.state.value?.confirmDelete)
 
-        history.edit("db-old")
+        history.edit(StoredSessionId("db-old"))
         assertNull(history.state.value?.confirmDelete)
-        assertEquals("db-old", history.state.value?.editing)
+        assertEquals(StoredSessionId("db-old"), history.state.value?.editing)
     }
 
     @Test
@@ -160,7 +160,7 @@ class SessionHistoryTest {
         val gate = CompletableDeferred<Unit>()
         rename = { _, _ -> gate.await() }
         history.open()
-        history.edit("db-old")
+        history.edit(StoredSessionId("db-old"))
         backgroundScope.launch { history.saveTitle("Trip") }
         assertEquals(true, history.state.value?.busy)
 
@@ -203,13 +203,13 @@ class SessionHistoryTest {
 
     @Test
     fun aDoubleTappedDeleteDeletesOnce() = doubleTapped(
-        arm = { it.open(); it.askDelete("db-old") },
+        arm = { it.open(); it.askDelete(StoredSessionId("db-old")) },
         tap = { it.confirmDelete() },
         make = { calls -> SessionHistory(list = { rows }, resume = {}, rename = { _, _ -> }, delete = { calls.incrementAndGet() }) })
 
     @Test
     fun aDoubleTappedSaveRenamesOnce() = doubleTapped(
-        arm = { it.open(); it.edit("db-old") },
+        arm = { it.open(); it.edit(StoredSessionId("db-old")) },
         tap = { it.saveTitle("Trip") },
         make = { calls -> SessionHistory(list = { rows }, resume = {}, rename = { _, _ -> calls.incrementAndGet() }, delete = {}) })
 
@@ -217,7 +217,7 @@ class SessionHistoryTest {
     fun aCancelledDeleteLeavesTheDrawerUsable() = runTest(UnconfinedTestDispatcher()) {
         delete = { awaitCancellation() }
         history.open()
-        history.askDelete("db-old")
+        history.askDelete(StoredSessionId("db-old"))
         val tap = backgroundScope.launch { history.confirmDelete() }
         assertEquals(true, history.state.value?.busy)
 
@@ -227,31 +227,31 @@ class SessionHistoryTest {
         assertEquals(false, ui?.busy)
         assertEquals(rows, ui?.sessions)
         assertNull(ui?.error)
-        history.askDelete("db-old")
-        assertEquals("db-old", history.state.value?.confirmDelete)
+        history.askDelete(StoredSessionId("db-old"))
+        assertEquals(StoredSessionId("db-old"), history.state.value?.confirmDelete)
     }
 
     @Test
     fun aCancelledRenameKeepsTheFieldAndTheDrawerUsable() = runTest(UnconfinedTestDispatcher()) {
         rename = { _, _ -> awaitCancellation() }
         history.open()
-        history.edit("db-old")
+        history.edit(StoredSessionId("db-old"))
         val tap = backgroundScope.launch { history.saveTitle("Trip") }
         assertEquals(true, history.state.value?.busy)
 
         tap.cancel()
 
         assertEquals(false, history.state.value?.busy)
-        assertEquals("db-old", history.state.value?.editing)  // as after a refusal (V9)
+        assertEquals(StoredSessionId("db-old"), history.state.value?.editing)  // as after a refusal (V9)
     }
 
     @Test
     fun aCancelledListAfterAChangeLeavesTheDrawerUsable() = runTest(UnconfinedTestDispatcher()) {
         history.open()
         list = { awaitCancellation() }
-        history.edit("db-old")
+        history.edit(StoredSessionId("db-old"))
         val tap = backgroundScope.launch { history.saveTitle("Trip") }
-        assertEquals(listOf("db-old" to "Trip"), renamed)  // the rename went through; the list read after it hangs
+        assertEquals(listOf(StoredSessionId("db-old") to "Trip"), renamed)  // the rename went through; the list read after it hangs
         assertEquals(true, history.state.value?.busy)
 
         tap.cancel()
@@ -263,7 +263,7 @@ class SessionHistoryTest {
     fun aCancelledPickLeavesTheDrawerUsable() = runTest(UnconfinedTestDispatcher()) {
         resume = { awaitCancellation() }
         history.open()
-        val tap = backgroundScope.launch { history.pick("db-old") }
+        val tap = backgroundScope.launch { history.pick(StoredSessionId("db-old")) }
         assertEquals(true, history.state.value?.busy)
 
         tap.cancel()

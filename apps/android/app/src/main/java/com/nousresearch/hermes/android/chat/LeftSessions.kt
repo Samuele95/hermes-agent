@@ -23,8 +23,8 @@ import kotlin.time.Duration.Companion.seconds
 internal class LeftSessions(
     private val scope: CoroutineScope,
     private val switching: Mutex,
-    private val stillHere: (runtime: String) -> Boolean,
-    private val close: suspend (runtime: String) -> Unit,  // session.close; throws when the call fails
+    private val stillHere: (runtime: RuntimeSessionId) -> Boolean,
+    private val close: suspend (runtime: RuntimeSessionId) -> Unit,  // session.close; throws when the call fails
     private val settleWait: Duration = SETTLE_WAIT,
     private val closeWait: Duration = CLOSE_WAIT,
 ) {
@@ -39,18 +39,18 @@ internal class LeftSessions(
     enum class Outcome { CLOSED, KEPT, FAILED, UNSETTLED }
 
     /** One pending close: the stored row it belongs to and the outcome it will have. */
-    private class Record(val stored: String, val outcome: CompletableDeferred<Outcome>)
+    private class Record(val stored: StoredSessionId, val outcome: CompletableDeferred<Outcome>)
 
-    private val records = mutableMapOf<String, Record>()  // guarded by itself; by runtime id
+    private val records = mutableMapOf<RuntimeSessionId, Record>()  // guarded by itself; by runtime id
 
     /** Sessions whose build has announced itself or failed, while the core holds them live (W1). */
-    private val marks = MutableStateFlow<Set<String>>(emptySet())
+    private val marks = MutableStateFlow<Set<RuntimeSessionId>>(emptySet())
 
     /** A `session.info` or `error` of [runtime]: its build has settled. */
-    fun settled(runtime: String) = marks.update { it + runtime }
+    fun settled(runtime: RuntimeSessionId) = marks.update { it + runtime }
 
     /** [runtime] was closed aside (rename's lazy mount): the core holds it no more. */
-    fun forget(runtime: String) = marks.update { it - runtime }
+    fun forget(runtime: RuntimeSessionId) = marks.update { it - runtime }
 
     /** The chat left idle session [ref]: its close, once (a). A pending record is shared; a new one starts its close. */
     fun leave(ref: SessionRef): Deferred<Outcome> {
@@ -71,14 +71,14 @@ internal class LeftSessions(
     }
 
     /** The close still pending for stored row [stored], if the chat left that row's session (W7). */
-    fun closing(stored: String): Deferred<Outcome>? =
+    fun closing(stored: StoredSessionId): Deferred<Outcome>? =
         synchronized(records) { records.values.firstOrNull { it.stored == stored }?.outcome }
 
     /** [outcome] within [closeWait], else null: the close is still running (W4, W6). */
     suspend fun waitFor(outcome: Deferred<Outcome>): Outcome? = withTimeoutOrNull(closeWait) { outcome.await() }
 
     /** Closes [runtime] once its build has settled, within [settleWait], unless the chat is back on it. */
-    private suspend fun closeOnce(runtime: String): Outcome {
+    private suspend fun closeOnce(runtime: RuntimeSessionId): Outcome {
         // D2, bounded (W3): a build that never announces itself leaves the session live, as a failed close does (D5).
         withTimeoutOrNull(settleWait) { marks.first { runtime in it } } ?: return Outcome.UNSETTLED
         return switching.withLock {

@@ -215,7 +215,7 @@ class ChatScreenTest {
         val sessions = HistoryUi(listOf(SessionListRow(id = "db-1", title = "Calendar", messageCount = 3,
                                                        startedAt = System.currentTimeMillis() / 1000.0)))
         compose.setContent {
-            ChatScreen(Chat(), onSend = {}, sessions = sessions, onSessions = { heard += "open=$it" }, onPickSession = { heard += it })
+            ChatScreen(Chat(), onSend = {}, sessions = sessions, onSessions = { heard += "open=$it" }, onPickSession = { heard += it.value })
         }
 
         compose.onNodeWithTag("open-drawer").performClick()

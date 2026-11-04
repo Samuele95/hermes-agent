@@ -10,16 +10,16 @@ import kotlinx.coroutines.flow.update
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
- * The history screen: past sessions, newest first as the core lists them, and what went wrong if anything; the row
- * being renamed ([editing]) or awaiting a delete confirmation ([confirmDelete]), each by its stored id.
+ * The drawer's list: past sessions, newest first as the core lists them, and what went wrong if anything; the row
+ * being renamed ([editing]) or awaiting a delete confirmation ([confirmDelete]).
  */
 data class HistoryUi(val sessions: List<SessionListRow>, val busy: Boolean = false, val error: String? = null,
-                     val editing: String? = null, val confirmDelete: String? = null)
+                     val editing: StoredSessionId? = null, val confirmDelete: StoredSessionId? = null)
 
 /** Saving [next] on the row being renamed: busy, the field closed (unchanged, D6), or null when not admitted (busy, no field, blank: D5). */
 private fun HistoryUi.renaming(next: String): HistoryUi? = when {
     busy || editing == null || next.isEmpty() -> null
-    next == sessions.find { it.id == editing }?.title?.trim() -> copy(editing = null, confirmDelete = null, error = null)
+    next == sessions.find { it.stored == editing }?.title?.trim() -> copy(editing = null, confirmDelete = null, error = null)
     else -> copy(busy = true, error = null)
 }
 
@@ -33,9 +33,9 @@ private fun HistoryUi.deleting(): HistoryUi? = if (busy || confirmDelete == null
  */
 class SessionHistory(
     private val list: suspend () -> List<SessionListRow>,
-    private val resume: suspend (sessionId: String) -> Unit,
-    private val rename: suspend (storedId: String, title: String) -> Unit,
-    private val delete: suspend (storedId: String) -> Unit,
+    private val resume: suspend (stored: StoredSessionId) -> Unit,
+    private val rename: suspend (stored: StoredSessionId, title: String) -> Unit,
+    private val delete: suspend (stored: StoredSessionId) -> Unit,
 ) {
     private val screen = MutableStateFlow<HistoryUi?>(null)
     val state: StateFlow<HistoryUi?> = screen.asStateFlow()
@@ -53,12 +53,12 @@ class SessionHistory(
         screen.value = null
     }
 
-    /** Continues [sessionId] in the chat and returns to it. */
-    suspend fun pick(sessionId: String) {
+    /** Continues [stored] in the chat and returns to it. */
+    suspend fun pick(stored: StoredSessionId) {
         screen.update { it?.copy(busy = true, error = null) }
         holdingBusy {
             try {
-                resume(sessionId)
+                resume(stored)
                 screen.value = null
             } catch (failed: Exception) {
                 screen.update { it?.copy(busy = false, error = forUser(failed)) }
@@ -66,9 +66,9 @@ class SessionHistory(
         }
     }
 
-    /** Starts renaming row [storedId] (null stops); not while a change runs. */
-    fun edit(storedId: String?) {
-        screen.update { ui -> if (ui == null || ui.busy) ui else ui.copy(editing = storedId, confirmDelete = null, error = null) }
+    /** Starts renaming row [stored] (null stops); not while a change runs. */
+    fun edit(stored: StoredSessionId?) {
+        screen.update { ui -> if (ui == null || ui.busy) ui else ui.copy(editing = stored, confirmDelete = null, error = null) }
     }
 
     /**
@@ -92,9 +92,9 @@ class SessionHistory(
         }
     }
 
-    /** Asks to delete row [storedId] (null: not now); nothing is deleted until [confirmDelete]. */
-    fun askDelete(storedId: String?) {
-        screen.update { ui -> if (ui == null || ui.busy) ui else ui.copy(confirmDelete = storedId, editing = null, error = null) }
+    /** Asks to delete row [stored] (null: not now); nothing is deleted until [confirmDelete]. */
+    fun askDelete(stored: StoredSessionId?) {
+        screen.update { ui -> if (ui == null || ui.busy) ui else ui.copy(confirmDelete = stored, editing = null, error = null) }
     }
 
     /** Deletes the row the user confirmed, then lists the rows again; a refusal is shown and the list stays (D8). */

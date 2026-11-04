@@ -19,9 +19,9 @@ import kotlin.time.Duration.Companion.minutes
 @OptIn(ExperimentalCoroutinesApi::class) // UnconfinedTestDispatcher: a close runs as soon as it can
 class LeftSessionsTest {
     private val closes = mutableListOf<String>()
-    private var close: suspend (String) -> Unit = { closes += it }
-    private var here: String? = null
-    private val s1 = SessionRef("s1", "db1")
+    private var close: suspend (RuntimeSessionId) -> Unit = { closes += it.value }
+    private var here: RuntimeSessionId? = null
+    private val s1 = SessionRef(RuntimeSessionId("s1"), StoredSessionId("db1"))
 
     private fun TestScope.sessions() =
         LeftSessions(backgroundScope, Mutex(), stillHere = { it == here }, close = { close(it) })
@@ -36,7 +36,7 @@ class LeftSessionsTest {
         val b = left.leave(s1)  // come back to and left again before its build announced itself
 
         assertSame(a, b)
-        left.settled("s1")
+        left.settled(RuntimeSessionId("s1"))
 
         assertEquals(listOf("s1"), closes)
         assertEquals(LeftSessions.Outcome.CLOSED, soon { a.await() })
@@ -50,7 +50,7 @@ class LeftSessionsTest {
         assertEquals(LeftSessions.Outcome.UNSETTLED, soon { left.leave(s1).await() })
         assertEquals(emptyList<String>(), closes)
 
-        left.settled("s1")  // late: nothing waits on it any more
+        left.settled(RuntimeSessionId("s1"))  // late: nothing waits on it any more
         assertEquals(emptyList<String>(), closes)
 
         assertEquals(LeftSessions.Outcome.CLOSED, soon { left.leave(s1).await() })  // settled now: closed at once
@@ -60,12 +60,12 @@ class LeftSessionsTest {
     @Test
     fun theChatComingBackKeepsTheSessionAndEndsItsRecord() = runTest(UnconfinedTestDispatcher()) {
         val left = sessions()
-        here = "s1"
+        here = RuntimeSessionId("s1")
         val a = left.leave(s1)
         var b: Deferred<LeftSessions.Outcome>? = null
         // The earliest a leave can follow: inside the outcome's completion, which runs as the outcome is set.
         a.invokeOnCompletion { here = null; b = left.leave(s1) }
-        left.settled("s1")
+        left.settled(RuntimeSessionId("s1"))
 
         assertEquals(LeftSessions.Outcome.KEPT, soon { a.await() })
         val again = checkNotNull(b)
@@ -77,12 +77,12 @@ class LeftSessionsTest {
     @Test
     fun aFailedCloseKeepsTheMarkSoTheNextLeaveTriesAgain() = runTest(UnconfinedTestDispatcher()) {
         val left = sessions()
-        left.settled("s1")
+        left.settled(RuntimeSessionId("s1"))
         close = { throw IllegalStateException("bridge gone") }
 
         assertEquals(LeftSessions.Outcome.FAILED, soon { left.leave(s1).await() })
 
-        close = { closes += it }
+        close = { closes += it.value }
         assertEquals(LeftSessions.Outcome.CLOSED, soon { left.leave(s1).await() })  // no new session.info needed
         assertEquals(listOf("s1"), closes)
     }
@@ -92,18 +92,18 @@ class LeftSessionsTest {
         val left = sessions()
         val a = left.leave(s1)
 
-        assertSame(a, left.closing("db1"))
-        assertNull(left.closing("db-other"))
+        assertSame(a, left.closing(StoredSessionId("db1")))
+        assertNull(left.closing(StoredSessionId("db-other")))
 
-        left.settled("s1")
+        left.settled(RuntimeSessionId("s1"))
         soon { a.await() }
-        assertNull(left.closing("db1"))
+        assertNull(left.closing(StoredSessionId("db1")))
     }
 
     @Test
     fun aWaitForACloseIsBounded() = runTest(UnconfinedTestDispatcher()) {
         val left = sessions()
-        left.settled("s1")
+        left.settled(RuntimeSessionId("s1"))
         close = { awaitCancellation() }  // a close that never returns
 
         assertNull(soon { left.waitFor(left.leave(s1)) })  // the 60 s bound expires inside soon's 5 minutes

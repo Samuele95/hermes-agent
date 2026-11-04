@@ -3,6 +3,7 @@ package com.nousresearch.hermes.android
 import com.nousresearch.hermes.android.chat.ContextUi
 import com.nousresearch.hermes.android.chat.FakeCoreGateway
 import com.nousresearch.hermes.android.chat.Notifier
+import com.nousresearch.hermes.android.chat.RuntimeSessionId
 import com.nousresearch.hermes.android.turn.TurnHost
 import com.nousresearch.hermes.bridge.AppBridge
 import com.nousresearch.hermes.bridge.CoreGateway
@@ -73,7 +74,7 @@ class CoreCompositionTest {
 
         assertEquals(listOf(paths), runtime.connected)
         assertEquals("android", core.calls.first { it.first == "session.create" }.second.getValue("source").jsonPrimitive.content)
-        assertEquals("s1", ready.chat.sessionId)
+        assertEquals(RuntimeSessionId("s1"), ready.chat.sessionId)
         assertEquals("Python 3.14.7 · SQLite 3.53.4 with FTS5", ready.about)
     }
 
@@ -99,7 +100,7 @@ class CoreCompositionTest {
 
         val ready = composeCore(runtime, paths, secrets, turns, Notifier.None, backgroundScope)
 
-        assertEquals("s-last", ready.chat.sessionId)
+        assertEquals(RuntimeSessionId("s-last"), ready.chat.sessionId)
         assertFalse(core.calls.any { it.first == "session.create" })
         assertEquals("db-last", core.calls.single { it.first == "session.resume" }.second.getValue("session_id").jsonPrimitive.content)
     }
@@ -111,7 +112,7 @@ class CoreCompositionTest {
 
         val ready = composeCore(runtime, paths, secrets, turns, Notifier.None, backgroundScope)
 
-        assertEquals("s1", ready.chat.sessionId)
+        assertEquals(RuntimeSessionId("s1"), ready.chat.sessionId)
         assertTrue(core.calls.any { it.first == "session.create" })
     }
 

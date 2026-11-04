@@ -88,7 +88,7 @@ class RestartSmokeTest {
 
         // Started in the conversation from before the kill (sessions-04): the core's most recent, reopened at start.
         val chat = (steps.app.core.value as CoreState.Ready).chat
-        val reopened = runBlocking { gateway().call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = chat.sessionId)) }.sessionKey
+        val reopened = runBlocking { gateway().call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = chat.sessionId.value)) }.sessionKey
         assertEquals("the app reopened phase A's conversation", before.getString("session"), reopened)
         assertTrue("its transcript is back", steps.chat().entries.filterIsInstance<Entry.User>().any { spotWord in it.text })
         // The checks below ask a NEW conversation: the reopened one holds all three words in its transcript.

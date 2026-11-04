@@ -47,14 +47,6 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.serialization.json.JsonPrimitive
 import java.util.concurrent.atomic.AtomicLong
 
-/** The core session a chat follows: [runtime] is the id its frames carry, [stored] the key its stored row goes by. */
-data class SessionRef(val runtime: String, val stored: String) {
-    /** After [event] of this session: a `session.info` names the stored key, which a compression rotates. */
-    fun seen(event: CoreEvent): SessionRef = if (event.type != Events.SESSION_INFO.name) this else
-        runCatching { event.decode(Events.SESSION_INFO)!!.storedSessionId }.getOrNull()
-            ?.takeIf { it.isNotBlank() }?.let { copy(stored = it) } ?: this
-}
-
 /**
  * One chat: a core session, the prompts sent to it, its turns, which [turns] keeps alive, and the questions
  * a turn asks, which [notifier] hears of along with finished turns. A secret the agent asks for goes to
@@ -97,7 +89,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     private val switching = Mutex()
     /** The sessions this chat left and their closes (B3-D2/D3/D5; improve #5). */
     private val leftSessions = LeftSessions(scope, switching, stillHere = { synchronized(lock) { live.ref?.runtime } == it },
-                                            close = { core.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = it)) })
+                                            close = { core.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = it.value)) })
 
     /** Replaces the live value by [next] of it, atomically; returns the value before and after. Pure and quick inside. */
     private inline fun change(next: (Live) -> Live): Pair<Live, Live> = synchronized(lock) {
@@ -111,8 +103,8 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         change { it.copy(chat = it.chat.notice(notice)) }
     }
 
-    /** The core session this chat sends to; the chat must be open. */
-    val sessionId: String
+    /** The runtime id of the core session this chat sends to (the id its frames carry, never a drawer row's key); the chat must be open. */
+    val sessionId: RuntimeSessionId
         get() = checkNotNull(synchronized(lock) { live.ref?.runtime }) { "open() the chat first" }
 
     init {
@@ -142,10 +134,10 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     }
 
     /** The stored id to reopen, or null: the setting is off, or the core has none (D2). An ordinary value (EJ-69). */
-    private suspend fun lastSession(): String? {
+    private suspend fun lastSession(): StoredSessionId? {
         if (!reopensLast()) return null
         // A core without the method, or an answer this app cannot read: nothing to reopen (D2).
-        return orElse(null) { core.call(Methods.SESSION_MOST_RECENT, SessionMostRecentParams()).sessionId?.ifBlank { null } }
+        return orElse(null) { core.call(Methods.SESSION_MOST_RECENT, SessionMostRecentParams()).sessionId?.ifBlank { null }?.let(::StoredSessionId) }
     }
 
     /** `display.resume_last_session` is not `false`: unset means the default (on), as does a config that cannot be read or decoded (D1). */
@@ -170,7 +162,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         refuseWhileCompressing()
         val created = core.call(Methods.SESSION_CREATE, SessionCreateParams(source = SOURCE))
         val chat = Chat(model = created.info.model.ifBlank { null }, meter = created.info.usage?.let(ContextMeter::of))
-        return switchTo(SessionRef(created.sessionId, created.storedSessionId), chat, created.info.desktopContract)
+        return switchTo(SessionRef(RuntimeSessionId(created.sessionId), StoredSessionId(created.storedSessionId)), chat, created.info.desktopContract)
     }
 
     /** Past conversations with something in them, as the core lists them (newest first). */
@@ -179,24 +171,24 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
 
     /** What fills the session's context, computed by the core when asked (`session.context_breakdown`). */
     suspend fun breakdown(): SessionContextBreakdownResult =
-        core.call(Methods.SESSION_CONTEXT_BREAKDOWN, SessionContextBreakdownParams(sessionId = sessionId))
+        core.call(Methods.SESSION_CONTEXT_BREAKDOWN, SessionContextBreakdownParams(sessionId = sessionId.value))
 
     /**
-     * Deletes stored session [storedId] (a drawer row's id). The core refuses a session live here, so the chat's own is
+     * Deletes stored session [stored] (a drawer row's key). The core refuses a session live here, so the chat's own is
      * left first, a new chat opening and the old one closing (invariant 4); not while its turn runs. Whether the row is
      * the chat's own is decided with [switching] held, so no open or resume slips in between (e). The delete then acts on
      * what became of that close, within a bound (W4): one that could not close puts the chat back on the row and says
      * so, [NOT_CLOSED], rather than meeting the core's refusal (W5, W6). A row whose left session is still closing waits
      * for that close (W7); the delete itself goes out with [switching] held and the own-row check made again (W8).
      */
-    suspend fun delete(storedId: String) {
-        var moved: String? = null  // the new session the chat moved to off its own row, if it did
+    suspend fun delete(stored: StoredSessionId) {
+        var moved: RuntimeSessionId? = null  // the new session the chat moved to off its own row, if it did
         val closing = switching.withLock {  // (e): own or not is decided with no open/resume in between
             val now = synchronized(lock) { live }
-            if (now.ref?.stored == storedId) {
+            if (now.ref?.stored == stored) {
                 if (now.chat.busy) throw SetupRefusal(STILL_WORKING)
                 opening().also { moved = synchronized(lock) { live.ref?.runtime } }
-            } else leftSessions.closing(storedId)  // W7: a row the chat left that is still closing
+            } else leftSessions.closing(stored)  // W7: a row the chat left that is still closing
         }
         val outcome = closing?.let { leftSessions.waitFor(it) }  // bounded (W4); null: still closing
         switching.withLock {
@@ -204,18 +196,18 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
                 // W5: not closed, still live; the chat goes back to the row if it still sits where this delete put it.
                 val back = (outcome == LeftSessions.Outcome.FAILED || outcome == LeftSessions.Outcome.UNSETTLED) &&
                     moved != null && synchronized(lock) { live.ref?.runtime } == moved
-                if (back) orElse(Unit) { resuming(storedId) }
+                if (back) orElse(Unit) { resuming(stored) }
                 throw SetupRefusal(NOT_CLOSED)
             }
-            if (synchronized(lock) { live.ref?.stored } == storedId) throw SetupRefusal(NOT_CLOSED)  // W8: back on it meanwhile
-            deleteRow(storedId)
+            if (synchronized(lock) { live.ref?.stored } == stored) throw SetupRefusal(NOT_CLOSED)  // W8: back on it meanwhile
+            deleteRow(stored)
         }
     }
 
-    /** `session.delete` of [storedId]: gone already is done (4007); a session still live in a turn is refused (4023). */
-    private suspend fun deleteRow(storedId: String) {
+    /** `session.delete` of [stored]: gone already is done (4007); a session still live in a turn is refused (4023). */
+    private suspend fun deleteRow(stored: StoredSessionId) {
         try {
-            core.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = storedId))
+            core.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = stored.value))
         } catch (refused: CoreError) {
             when (refused.code) {
                 4007 -> Unit                                      // already gone: what was asked (D4)
@@ -226,52 +218,53 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     }
 
     /**
-     * Renames stored session [storedId] (a drawer row's id) to [title]. The core titles live sessions only
+     * Renames stored session [stored] (a drawer row's key) to [title]. The core titles live sessions only
      * (`session.title`): the chat's own is titled where it is; any other row is attached aside — resumed lazily, never
      * shown — titled, and let go again (DC-B7). A refusal (a title in use, too long) is thrown in the core's words; a
      * row attached aside is let go either way.
      */
-    suspend fun rename(storedId: String, title: String): Unit = switching.withLock {  // D3: no switch interleaves
+    suspend fun rename(stored: StoredSessionId, title: String): Unit = switching.withLock {  // D3: no switch interleaves
         val own = synchronized(lock) { live.ref }
-        if (own?.stored == storedId) {  // D4: the listing's id is the tip, which SessionRef follows
-            core.call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = own.runtime, title = title))
+        if (own?.stored == stored) {  // D4: the listing's id is the tip, which SessionRef follows
+            core.call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = own.runtime.value, title = title))
             return@withLock
         }
         // D1: an agent-less read-only mount: no build to wait for, no transcript, no auto-continue.
-        val side = core.call(Methods.SESSION_RESUME,
-                             SessionResumeParams(sessionId = storedId, source = SOURCE, lazy = true, omitMessages = true))
+        val attached = core.call(Methods.SESSION_RESUME,
+                                 SessionResumeParams(sessionId = stored.value, source = SOURCE, lazy = true, omitMessages = true))
+        val side = RuntimeSessionId(attached.sessionId)  // the resume boundary: the reply's session_id is the runtime id
         try {
-            core.call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = side.sessionId, title = title))
+            core.call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = side.value, title = title))
         } finally {
             // D2: only what this rename attached is let go. The core answers a session live here as it is: one still
             // writing, or the chat's own reached by another key of its lineage, runs on (invariant 3).
-            if (side.running != true && side.sessionId != synchronized(lock) { live.ref?.runtime }) closeAside(side.sessionId)
+            if (attached.running != true && side != synchronized(lock) { live.ref?.runtime }) closeAside(side)
         }
     }
 
     /**
-     * Continues stored session [sessionId]: the chat shows its transcript and sends to it from now on. A session still
+     * Continues stored conversation [stored] (a drawer row's key): the chat shows its transcript and sends to it from now on. A session still
      * in a turn comes back running (the reply so far, Stop, the foreground service), with the questions it waits on.
      */
-    suspend fun resume(sessionId: String) {
-        resumed(sessionId)
+    suspend fun resume(stored: StoredSessionId) {
+        resumed(stored)
     }
 
     /** [resume]'s work; returns the outcome of the close of the session it left, if any. */
-    private suspend fun resumed(sessionId: String): Deferred<LeftSessions.Outcome>? = switching.withLock { resuming(sessionId) }
+    private suspend fun resumed(stored: StoredSessionId): Deferred<LeftSessions.Outcome>? = switching.withLock { resuming(stored) }
 
     /** [resumed] with [switching] already held. */
-    private suspend fun resuming(sessionId: String): Deferred<LeftSessions.Outcome>? {
+    private suspend fun resuming(stored: StoredSessionId): Deferred<LeftSessions.Outcome>? {
         refuseWhileCompressing()
-        val resumed = core.call(Methods.SESSION_RESUME, SessionResumeParams(sessionId = sessionId, source = SOURCE))
+        val resumed = core.call(Methods.SESSION_RESUME, SessionResumeParams(sessionId = stored.value, source = SOURCE))
         val inTurn = resumed.running == true
         val chat = Chat(entries = transcriptOf(resumed.messages),
                         streaming = if (inTurn) resumed.inflight?.assistant.orEmpty() else null, model = resumed.info.model.ifBlank { null },
                         todos = resumed.todoState?.let { TodoList.of(it.todos, it.revision) }, meter = resumed.info.usage?.let(ContextMeter::of))
         val open = resumed.openRequests.orEmpty().map { InTurnPrompt(it.id, it.method, it.params) }
         // The live info's key first (the core's own); the reply's session_key next; the caller's id as the last resort.
-        val stored = resumed.info.storedSessionId.ifBlank { null } ?: resumed.sessionKey ?: resumed.storedSessionId ?: sessionId
-        return switchTo(SessionRef(resumed.sessionId, stored), chat, resumed.info.desktopContract, open)
+        val key = (resumed.info.storedSessionId.ifBlank { null } ?: resumed.sessionKey ?: resumed.storedSessionId)?.let(::StoredSessionId) ?: stored
+        return switchTo(SessionRef(RuntimeSessionId(resumed.sessionId), key), chat, resumed.info.desktopContract, open)
     }
 
     /** Invariant 6: no switch while the core compresses the chat's session; [switching] is held, so none is admitted meanwhile. */
@@ -320,7 +313,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
      */
     private fun syncTurn() = synchronized(turnLock) {
         val now = synchronized(lock) { live }
-        val wanted = now.ref?.runtime?.takeIf { now.chat.running }
+        val wanted = now.ref?.runtime?.value?.takeIf { now.chat.running }
         if (wanted == activeTurn) return@synchronized
         activeTurn?.let(turns::end)
         wanted?.let(turns::begin)
@@ -328,9 +321,9 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     }
 
     /** Closes [runtime], attached aside by [rename], at once: a lazy mount builds no agent, so nothing settles (D2). Best-effort (B3's D5). */
-    private suspend fun closeAside(runtime: String) {
+    private suspend fun closeAside(runtime: RuntimeSessionId) {
         try {
-            core.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = runtime))
+            core.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = runtime.value))
             leftSessions.forget(runtime)  // a session.info the title emitted marked it; it is gone now
         } catch (failed: Exception) {
             if (failed is CancellationException) throw failed  // a failed close leaves it live, as before
@@ -366,7 +359,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
      * while the session compresses.
      */
     suspend fun send(text: String) {
-        var session: String? = null
+        var session: RuntimeSessionId? = null
         change { now ->  // the session and the bubble decided in one change (EJ-78)
             val ref = checkNotNull(now.ref) { "open() the chat first" }
             if (now.chat.compressing) throw SetupRefusal(STILL_COMPRESSING)  // invariant 6 (V4)
@@ -374,7 +367,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         }
         val to = session ?: return  // V5: a second tap before the turn started
         try {
-            val result = core.call(Methods.PROMPT_SUBMIT, PromptSubmitParams(sessionId = to, text = JsonPrimitive(text)))
+            val result = core.call(Methods.PROMPT_SUBMIT, PromptSubmitParams(sessionId = to.value, text = JsonPrimitive(text)))
             result.userRowId?.let { bind(to, it) }
         } catch (refused: CoreError) {
             unsent(to, refused.message ?: "The core refused the prompt (${refused.code}).")
@@ -384,12 +377,12 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     }
 
     /** [session]'s prompt did not go out: idle again if the chat is still there; [words] said either way (V7). */
-    private fun unsent(session: String, words: String) {
+    private fun unsent(session: RuntimeSessionId, words: String) {
         change { now -> now.copy(chat = (if (now.ref?.runtime == session) now.chat.unsent() else now.chat).notice(words)) }
     }
 
     /** The core named the row of [session]'s newest prompt; only while the chat is still on that session. */
-    private fun bind(session: String, rowId: Long) {
+    private fun bind(session: RuntimeSessionId, rowId: Long) {
         change { if (it.ref?.runtime == session) it.copy(chat = it.chat.boundUser(rowId)) else it }
     }
 
@@ -416,7 +409,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         val before = shownBefore ?: return
         try {
             val result = core.call(Methods.PROMPT_SUBMIT, PromptSubmitParams(
-                sessionId = session, text = JsonPrimitive(target.text), truncateBeforeRowId = rowId,
+                sessionId = session.value, text = JsonPrimitive(target.text), truncateBeforeRowId = rowId,
                 // The core cuts only with consent; a first-turn cut empties the transcript, which needs its own (D7: never deep).
                 confirmTruncate = rowId?.let { true }, confirmEmptyTruncate = rowId?.let { true }))
             result.userRowId?.let { bind(session, it) }
@@ -429,16 +422,16 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
 
     /** The row of [text] in the core's history: the one user row with exactly those words, else null (D6, EJ-62). */
     // No history to read or decode: a plain resubmit, as the desktop degrades (B5-D1).
-    private suspend fun rowIdOf(session: String, text: String): Long? = orElse(null) {
-        core.call(Methods.SESSION_HISTORY, SessionHistoryParams(sessionId = session)).messages
+    private suspend fun rowIdOf(session: RuntimeSessionId, text: String): Long? = orElse(null) {
+        core.call(Methods.SESSION_HISTORY, SessionHistoryParams(sessionId = session.value)).messages
             .filter { it.role == "user" && it.displayKind == null && it.rowId != null }
             .singleOrNull { it.text.orEmpty().trim() == text.trim() }?.rowId
     }
 
     /** After a refused retry: the core's transcript re-read (invariant 5), else [before] (D5); then [words]. */
-    private suspend fun resync(session: String, before: List<Entry>, words: String) {
+    private suspend fun resync(session: RuntimeSessionId, before: List<Entry>, words: String) {
         val entries = try {
-            transcriptOf(core.call(Methods.SESSION_HISTORY, SessionHistoryParams(sessionId = session)).messages)
+            transcriptOf(core.call(Methods.SESSION_HISTORY, SessionHistoryParams(sessionId = session.value)).messages)
         } catch (failed: Exception) {
             if (failed is CancellationException) throw failed
             before
@@ -463,7 +456,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         // Admitted with [switching] held (V3): no open, resume or own-row delete is half done, and none starts until
         // the flag is set (invariant 6). Decided in one change; a refusal leaves the chat as it was.
         val session = switching.withLock {
-            var admitted: String? = null
+            var admitted: RuntimeSessionId? = null
             change { now ->
                 val ref = now.ref ?: throw SetupRefusal(NOTHING_TO_COMPRESS)
                 if (now.chat.busy) throw SetupRefusal(STILL_REPLYING)
@@ -473,16 +466,16 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
             }
             checkNotNull(admitted)
         }
-        val hold = "compress:$session#${holds.incrementAndGet()}"  // its own, never the turn's key (DC-B10, V8)
+        val hold = "compress:${session.value}#${holds.incrementAndGet()}"  // its own, never the turn's key (DC-B10, V8)
         turns.begin(hold)
         try {
             val result = core.call(Methods.SESSION_COMPRESS,
-                                   SessionCompressParams(sessionId = session, focusTopic = focus?.trim()?.ifEmpty { null }))
+                                   SessionCompressParams(sessionId = session.value, focusTopic = focus?.trim()?.ifEmpty { null }))
             change { now ->
                 // The chat left, or a turn began or was sent meanwhile: that session's own frames are the truth (as resync; I4-V4).
                 val ref = now.ref
                 if (ref?.runtime != session || now.chat.busy) now
-                else now.copy(ref = result.info?.storedSessionId?.ifBlank { null }?.let { ref.copy(stored = it) } ?: ref,  // D4
+                else now.copy(ref = result.info?.storedSessionId?.ifBlank { null }?.let { ref.copy(stored = StoredSessionId(it)) } ?: ref,  // D4
                               chat = now.chat.compressed(result).copy(compressing = false))
             }
             return compressionOutcome(result)
@@ -502,7 +495,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         // The session seen busy, read with its state (EJ-78): Stop before the turn started cancels it too (V6).
         val session = synchronized(lock) { live.ref?.runtime?.takeIf { live.chat.busy } } ?: return
         try {
-            core.call(Methods.SESSION_INTERRUPT, SessionInterruptParams(sessionId = session))
+            core.call(Methods.SESSION_INTERRUPT, SessionInterruptParams(sessionId = session.value))
         } catch (failed: Exception) {
             say(forUser(failed))
         }
@@ -545,7 +538,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
      * turn alive exactly while the transcript says it runs: the reducer decides when a turn ends.
      */
     private fun on(event: CoreEvent) {
-        val session = event.sessionId ?: return
+        val session = RuntimeSessionId(event.sessionId ?: return)
         if (event.type == Events.SESSION_INFO.name || event.type == Events.ERROR.name) leftSessions.settled(session)
         val (before, after) = change { now ->
             if (now.ref?.runtime != session) now else now.copy(ref = now.ref.seen(event), chat = now.chat.reduce(event)).withdrawn()
