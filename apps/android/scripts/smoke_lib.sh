@@ -54,3 +54,6 @@ check_key_in_no_file() {
     check "the endpoint key is in no file of the app" \
         test -z "$(adb shell run-as "$app" grep -rlF "$key" files cache no_backup/secrets 2>/dev/null || true)"
 }
+tally() {  # tally <output>: the run's own count line
+    grep -E '^(OK \(|Tests run:)' <<<"$1" || echo "no test count (the run did not finish)"
+}

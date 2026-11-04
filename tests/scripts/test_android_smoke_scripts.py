@@ -87,8 +87,30 @@ echo "fingerprint SHA256:fake"
 exit 0
 """
 
-PASSED_4 = "INSTRUMENTATION_STATUS_CODE: 0\n" * 4 + "\nOK (4 tests)\n"
-PASSED_1 = "INSTRUMENTATION_STATUS_CODE: 0\n\nOK (1 test)\n"
+PKG = "com.nousresearch.hermes.android"
+# @Smoke classes another script (or a manual step) runs; smoke.sh runs every other one.
+NOT_HERE = {"SshSmokeTest", "RestartSmokeTest", "GatewayAcceptanceTest"}
+
+
+def own_smoke(sources: Path) -> dict[str, int]:
+    """The @Smoke classes smoke.sh owns in ``sources`` (one class per file, named after it) -> their @Test methods."""
+    owned = {}
+    for file in sorted(sources.glob("*.kt")):
+        text = file.read_text(encoding="utf-8")
+        if re.search(r"^@Smoke$", text, re.MULTILINE) and file.stem not in NOT_HERE:
+            owned[file.stem] = len(re.findall(r"^\s*@Test\b", text, re.MULTILINE))
+    return owned
+
+
+OWN = own_smoke(APP / "app" / "src" / "androidTest" / "java" / "com" / "nousresearch" / "hermes" / "android")
+N = sum(OWN.values())
+
+
+def PASSED(tests: int) -> str:  # the passing output for <tests> tests
+    return "INSTRUMENTATION_STATUS_CODE: 0\n" * tests + f"\nOK ({tests} test{'s' if tests != 1 else ''})\n"
+
+
+PASSED_1 = PASSED(1)
 
 
 def failure_stack(frames: int) -> str:
@@ -168,6 +190,15 @@ class FakePhone:
         return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
 
 
+def instrument_calls(fake: FakePhone) -> list[list[str]]:
+    return [call for call in fake.calls() if call[:3] == ["shell", "am", "instrument"]]
+
+
+def extras(call: list[str]) -> dict[str, str]:
+    """The ``-e <name> <value>`` arguments of an ``am instrument`` call."""
+    return {call[i + 1]: call[i + 2] for i, arg in enumerate(call) if arg == "-e"}
+
+
 @pytest.fixture
 def fake_adb(tmp_path):
     return FakePhone(tmp_path)
@@ -187,7 +218,7 @@ def expect(verdicts: dict[str, bool], order: list[str]) -> list[str]:
 
 
 def test_smoke_passes_with_every_check_ok(fake_adb):
-    fake_adb.put("instrument.txt", PASSED_4)
+    fake_adb.put("instrument.txt", PASSED(N))
     done = run("smoke.sh", fake_adb.env)
     assert (done.returncode, checks(done.stdout)) == (0, expect({}, SMOKE_CHECKS)), done.stderr
 
@@ -215,7 +246,7 @@ def test_smoke_runs_every_check_when_the_instrumentation_exits_non_zero(fake_adb
 
 
 def test_smoke_still_fails_on_a_leak_after_a_passing_test(fake_adb):
-    fake_adb.put("instrument.txt", PASSED_4)
+    fake_adb.put("instrument.txt", PASSED(N))
     fake_adb.put("logcat.txt", "11-03 10:00:00.000  123  456 I python.stdout: hello\n")
     done = run("smoke.sh", fake_adb.env)
     assert (done.returncode, checks(done.stdout)) == (1, expect({SMOKE_CHECKS[1]: False}, SMOKE_CHECKS)), done.stderr
@@ -314,7 +345,7 @@ def test_restart_smoke_fails_phase_a_on_an_early_assumption_in_a_long_run(fake_a
 
 
 def test_smoke_fails_on_an_early_assumption_in_a_long_run(fake_adb):
-    fake_adb.put("instrument.txt", early_assumption(4))
+    fake_adb.put("instrument.txt", early_assumption(N))
     done = run("smoke.sh", fake_adb.env)
     assert (done.returncode, checks(done.stdout)) == (1, expect({SMOKE_CHECKS[0]: False}, SMOKE_CHECKS)), done.stderr
 
@@ -330,3 +361,89 @@ def test_each_script_uses_the_one_copy_of_the_checks():
         assert not DEFINES.findall(text), script
     lib = (APP / "scripts" / "smoke_lib.sh").read_text(encoding="utf-8")
     assert sorted(DEFINES.findall(lib)) == ["check", "excerpt", "passed"]
+
+
+ANNOUNCED = re.compile(r"(\d+) tests \(([^)]*)\)")
+BEFORE_THE_BATCH = {"SmokeTest", "StopSmokeTest", "HistorySmokeTest", "BackgroundQuestionSmokeTest"}
+BATCH = {"InterimSmokeTest", "RetrySmokeTest", "TodoMeterSmokeTest", "CompressSmokeTest"}
+
+
+def announced(stdout: str) -> tuple[int, list[str]]:
+    match = ANNOUNCED.search(stdout)
+    assert match, stdout
+    return int(match.group(1)), match.group(2).split(",")
+
+
+def test_smoke_selects_its_smoke_tests_by_annotation(fake_adb):
+    fake_adb.put("instrument.txt", PASSED(N))
+    done = run("smoke.sh", fake_adb.env)
+    assert (done.returncode, checks(done.stdout)) == (0, expect({}, SMOKE_CHECKS)), done.stderr
+    [call] = instrument_calls(fake_adb)
+    assert extras(call)["annotation"] == f"{PKG}.Smoke"
+    assert sorted(extras(call)["notClass"].split(",")) == sorted(f"{PKG}.{name}" for name in NOT_HERE)
+    assert "class" not in extras(call)
+    assert announced(done.stdout) == (N, sorted(OWN))
+    assert set(OWN) >= BEFORE_THE_BATCH | BATCH
+    assert f"the run: OK ({N} tests)" in done.stdout
+
+
+def test_smoke_fails_when_the_run_counts_fewer_tests_than_its_sources(fake_adb):
+    fake_adb.put("instrument.txt", PASSED(N - 1))  # a stale test APK, without the newest smoke test
+    done = run("smoke.sh", fake_adb.env)
+    assert (done.returncode, checks(done.stdout)) == (1, expect({SMOKE_CHECKS[0]: False}, SMOKE_CHECKS)), done.stderr
+
+
+def kotlin(name: str, smoke: bool, tests: int) -> str:
+    methods = "".join(f"    @Test\n    fun case{i}() {{}}\n" for i in range(tests))
+    return f"package {PKG}\n\n{'@Smoke' + chr(10) if smoke else ''}class {name} {{\n{methods}}}\n"
+
+
+def sources(tmp_path: Path, *classes: tuple[str, bool, int]) -> Path:
+    folder = tmp_path / "androidTest"
+    folder.mkdir()
+    for name, smoke, tests in classes:
+        (folder / f"{name}.kt").write_text(kotlin(name, smoke, tests), encoding="utf-8")
+    return folder
+
+
+# A new @Smoke class runs, and is counted, with no edit to smoke.sh.
+@pytest.mark.parametrize(("ran", "verdict"), [(2, 0), (3, 1)], ids=["its count", "another count"])
+def test_smoke_counts_a_new_smoke_class_by_default(fake_adb, tmp_path, ran, verdict):
+    folder = sources(tmp_path, ("AlphaSmokeTest", True, 2), ("SshSmokeTest", True, 1), ("PlainTest", False, 3))
+    fake_adb.put("instrument.txt", PASSED(ran))
+    done = run("smoke.sh", dict(fake_adb.env, SMOKE_TEST_SOURCES=str(folder)))
+    assert done.returncode == verdict, done.stdout + done.stderr
+    assert checks(done.stdout)[0] == ("ok   " if verdict == 0 else "FAIL ") + SMOKE_CHECKS[0]
+    assert "2 tests (AlphaSmokeTest)" in done.stdout
+
+
+def test_smoke_refuses_a_run_of_no_test(fake_adb, tmp_path):
+    folder = sources(tmp_path, ("SshSmokeTest", True, 1), ("PlainTest", False, 3))
+    done = run("smoke.sh", dict(fake_adb.env, SMOKE_TEST_SOURCES=str(folder)))
+    assert done.returncode == 2, done.stdout + done.stderr
+    assert str(folder) in done.stderr
+    assert fake_adb.calls() == []
+
+
+@pytest.mark.parametrize("only", [["RetrySmokeTest"], ["RetrySmokeTest", "CompressSmokeTest"]], ids=["one", "two"])
+def test_smoke_only_runs_the_named_classes(fake_adb, only):
+    fake_adb.put("instrument.txt", PASSED(len(only)))
+    done = run("smoke.sh", dict(fake_adb.env, SMOKE_ONLY=",".join(only)))
+    assert (done.returncode, checks(done.stdout)) == (0, expect({}, SMOKE_CHECKS)), done.stdout + done.stderr
+    [call] = instrument_calls(fake_adb)
+    assert sorted(extras(call)["class"].split(",")) == sorted(f"{PKG}.{name}" for name in only)
+    assert "annotation" not in extras(call) and "notClass" not in extras(call)
+
+
+def test_smoke_only_refuses_a_class_smoke_sh_does_not_run(fake_adb):
+    done = run("smoke.sh", dict(fake_adb.env, SMOKE_ONLY="SshSmokeTest"))
+    assert done.returncode == 2, done.stdout + done.stderr
+    assert "SMOKE_ONLY: SshSmokeTest is not a smoke test smoke.sh runs" in done.stderr
+    assert fake_adb.calls() == []
+
+
+def test_smoke_says_when_the_run_left_no_count(fake_adb):
+    fake_adb.put("instrument.txt", CRASHED)
+    done = run("smoke.sh", fake_adb.env)
+    assert (done.returncode, checks(done.stdout)) == (1, expect({SMOKE_CHECKS[0]: False}, SMOKE_CHECKS)), done.stderr
+    assert "the run: no test count (the run did not finish)" in done.stdout
