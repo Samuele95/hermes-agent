@@ -5,7 +5,9 @@ import com.nousresearch.hermes.bridge.protocol.SessionListRow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.update
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * The history screen: past sessions, newest first as the core lists them, and what went wrong if anything; the row
@@ -13,6 +15,16 @@ import kotlinx.coroutines.flow.update
  */
 data class HistoryUi(val sessions: List<SessionListRow>, val busy: Boolean = false, val error: String? = null,
                      val editing: String? = null, val confirmDelete: String? = null)
+
+/** Saving [next] on the row being renamed: busy, the field closed (unchanged, D6), or null when not admitted (busy, no field, blank: D5). */
+private fun HistoryUi.renaming(next: String): HistoryUi? = when {
+    busy || editing == null || next.isEmpty() -> null
+    next == sessions.find { it.id == editing }?.title?.trim() -> copy(editing = null, confirmDelete = null, error = null)
+    else -> copy(busy = true, error = null)
+}
+
+/** Deleting the confirmed row: busy with the confirmation gone, or null when not admitted. */
+private fun HistoryUi.deleting(): HistoryUi? = if (busy || confirmDelete == null) null else copy(confirmDelete = null, busy = true, error = null)
 
 /**
  * Past conversations (spec §2.5): [list] them, [resume] the one the user picks, [rename] (sessions-05) or [delete]
@@ -44,11 +56,13 @@ class SessionHistory(
     /** Continues [sessionId] in the chat and returns to it. */
     suspend fun pick(sessionId: String) {
         screen.update { it?.copy(busy = true, error = null) }
-        try {
-            resume(sessionId)
-            screen.value = null
-        } catch (failed: Exception) {
-            screen.update { it?.copy(busy = false, error = forUser(failed)) }
+        holdingBusy {
+            try {
+                resume(sessionId)
+                screen.value = null
+            } catch (failed: Exception) {
+                screen.update { it?.copy(busy = false, error = forUser(failed)) }
+            }
         }
     }
 
@@ -62,19 +76,20 @@ class SessionHistory(
      * unchanged title closes the field (D6); a blank one is not sent (D5). A refusal keeps the field, with its words.
      */
     suspend fun saveTitle(title: String) {
-        val ui = screen.value?.takeUnless { it.busy } ?: return
-        val id = ui.editing ?: return
         val next = title.trim()
-        if (next.isEmpty()) return
-        if (next == ui.sessions.find { it.id == id }?.title?.trim()) return edit(null)
-        screen.update { it?.copy(busy = true, error = null) }
-        try {
-            rename(id, next)
-        } catch (failed: Exception) {
-            screen.update { it?.copy(busy = false, error = forUser(failed)) }
-            return
+        val before = screen.getAndUpdate { it?.renaming(next) ?: it }  // one atomic step: a double tap acts once (V4)
+        val entered = before?.renaming(next) ?: return
+        if (!entered.busy) return  // unchanged title: the field closed (D6)
+        val id = checkNotNull(before.editing)
+        holdingBusy {
+            try {
+                rename(id, next)
+            } catch (failed: Exception) {
+                screen.update { it?.copy(busy = false, error = forUser(failed)) }
+                return
+            }
+            relisted()
         }
-        relisted()
     }
 
     /** Asks to delete row [storedId] (null: not now); nothing is deleted until [confirmDelete]. */
@@ -84,15 +99,27 @@ class SessionHistory(
 
     /** Deletes the row the user confirmed, then lists the rows again; a refusal is shown and the list stays (D8). */
     suspend fun confirmDelete() {
-        val id = screen.value?.takeUnless { it.busy }?.confirmDelete ?: return
-        screen.update { it?.copy(confirmDelete = null, busy = true, error = null) }
-        try {
-            delete(id)
-        } catch (failed: Exception) {
-            screen.update { it?.copy(busy = false, error = forUser(failed)) }
-            return
+        val before = screen.getAndUpdate { it?.deleting() ?: it }  // one atomic step: a double tap acts once (V4)
+        val id = before?.takeIf { it.deleting() != null }?.confirmDelete ?: return
+        holdingBusy {
+            try {
+                delete(id)
+            } catch (failed: Exception) {
+                screen.update { it?.copy(busy = false, error = forUser(failed)) }
+                return
+            }
+            relisted()
         }
-        relisted()
+    }
+
+    /** Runs a change this drawer entered busy for; a cancellation leaves it not busy (forUser rethrows it), and is rethrown. */
+    private suspend inline fun holdingBusy(change: () -> Unit) {
+        try {
+            change()
+        } catch (cancelled: CancellationException) {
+            screen.update { it?.copy(busy = false) }
+            throw cancelled
+        }
     }
 
     /** After a change: the core's rows again, into an open drawer; a closed one stays closed. */

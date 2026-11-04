@@ -6,6 +6,11 @@ import com.nousresearch.hermes.bridge.protocol.CompressionSummary
 import com.nousresearch.hermes.bridge.protocol.ContextCategory
 import com.nousresearch.hermes.bridge.protocol.SessionCompressResult
 import com.nousresearch.hermes.bridge.protocol.SessionContextBreakdownResult
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -13,6 +18,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** The context sheet: the meter at once, the core's breakdown when it comes, and Compress in the core's words. */
+@OptIn(ExperimentalCoroutinesApi::class) // UnconfinedTestDispatcher: a launched tap runs until it suspends
 class ContextPanelTest {
     private val meterNow = ContextMeter(6_000, 32_000, 19, false)
     private var meter: ContextMeter? = meterNow
@@ -116,6 +122,40 @@ class ContextPanelTest {
         compress = { "Compressed: 6 → 2 messages" }
         panel.compress(null)
         assertEquals(null, panel.state.value?.error)
+        assertEquals("Compressed: 6 → 2 messages", panel.state.value?.outcome)
+    }
+
+    @Test
+    fun aSecondTapWhileOneIsOnItsWayDoesNothing() = runTest(UnconfinedTestDispatcher()) {
+        val gate = CompletableDeferred<Unit>()
+        var calls = 0
+        breakdown = { first }
+        compress = { calls++; gate.await(); "Compressed: 6 → 2 messages" }
+        panel.open()
+
+        backgroundScope.launch { panel.compress(null) }
+        backgroundScope.launch { panel.compress(null) }  // the double tap
+        assertEquals(1, calls)
+        assertNull(panel.state.value?.error)  // no "still compressing" for the user's own second tap
+
+        gate.complete(Unit)
+        assertEquals("Compressed: 6 → 2 messages", panel.state.value?.outcome)
+
+        panel.compress(null)  // the tap is done: the next one is admitted
+        assertEquals(2, calls)
+    }
+
+    @Test
+    fun aCancelledTapLetsTheNextOneThrough() = runTest(UnconfinedTestDispatcher()) {
+        breakdown = { first }
+        compress = { awaitCancellation() }
+        panel.open()
+        val tap = backgroundScope.launch { panel.compress(null) }
+
+        tap.cancel()
+        compress = { "Compressed: 6 → 2 messages" }
+        panel.compress(null)
+
         assertEquals("Compressed: 6 → 2 messages", panel.state.value?.outcome)
     }
 

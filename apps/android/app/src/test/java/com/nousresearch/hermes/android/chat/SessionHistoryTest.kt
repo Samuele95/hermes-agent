@@ -5,13 +5,20 @@ import com.nousresearch.hermes.bridge.CoreError
 import com.nousresearch.hermes.bridge.protocol.SessionListRow
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit.SECONDS
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /** The list of past conversations: open to see them, pick one to continue it, rename or delete one. */
 @OptIn(ExperimentalCoroutinesApi::class) // UnconfinedTestDispatcher: a launched change runs until it suspends
@@ -23,7 +30,8 @@ class SessionHistoryTest {
     private var list: suspend () -> List<SessionListRow> = { rows }
     private var rename: suspend (String, String) -> Unit = { _, _ -> }
     private var delete: suspend (String) -> Unit = { }
-    private val history = SessionHistory(list = { list() }, resume = { resumed += it },
+    private var resume: suspend (String) -> Unit = { }
+    private val history = SessionHistory(list = { list() }, resume = { resumed += it; resume(it) },
                                          rename = { id, t -> renamed += id to t; rename(id, t) },
                                          delete = { deleted += it; delete(it) })
 
@@ -161,5 +169,110 @@ class SessionHistoryTest {
 
         assertNull(history.state.value)
         assertFalse(renamed.isEmpty())
+    }
+
+    /** Two taps on real threads, released within nanoseconds of each other; [tap] runs on each, after [arm] on a fresh drawer. */
+    private fun doubleTapped(arm: suspend (SessionHistory) -> Unit, tap: suspend (SessionHistory) -> Unit,
+                             make: (AtomicInteger) -> SessionHistory) {
+        val pool = Executors.newFixedThreadPool(2)
+        try {
+            repeat(ROUNDS) { round ->
+                val calls = AtomicInteger()
+                val drawer = make(calls)
+                runBlocking { arm(drawer) }
+                val ready = CountDownLatch(2)
+                val go = AtomicBoolean(false)
+                val taps = List(2) {
+                    pool.submit {
+                        runBlocking {
+                            ready.countDown()
+                            while (!go.get()) Thread.onSpinWait()
+                            tap(drawer)
+                        }
+                    }
+                }
+                ready.await()
+                go.set(true)
+                taps.forEach { it.get(10, SECONDS) }
+                assertEquals("round $round", 1, calls.get())
+            }
+        } finally {
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun aDoubleTappedDeleteDeletesOnce() = doubleTapped(
+        arm = { it.open(); it.askDelete("db-old") },
+        tap = { it.confirmDelete() },
+        make = { calls -> SessionHistory(list = { rows }, resume = {}, rename = { _, _ -> }, delete = { calls.incrementAndGet() }) })
+
+    @Test
+    fun aDoubleTappedSaveRenamesOnce() = doubleTapped(
+        arm = { it.open(); it.edit("db-old") },
+        tap = { it.saveTitle("Trip") },
+        make = { calls -> SessionHistory(list = { rows }, resume = {}, rename = { _, _ -> calls.incrementAndGet() }, delete = {}) })
+
+    @Test
+    fun aCancelledDeleteLeavesTheDrawerUsable() = runTest(UnconfinedTestDispatcher()) {
+        delete = { awaitCancellation() }
+        history.open()
+        history.askDelete("db-old")
+        val tap = backgroundScope.launch { history.confirmDelete() }
+        assertEquals(true, history.state.value?.busy)
+
+        tap.cancel()
+
+        val ui = history.state.value
+        assertEquals(false, ui?.busy)
+        assertEquals(rows, ui?.sessions)
+        assertNull(ui?.error)
+        history.askDelete("db-old")
+        assertEquals("db-old", history.state.value?.confirmDelete)
+    }
+
+    @Test
+    fun aCancelledRenameKeepsTheFieldAndTheDrawerUsable() = runTest(UnconfinedTestDispatcher()) {
+        rename = { _, _ -> awaitCancellation() }
+        history.open()
+        history.edit("db-old")
+        val tap = backgroundScope.launch { history.saveTitle("Trip") }
+        assertEquals(true, history.state.value?.busy)
+
+        tap.cancel()
+
+        assertEquals(false, history.state.value?.busy)
+        assertEquals("db-old", history.state.value?.editing)  // as after a refusal (V9)
+    }
+
+    @Test
+    fun aCancelledListAfterAChangeLeavesTheDrawerUsable() = runTest(UnconfinedTestDispatcher()) {
+        history.open()
+        list = { awaitCancellation() }
+        history.edit("db-old")
+        val tap = backgroundScope.launch { history.saveTitle("Trip") }
+        assertEquals(listOf("db-old" to "Trip"), renamed)  // the rename went through; the list read after it hangs
+        assertEquals(true, history.state.value?.busy)
+
+        tap.cancel()
+
+        assertEquals(false, history.state.value?.busy)
+    }
+
+    @Test
+    fun aCancelledPickLeavesTheDrawerUsable() = runTest(UnconfinedTestDispatcher()) {
+        resume = { awaitCancellation() }
+        history.open()
+        val tap = backgroundScope.launch { history.pick("db-old") }
+        assertEquals(true, history.state.value?.busy)
+
+        tap.cancel()
+
+        assertEquals(false, history.state.value?.busy)
+        assertEquals(rows, history.state.value?.sessions)  // still open
+    }
+
+    private companion object {
+        const val ROUNDS = 500
     }
 }

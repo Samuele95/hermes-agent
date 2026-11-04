@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * The context sheet: how full the session's context is ([meter], the chat's), what fills it ([breakdown], the core's,
@@ -29,6 +30,7 @@ class ContextPanel(
 ) {
     private val screen = MutableStateFlow<ContextUi?>(null)
     val state: StateFlow<ContextUi?> = screen.asStateFlow()
+    private val tapping = AtomicBoolean(false)  // one Compress of this sheet at a time: a double tap acts once (improve #3, V2)
 
     suspend fun open() {
         screen.value = ContextUi(meter())
@@ -40,18 +42,26 @@ class ContextPanel(
         screen.update { if (it != null && compressing()) it else null }
     }
 
-    /** Compresses the session on [focus] (blank: none); the sheet then shows the new fill, a new breakdown and the core's words (D7). */
+    /**
+     * Compresses the session on [focus] (blank: none); the sheet then shows the new fill, a new breakdown and the core's
+     * words (D7). One tap at a time; a tap while this sheet's own is on its way does nothing.
+     */
     suspend fun compress(focus: String?) {
-        if (screen.value == null) return  // closed; a second tap is the chat's to refuse (V6)
-        screen.update { it?.copy(error = null, outcome = null) }
-        val said = try {
-            compress.invoke(focus)
-        } catch (failed: Exception) {
-            screen.update { it?.copy(error = forUser(failed)) }
-            return
+        // Closed: nothing to do. A tap of this sheet already on its way (compress + read, V3): this one is the same intent.
+        if (screen.value == null || !tapping.compareAndSet(false, true)) return
+        try {
+            screen.update { it?.copy(error = null, outcome = null) }
+            val said = try {
+                compress.invoke(focus)
+            } catch (failed: Exception) {
+                screen.update { it?.copy(error = forUser(failed)) }
+                return
+            }
+            screen.update { it?.copy(meter = meter(), breakdown = null, error = null, outcome = said) }
+            read()
+        } finally {
+            tapping.set(false)  // success, refusal, failure or cancellation: the next tap is admitted
         }
-        screen.update { it?.copy(meter = meter(), breakdown = null, error = null, outcome = said) }
-        read()
     }
 
     /** The core's breakdown into the open sheet, or its words; a closed sheet stays closed. */
