@@ -88,23 +88,26 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlin.random.Random
 
+/** The places the chat leads to (the drawer's links, the top bar's new chat, the composer's model pill); a null one has no way there. */
+class ChatPlaces(val setup: (() -> Unit)? = null, val terminal: (() -> Unit)? = null, val gateway: (() -> Unit)? = null,
+                 val settings: (() -> Unit)? = null, val newChat: (() -> Unit)? = null)
+
 /**
  * A chat in the desktop's shape: the transcript is the page, replies flat across it and the user's words in
  * bubbles, the composer at the bottom naming the model, and a drawer with the sessions and the app's other places.
  * It holds only the draft; [onSend] gets the trimmed text, [onRetry] runs the last prompt again. [onSessions] hears the drawer open (load the sessions)
- * and close; [sessionActions] is the rows' menu (rename, delete). [onContext] opens the context sheet from the meter;
- * [context] is that sheet while it is open. The transcript follows a streaming reply only while the reader is at its end;
+ * and close; [sessionActions] is the rows' menu (rename, delete). [contextActions] opens the context sheet from the meter,
+ * compresses and closes it; [context] is that sheet while it is open. [places] are where the drawer, the top bar and the
+ * model pill lead. The transcript follows a streaming reply only while the reader is at its end;
  * Jump brings it back (chat-17). [onCopy] puts an answer, one of the user's messages or a code block on the clipboard
  * (chat-09, chat-10); without it nothing offers Copy.
  */
 @Composable
-fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifier, about: String? = null,
-               onSetup: (() -> Unit)? = null, answers: PromptAnswers? = null, onTerminal: (() -> Unit)? = null,
-               onGateway: (() -> Unit)? = null, onStop: () -> Unit = {}, onRetry: (() -> Unit)? = null, onCopy: ((String) -> Unit)? = null,
-               onSettings: (() -> Unit)? = null,
-               onNewChat: (() -> Unit)? = null, sessions: HistoryUi? = null, onSessions: (open: Boolean) -> Unit = {},
-               onPickSession: (StoredSessionId) -> Unit = {}, sessionActions: SessionActions? = null, context: ContextUi? = null, onContext: (() -> Unit)? = null,
-               onCompress: (String?) -> Unit = {}, onCloseContext: () -> Unit = {}) {
+fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifier, answers: PromptAnswers? = null,
+               sessions: HistoryUi? = null, onSessions: (open: Boolean) -> Unit = {}, onPickSession: (StoredSessionId) -> Unit = {},
+               sessionActions: SessionActions? = null, context: ContextUi? = null, contextActions: ContextActions? = null,
+               places: ChatPlaces? = null, onStop: () -> Unit = {}, onRetry: (() -> Unit)? = null,
+               onCopy: ((String) -> Unit)? = null, about: String? = null) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var picked by remember { mutableIntStateOf(0) }  // a conversation picked in the drawer is shown from its end (V5)
@@ -116,10 +119,10 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
         go()
     }
     val links = listOfNotNull(
-        onNewChat?.let { DrawerLink(HermesIcons.NewChat, stringResource(R.string.chat_new), "drawer-new-chat", leaveTo(it)) },
-        onGateway?.let { DrawerLink(HermesIcons.Gateway, stringResource(R.string.chat_gateway), "open-gateway", leaveTo(it)) },
-        onTerminal?.let { DrawerLink(HermesIcons.Terminal, stringResource(R.string.chat_terminal), "open-ssh", leaveTo(it)) },
-        onSettings?.let { DrawerLink(HermesIcons.Settings, stringResource(R.string.chat_settings), "open-settings", leaveTo(it)) },
+        places?.newChat?.let { DrawerLink(HermesIcons.NewChat, stringResource(R.string.chat_new), "drawer-new-chat", leaveTo(it)) },
+        places?.gateway?.let { DrawerLink(HermesIcons.Gateway, stringResource(R.string.chat_gateway), "open-gateway", leaveTo(it)) },
+        places?.terminal?.let { DrawerLink(HermesIcons.Terminal, stringResource(R.string.chat_terminal), "open-ssh", leaveTo(it)) },
+        places?.settings?.let { DrawerLink(HermesIcons.Settings, stringResource(R.string.chat_settings), "open-settings", leaveTo(it)) },
     )
     val hasDrawer = links.isNotEmpty() || sessions != null || about != null
     ModalNavigationDrawer(drawerContent = {
@@ -129,15 +132,16 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
         }
     }, modifier, drawerState = drawer, gesturesEnabled = hasDrawer) {
         Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).safeDrawingPadding()) {
-            TopBar(onMenu = if (hasDrawer) ({ scope.launch { drawer.open() } }) else null, onNewChat)
+            TopBar(onMenu = if (hasDrawer) ({ scope.launch { drawer.open() } }) else null, places?.newChat)
             if (chat.entries.isEmpty() && !chat.running && chat.prompts.isEmpty()) Intro(Modifier.weight(1f))
             else Transcript(chat, onRetry, onCopy, picked, Modifier.weight(1f))
             // One question at a time, the oldest first: the turn waits on it.
             if (answers != null) chat.prompts.firstOrNull()?.let { PromptCard(it, answers) }
             // The agent's plan while it works through it (D1: a turn that ended leaves no stale plan pinned).
             chat.todos?.takeIf { chat.running && it.active }?.let { TodoStrip(it) }
-            Composer(chat, onSend, onStop, onSetup, onContext)
-            context?.let { ContextSheet(it, running = chat.busy, compressing = chat.compressing, onCompress = onCompress, onClose = onCloseContext) }
+            Composer(chat, onSend, onStop, places?.setup, contextActions?.open)
+            context?.let { ContextSheet(it, running = chat.busy, compressing = chat.compressing, onCompress = contextActions?.compress ?: {},
+                                          onClose = contextActions?.close ?: {}) }
         }
     }
 }

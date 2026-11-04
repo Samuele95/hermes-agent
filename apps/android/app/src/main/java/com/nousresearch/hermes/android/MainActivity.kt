@@ -41,7 +41,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.nousresearch.hermes.android.chat.ChatPlaces
 import com.nousresearch.hermes.android.chat.ChatScreen
+import com.nousresearch.hermes.android.chat.ContextActions
 import com.nousresearch.hermes.android.chat.PromptAnswers
 import com.nousresearch.hermes.android.chat.SessionActions
 import com.nousresearch.hermes.android.gateway.GatewayScreen
@@ -108,17 +110,18 @@ class MainActivity : ComponentActivity() {
                             val answers = PromptAnswers(approve = { p, choice -> app.chat { approve(p, choice) } },
                                                         clarify = { p, given -> app.chat { clarify(p, given) } },
                                                         secret = { p, value -> app.chat { secret(p, value) } })
-                            ChatScreen(chat, about = state.about, onSetup = { app.setup { open() } }, answers = answers,
-                                       onTerminal = { app.ssh { open() } }, onGateway = app::openGateway, onStop = { app.chat { cancel() } },
+                            val places = ChatPlaces(setup = { app.setup { open() } }, terminal = { app.ssh { open() } }, gateway = app::openGateway,
+                                                    settings = { app.settings { open() } }, newChat = { app.chat { open() } })
+                            val contextActions = ContextActions(open = { app.context { open() } }, compress = { focus -> app.context { compress(focus) } },
+                                                                close = state.context::close)
+                            ChatScreen(chat, about = state.about, answers = answers, places = places, onStop = { app.chat { cancel() } },
                                        onRetry = { app.chat { retry() } }, onCopy = { copy("Hermes", it) },
-                                       onSettings = { app.settings { open() } }, onNewChat = { app.chat { open() } },
                                        // The drawer's sessions load as it opens; a tap continues one.
                                        sessions = history, onSessions = { open -> if (open) app.history { open() } else state.history.close() },
                                        onPickSession = { id -> app.history { pick(id) } },
                                        sessionActions = SessionActions(edit = state.history::edit, saveTitle = { title -> app.history { saveTitle(title) } },
                                                                        askDelete = state.history::askDelete, confirmDelete = { app.history { confirmDelete() } }),
-                                       context = context, onContext = { app.context { open() } },
-                                       onCompress = { focus -> app.context { compress(focus) } }, onCloseContext = state.context::close,
+                                       context = context, contextActions = contextActions,
                                        onSend = { text ->
                                 if (Build.VERSION.SDK_INT >= 33 &&
                                     checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {

@@ -7,6 +7,8 @@ import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextClearance
 import androidx.test.platform.app.InstrumentationRegistry
+import com.nousresearch.hermes.android.chat.ChatPlaces
+import com.nousresearch.hermes.android.chat.ContextActions
 import com.nousresearch.hermes.android.chat.ContextUi
 import com.nousresearch.hermes.bridge.protocol.ContextCategory
 import com.nousresearch.hermes.bridge.protocol.SessionContextBreakdownResult
@@ -196,17 +198,40 @@ class ChatScreenTest {
         val about = "Python 3.14.7 · SQLite 3.53.4 with FTS5 · ready in 1090 ms"
         val went = mutableListOf<String>()
         compose.setContent {
-            ChatScreen(Chat(), onSend = {}, about = about, onSetup = { went += "setup" }, onTerminal = { went += "ssh" },
-                       onGateway = { went += "gateway" }, onSettings = { went += "settings" }, onNewChat = { went += "new" })
+            ChatScreen(Chat(), onSend = {}, about = about,
+                       places = ChatPlaces(setup = { went += "setup" }, terminal = { went += "ssh" }, gateway = { went += "gateway" },
+                                           settings = { went += "settings" }, newChat = { went += "new" }))
         }
 
         compose.onNodeWithTag("open-drawer").performClick()
 
         val height = compose.onNodeWithText(about).getUnclippedBoundsInRoot().height
         assertTrue("the runtime line is $height tall: a column of words, not one caption line", height <= 24.dp)
-        compose.onNodeWithTag("open-gateway").performClick()
-        assertEquals(listOf("gateway"), went)
-        listOf("drawer-new-chat", "open-ssh", "open-settings").forEach { compose.onNodeWithTag(it).assertExists() }
+        compose.onNodeWithTag("drawer-new-chat").performClick()
+        // Each link snaps the drawer closed, so the next one is reached through the menu again (its scrim covers the bar).
+        listOf("open-gateway", "open-ssh", "open-settings").forEach {
+            compose.onNodeWithTag("open-drawer").performClick()
+            compose.onNodeWithTag(it).performClick()
+            compose.waitForIdle()
+        }
+        compose.onNodeWithTag("new-chat").performClick()
+        compose.onNodeWithTag("open-setup").performClick()
+
+        assertEquals(listOf("new", "gateway", "ssh", "settings", "new", "setup"), went)  // every link opens its own place
+    }
+
+    @Test
+    fun aPlaceLeftOutHasNoWayThere() {
+        var places: ChatPlaces? by mutableStateOf(null)
+        compose.setContent { ChatScreen(Chat(), onSend = {}, places = places) }
+
+        // No places, no sessions, no runtime line: no drawer, no new chat, no model pill to tap.
+        listOf("open-drawer", "new-chat", "open-setup").forEach { compose.onNodeWithTag(it).assertDoesNotExist() }
+
+        places = ChatPlaces(gateway = {})
+        compose.onNodeWithTag("open-drawer").assertExists().performClick()
+        compose.onNodeWithTag("open-gateway").assertExists()
+        listOf("drawer-new-chat", "open-ssh", "open-settings", "new-chat", "open-setup").forEach { compose.onNodeWithTag(it).assertDoesNotExist() }
     }
 
     @Test
@@ -291,7 +316,7 @@ class ChatScreenTest {
     @Test
     fun theComposerNamesTheModelAndOpensItsSetup() {
         var opened = 0
-        compose.setContent { ChatScreen(Chat(model = "kimi-k2"), onSend = {}, onSetup = { opened++ }) }
+        compose.setContent { ChatScreen(Chat(model = "kimi-k2"), onSend = {}, places = ChatPlaces(setup = { opened++ })) }
 
         compose.onNodeWithText("kimi-k2").assertExists()
         compose.onNodeWithTag("open-setup").performClick()
@@ -348,12 +373,12 @@ class ChatScreenTest {
     @Test
     fun theMeterOpensTheContextSheet() {
         var opened = 0
-        var onContext: (() -> Unit)? by mutableStateOf(null)
-        compose.setContent { ChatScreen(answered, onSend = {}, onContext = onContext) }
+        var actions: ContextActions? by mutableStateOf(null)
+        compose.setContent { ChatScreen(answered, onSend = {}, contextActions = actions) }
 
         compose.onNodeWithTag("context-meter").assertHasNoClickAction()  // a plain readout without a sheet to open
 
-        onContext = { opened++ }
+        actions = ContextActions(open = { opened++ }, compress = {}, close = {})
         compose.onNodeWithTag("context-meter").assertHasClickAction().performClick()
 
         assertEquals(1, opened)
@@ -387,7 +412,7 @@ class ChatScreenTest {
         var chat by mutableStateOf(answered)
         var context by mutableStateOf(ContextUi(meter, breakdown))
         val focuses = mutableListOf<String?>()
-        compose.setContent { ChatScreen(chat, onSend = {}, context = context, onCompress = { focuses += it }) }
+        compose.setContent { ChatScreen(chat, onSend = {}, context = context, contextActions = ContextActions(open = {}, compress = { focuses += it }, close = {})) }
 
         compose.onNodeWithTag("context-focus").performScrollTo().performTextInput("here 1")
         compose.onNodeWithTag("compress").performScrollTo().performClick()
@@ -448,7 +473,8 @@ class ChatScreenTest {
         var chat by mutableStateOf(answered.copy(compressing = true))
         var context: ContextUi? by mutableStateOf(ContextUi(meter, breakdown))
         var closes = 0
-        compose.setContent { ChatScreen(chat, onSend = {}, context = context, onCloseContext = { closes++; context = null }) }
+        compose.setContent { ChatScreen(chat, onSend = {}, context = context,
+                                        contextActions = ContextActions(open = {}, compress = {}, close = { closes++; context = null })) }
         compose.onNodeWithTag("context-panel").assertExists()
         val ui = InstrumentationRegistry.getInstrumentation().uiAutomation
 

@@ -42,6 +42,9 @@ import com.nousresearch.hermes.android.ui.PrimaryButton
 import com.nousresearch.hermes.android.ui.SectionCaption
 import com.nousresearch.hermes.bridge.protocol.ContextCategory
 
+/** What the context sheet does (sessions-16/17): [open] it from the meter, [compress] with a focus (null = none), [close] it. */
+class ContextActions(val open: () -> Unit, val compress: (focus: String?) -> Unit, val close: () -> Unit)
+
 /**
  * The meter's detail as a bottom sheet over the chat (DC-B11): the fill, what fills it, and Compress. It cannot be
  * dismissed while the chat's session compresses ([compressing], D3). [running]: a reply is on its way or being
