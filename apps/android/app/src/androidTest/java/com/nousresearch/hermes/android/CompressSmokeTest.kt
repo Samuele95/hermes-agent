@@ -85,7 +85,7 @@ class CompressSmokeTest {
             var held = false
             compose.waitUntil(900_000) {
                 if (!TurnService.turns.isIdle) held = true
-                ready.context.state.value.let { it != null && !it.busy && (it.outcome != null || it.error != null) }
+                ready.context.state.value.let { it != null && !ready.chat.state.value.compressing && (it.outcome != null || it.error != null) }
             }
             val done = ready.context.state.value!!
             Log.i(SmokeSteps.TAG, "compress answered after ${System.currentTimeMillis() - began} ms: outcome=${done.outcome} error=${done.error}")

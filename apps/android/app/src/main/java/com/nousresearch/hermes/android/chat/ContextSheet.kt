@@ -44,17 +44,18 @@ import com.nousresearch.hermes.bridge.protocol.ContextCategory
 
 /**
  * The meter's detail as a bottom sheet over the chat (DC-B11): the fill, what fills it, and Compress. It cannot be
- * dismissed while Compress runs (D3). [running]: a reply is being written, so Compress waits.
+ * dismissed while the chat's session compresses ([compressing], D3). [running]: a reply is on its way or being
+ * written, so Compress waits.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ContextSheet(ui: ContextUi, running: Boolean, onCompress: (focus: String?) -> Unit, onClose: () -> Unit) {
+fun ContextSheet(ui: ContextUi, running: Boolean, compressing: Boolean, onCompress: (focus: String?) -> Unit, onClose: () -> Unit) {
     // The swipe goes through the sheet's state, Back and an outside tap through its properties: all three wait for Compress.
-    val busy by rememberUpdatedState(ui.busy)
+    val busy by rememberUpdatedState(compressing)
     val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true, confirmValueChange = { it != SheetValue.Hidden || !busy })
-    ModalBottomSheet(onDismissRequest = { if (!ui.busy) onClose() }, modifier = Modifier.testTag("context-panel"), sheetState = sheet,
+    ModalBottomSheet(onDismissRequest = { if (!compressing) onClose() }, modifier = Modifier.testTag("context-panel"), sheetState = sheet,
                      containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                     properties = ModalBottomSheetProperties(shouldDismissOnBackPress = !ui.busy, shouldDismissOnClickOutside = !ui.busy)) {
+                     properties = ModalBottomSheetProperties(shouldDismissOnBackPress = !compressing, shouldDismissOnClickOutside = !compressing)) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 24.dp)) {
             Header(ui.meter)
             Breakdown(ui)
@@ -63,14 +64,14 @@ fun ContextSheet(ui: ContextUi, running: Boolean, onCompress: (focus: String?) -
             Hint(stringResource(R.string.context_compress_hint))
             var focus by rememberSaveable { mutableStateOf("") }
             OutlinedTextField(focus, { focus = it }, Modifier.fillMaxWidth().padding(top = 8.dp).testTag("context-focus"), singleLine = true,
-                              enabled = !ui.busy, label = { Text(stringResource(R.string.context_focus)) },
+                              enabled = !compressing, label = { Text(stringResource(R.string.context_focus)) },
                               placeholder = { Text(stringResource(R.string.context_focus_hint)) })
-            if (ui.busy) {
+            if (compressing) {
                 LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 12.dp).height(2.dp))
                 Hint(stringResource(R.string.context_compressing), Modifier.testTag("context-compressing"))
             }
             PrimaryButton(stringResource(R.string.context_compress), { onCompress(focus.trim().ifEmpty { null }) },
-                          Modifier.padding(top = 12.dp).testTag("compress"), enabled = !ui.busy && !running)
+                          Modifier.padding(top = 12.dp).testTag("compress"), enabled = !compressing && !running)
             ui.outcome?.let { Text(it, Modifier.padding(top = 12.dp).testTag("context-outcome"), style = MaterialTheme.typography.bodyMedium) }
         }
     }

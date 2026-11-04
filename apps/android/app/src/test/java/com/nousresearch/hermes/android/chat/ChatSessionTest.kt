@@ -17,6 +17,8 @@ import kotlin.time.Duration.Companion.minutes
 import org.junit.Assert.assertNotEquals
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.cancel
@@ -45,6 +47,8 @@ class ChatSessionTest {
     }
     private var submit: () -> String = { """{"status":"streaming"}""" }
     private var sessions = 0
+    /** Called as the core answers `session.create`, before its reply: a test steps in during a switch. */
+    private var created: () -> Unit = {}
     private var close: (JsonObject) -> String = { """{"closed":true}""" }
     private var delete: (String) -> String = { id -> """{"deleted":"$id"}""" }
     private var contract = """"desktop_contract":${BackendContract.BACKEND_CONTRACT}"""
@@ -60,7 +64,7 @@ class ChatSessionTest {
                                    "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT},"model":"kimi-k2"}}""" }
     private val core = FakeCoreGateway { method, params ->
         when (method) {
-            "session.create" -> """{"session_id":"s${++sessions}","stored_session_id":"db$sessions","message_count":0,"messages":[],"info":{$contract}}"""
+            "session.create" -> { created(); """{"session_id":"s${++sessions}","stored_session_id":"db$sessions","message_count":0,"messages":[],"info":{$contract}}""" }
             "prompt.submit" -> submit()
             "session.close" -> close(params)
             "session.delete" -> delete(params.getValue("session_id").jsonPrimitive.content)
@@ -1324,7 +1328,8 @@ class ChatSessionTest {
         assertEquals("Compressed: 4 → 2 messages\nApprox request size: ~9,000 → ~2,100 tokens", said)
         assertEquals(listOf(Entry.User("latest", 9), Entry.Reply("ok", TurnStatus.COMPLETE)), chat.state.value.entries)
         assertEquals(ContextMeter(2_100, 8_192, 26, false), chat.state.value.meter)
-        assertEquals(listOf("begin:compress:s-resumed", "end:compress:s-resumed"), turns)
+        assertEquals(listOf("begin:compress:s-resumed#1", "end:compress:s-resumed#1"), turns)
+        assertFalse(chat.state.value.compressing)
         val params = core.calls.single { it.first == "session.compress" }.second
         assertEquals("s-resumed" to "here 1", params.getValue("session_id").jsonPrimitive.content to params.getValue("focus_topic").jsonPrimitive.content)
     }
@@ -1361,23 +1366,165 @@ class ChatSessionTest {
 
         assertEquals(4009, refused?.code)
         assertEquals(listOf(Entry.User("hi"), Entry.Reply("hello", TurnStatus.COMPLETE)), chat.state.value.entries)
-        assertEquals(listOf("begin:compress:s1", "end:compress:s1"), turns.takeLast(2))
+        assertEquals(listOf("begin:compress:s1#1", "end:compress:s1#1"), turns.takeLast(2))
+        assertFalse(chat.state.value.compressing)
         assertFalse("a blank focus is none", core.calls.single { it.first == "session.compress" }.second.containsKey("focus_topic"))
     }
 
+    /** The answered chat: open, one prompt sent and answered, so Retry and Compress are both offered. */
+    private suspend fun ChatSession.answered(): ChatSession = apply {
+        open()
+        send("hi")
+        core.emit("message.start", sessionId)
+        core.emit("message.complete", sessionId, """{"text":"hello"}""")
+    }
+
+    /** The calls made after the session.compress call, as method and id: what was asked of the core during the compression. */
+    private fun callsDuringCompression() = callsAfter(core.calls.indexOfFirst { it.first == "session.compress" } + 1)
+
     @Test
-    fun aPromptSentDuringACompressionKeepsItsBubble() = runTest(UnconfinedTestDispatcher()) {
-        val chat = openChat().apply { open() }
-        chat.send("hi")
-        core.emit("message.start", "s1")
-        core.emit("message.complete", "s1", """{"text":"hello"}""")
-        // The user sends while the core compresses (the fake answers on the caller's thread; send does not suspend on it).
-        compressReply = { runBlocking { chat.send("next") }; COMPRESSED }
+    fun aPromptDuringACompressionIsRefusedAndTheResultApplies() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().answered()
+        var during: Chat? = null
+        var sendRefused: Throwable? = null
+        // The user sends and taps Retry while the core compresses (the fake answers on the caller's thread).
+        compressReply = {
+            during = chat.state.value
+            sendRefused = runCatching { runBlocking { chat.send("next") } }.exceptionOrNull()
+            runBlocking { chat.retry() }
+            COMPRESSED
+        }
 
         chat.compress(null)
 
-        assertEquals(Entry.User("next"), chat.state.value.entries.last())
-        assertFalse("the compressed transcript is not applied over it (V4)", chat.state.value.entries.contains(Entry.User("latest", 9)))
+        assertTrue(during!!.compressing)
+        assertEquals(null, during!!.retryTarget())
+        assertTrue("$sendRefused", sendRefused is SetupRefusal)
+        assertEquals(ChatSession.STILL_COMPRESSING, sendRefused?.message)
+        assertEquals(emptyList<Pair<String, String?>>(),
+                     callsDuringCompression().filter { it.first == "prompt.submit" || it.first == "session.history" })
+        assertEquals(listOf(Entry.User("latest", 9), Entry.Reply("ok", TurnStatus.COMPLETE)), chat.state.value.entries)  // no stray prompt
+        assertFalse(chat.state.value.compressing)
+
+        chat.send("next")  // the session is the chat's again
+
+        assertEquals("prompt.submit" to "s1", callsAfter(core.calls.size - 1).single())
+    }
+
+    @Test
+    fun noSwitchOrOwnDeleteWhileTheSessionCompresses() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().answered()
+        core.emit("session.info", "s1", "{}")  // its build settled: a left s1 would be closed
+        var refused: List<String?> = emptyList()
+        compressReply = {
+            refused = listOf<suspend () -> Unit>({ chat.open() }, { chat.resume("db-old") }, { chat.delete("db1") })
+                .map { runCatching { runBlocking { it() } }.exceptionOrNull()?.message }
+            COMPRESSED
+        }
+
+        chat.compress(null)
+
+        assertEquals(List(3) { ChatSession.STILL_COMPRESSING }, refused)
+        val switches = setOf("session.create", "session.resume", "session.close", "session.delete")
+        assertEquals(emptyList<Pair<String, String?>>(), callsDuringCompression().filter { it.first in switches })
+        assertEquals(emptyList<String>(), closed())
+        assertEquals("s1", chat.sessionId)
+
+        chat.open()  // once it has finished, a switch goes through
+
+        assertEquals("s2", chat.sessionId)
+    }
+
+    @Test
+    fun aSecondCompressionIsRefusedAndTheFirstKeepsItsOwnHold() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().answered()
+        val mark = turns.size
+        var second: Throwable? = null
+        var heldDuring: List<String> = emptyList()
+        var asked = 0
+        compressReply = {
+            if (asked++ == 0) {  // only the first: a second one let through would ask again (and recurse)
+                second = runCatching { runBlocking { chat.compress(null) } }.exceptionOrNull()
+                heldDuring = turns.drop(mark)
+            }
+            COMPRESSED
+        }
+
+        chat.compress(null)
+
+        assertTrue("$second", second is SetupRefusal)
+        assertEquals(ChatSession.STILL_COMPRESSING, second?.message)
+        assertEquals(1, core.calls.count { it.first == "session.compress" })
+        assertEquals(listOf("begin:compress:s1#1"), heldDuring)
+        assertEquals(listOf("begin:compress:s1#1", "end:compress:s1#1"), turns.drop(mark))
+        assertFalse("a compression is not the session's turn", "begin:s1" in turns.drop(mark))
+    }
+
+    @Test
+    fun eachCompressionHoldsAKeyOfItsOwn() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().answered()
+        val mark = turns.size
+        compressReply = { COMPRESSED }
+
+        chat.compress(null)
+        chat.compress(null)
+
+        val holds = turns.drop(mark)
+        val k1 = holds.first().removePrefix("begin:")
+        val k2 = holds.getOrNull(2).orEmpty().removePrefix("begin:")
+        assertEquals(listOf("begin:$k1", "end:$k1", "begin:$k2", "end:$k2"), holds)
+        assertNotEquals(k1, k2)
+        assertTrue("$k1 $k2", k1.startsWith("compress:s1") && k2.startsWith("compress:s1"))
+        assertTrue("$k1 $k2", k1 != "s1" && k2 != "s1")
+    }
+
+    @Test
+    fun aCompressionThatFailsOrIsCancelledGivesTheSessionBack() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().answered()
+        compressReply = { throw CoreError(5005, "boom") }
+
+        val failed = runCatching { chat.compress(null) }.exceptionOrNull()
+
+        assertEquals(5005, (failed as? CoreError)?.code)
+        assertFalse(chat.state.value.compressing)
+        assertTrue(turns.last(), turns.last().startsWith("end:compress:"))
+        chat.send("next")
+        assertEquals("prompt.submit" to "s1", callsAfter(core.calls.size - 1).single())
+
+        val fresh = openChat().answered()
+        compressReply = { throw CancellationException("gone") }
+
+        val cancelled = runCatching { fresh.compress(null) }.exceptionOrNull()
+
+        assertTrue("$cancelled", cancelled is CancellationException)
+        assertFalse(fresh.state.value.compressing)
+        assertTrue(turns.last(), turns.last().startsWith("end:compress:${fresh.sessionId}"))
+    }
+
+    @Test
+    fun compressWithNoSessionIsRefusedInWords() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat()
+
+        val refused = runCatching { chat.compress(null) }.exceptionOrNull()
+
+        assertTrue("$refused", refused is SetupRefusal)
+        assertEquals(ChatSession.NOTHING_TO_COMPRESS, refused?.message)
+        assertEquals(emptyList<Pair<String, JsonObject>>(), core.calls)
+        assertEquals(emptyList<String>(), turns)
+    }
+
+    @Test
+    fun aCompressAskedDuringASwitchActsOnTheSessionTheSwitchOpened() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        var later: Deferred<String>? = null
+        // Compress is asked while New chat's session.create is being answered.
+        created = { if (later == null) later = async { chat.compress(null) } }
+        compressReply = { COMPRESSED }
+
+        chat.open()
+        later!!.await()
+
+        assertEquals("s2", lastOf("session.compress").getValue("session_id").jsonPrimitive.content)
     }
 
     @Test

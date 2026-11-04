@@ -33,10 +33,13 @@ data class Retry(val index: Int, val text: String, val rowId: Long?)
  * doing, and [prompts] what it is waiting on the user for. [model] is the model the session runs, as the core last named it.
  * [todos] is the agent's plan and [meter] how full the context is, both as the core last sent them.
  * [submitted]: a prompt is on its way and its turn has not started yet (`prompt.submit` sent, no `message.start`).
+ * [compressing]: the core is compressing the session at this chat's request; only `ChatSession.compress` sets and
+ * clears it (invariant 6).
  */
 data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? = null, val activity: String? = null,
                 val prompts: List<Prompt> = emptyList(), val reasoning: String? = null, val model: String? = null,
-                val todos: TodoList? = null, val meter: ContextMeter? = null, val submitted: Boolean = false) {
+                val todos: TodoList? = null, val meter: ContextMeter? = null, val submitted: Boolean = false,
+                val compressing: Boolean = false) {
     val running: Boolean get() = streaming != null
 
     /** A turn runs or is about to: from the prompt's send to the turn's end (GoF-State; improve #4). */
@@ -61,9 +64,9 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
         return copy(entries = entries.toMutableList().apply { set(i, user.copy(rowId = rowId)) })
     }
 
-    /** The last prompt, when nothing runs or is about to and something answered it (D3); null otherwise. */
+    /** The last prompt, when nothing runs, is about to, or compresses, and something answered it (D3); null otherwise. */
     fun retryTarget(): Retry? {
-        if (busy) return null
+        if (busy || compressing) return null
         val i = entries.indexOfLast { it is Entry.User }
         val user = entries.getOrNull(i) as? Entry.User ?: return null
         return Retry(i, user.text, user.rowId).takeIf { i < entries.lastIndex && user.text.isNotBlank() }

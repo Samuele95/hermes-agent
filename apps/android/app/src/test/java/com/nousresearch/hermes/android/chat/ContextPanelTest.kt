@@ -1,5 +1,6 @@
 package com.nousresearch.hermes.android.chat
 
+import com.nousresearch.hermes.android.SetupRefusal
 import com.nousresearch.hermes.bridge.CoreError
 import com.nousresearch.hermes.bridge.protocol.CompressionSummary
 import com.nousresearch.hermes.bridge.protocol.ContextCategory
@@ -25,8 +26,10 @@ class ContextPanelTest {
         contextUsed = 4_500, contextPercent = 14)
     private val reads = mutableListOf(first, later)
     private var breakdown: suspend () -> SessionContextBreakdownResult = { reads.removeAt(0) }
-    private var compress: suspend (String?) -> String? = { "Compressed: 6 → 2 messages" }
-    private val panel = ContextPanel({ meter }, { breakdown() }, { compress(it) })
+    private var compress: suspend (String?) -> String = { "Compressed: 6 → 2 messages" }
+    /** The chat's session is being compressed: the aggregate's flag (invariant 6), set and cleared by its compress. */
+    private var compressingNow = false
+    private val panel = ContextPanel({ meter }, { breakdown() }, { compress(it) }, { compressingNow })
 
     @Test
     fun openingShowsTheMeterAtOnceAndThenTheBreakdown() = runTest {
@@ -53,18 +56,22 @@ class ContextPanelTest {
         panel.open()
         var focus: String? = null
         var during: ContextUi? = null
+        var stayed = false
         compress = {
             focus = it
             during = panel.state.value
+            compressingNow = true  // as the aggregate admits it
             panel.close()  // refused while it runs (D3)
+            stayed = panel.state.value != null
             meter = ContextMeter(4_500, 32_000, 14, false)
+            compressingNow = false  // as the aggregate's finally clears it
             "Compressed: 6 → 2 messages"
         }
 
         panel.compress("here 1")
 
         assertEquals("here 1", focus)
-        assertTrue(during!!.busy)
+        assertTrue(stayed)
         assertNull(during!!.outcome)
         assertEquals(ContextUi(ContextMeter(4_500, 32_000, 14, false), later, outcome = "Compressed: 6 → 2 messages"),
                      panel.state.value)
@@ -79,6 +86,37 @@ class ContextPanelTest {
         panel.compress(null)
 
         assertEquals(ContextUi(meterNow, first, error = busy), panel.state.value)
+    }
+
+    @Test
+    fun theSheetStaysWhileTheSessionCompresses() = runTest {
+        panel.open()
+        compressingNow = true
+
+        panel.close()
+        assertEquals(ContextUi(meterNow, first), panel.state.value)
+
+        compressingNow = false
+        panel.close()
+        assertNull(panel.state.value)
+    }
+
+    @Test
+    fun anAppRefusalIsShownAndASuccessClearsIt() = runTest {
+        panel.open()
+        compress = { throw SetupRefusal(ChatSession.NOTHING_TO_COMPRESS) }
+
+        panel.compress(null)
+        assertEquals(ContextUi(meterNow, first, error = "Nothing to compress yet."), panel.state.value)
+
+        compress = { throw SetupRefusal(ChatSession.STILL_COMPRESSING) }
+        panel.compress(null)
+        assertEquals(ContextUi(meterNow, first, error = ChatSession.STILL_COMPRESSING), panel.state.value)
+
+        compress = { "Compressed: 6 → 2 messages" }
+        panel.compress(null)
+        assertEquals(null, panel.state.value?.error)
+        assertEquals("Compressed: 6 → 2 messages", panel.state.value?.outcome)
     }
 
     @Test

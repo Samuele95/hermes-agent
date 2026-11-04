@@ -10,17 +10,22 @@ import kotlinx.coroutines.flow.update
 
 /**
  * The context sheet: how full the session's context is ([meter], the chat's), what fills it ([breakdown], the core's,
- * dropped on close), whether Compress runs ([busy]), and what it last did ([outcome]) or what went wrong ([error]).
- * The breakdown is loading while it and [error] are both null.
+ * dropped on close), and what Compress last did ([outcome]) or what went wrong ([error]); whether Compress runs is the
+ * chat's (`Chat.compressing`). The breakdown is loading while it and [error] are both null.
  */
 data class ContextUi(val meter: ContextMeter?, val breakdown: SessionContextBreakdownResult? = null,
-                     val busy: Boolean = false, val error: String? = null, val outcome: String? = null)
+                     val error: String? = null, val outcome: String? = null)
 
-/** The context sheet's controller (spec sessions-16/17): [open] shows the [meter] and reads the [breakdown]; [compress] runs the core's. */
+/**
+ * The context sheet's controller (spec sessions-16/17): [open] shows the [meter] and reads the [breakdown]; [compress]
+ * runs the chat's, which refuses in words what it cannot do; [compressing]: the chat's session is being compressed
+ * (invariant 6).
+ */
 class ContextPanel(
     private val meter: () -> ContextMeter?,
     private val breakdown: suspend () -> SessionContextBreakdownResult,
-    private val compress: suspend (focus: String?) -> String?,
+    private val compress: suspend (focus: String?) -> String,
+    private val compressing: () -> Boolean,
 ) {
     private val screen = MutableStateFlow<ContextUi?>(null)
     val state: StateFlow<ContextUi?> = screen.asStateFlow()
@@ -32,20 +37,20 @@ class ContextPanel(
 
     /** Closes the sheet; not while Compress runs (D3): the core holds the session for it. */
     fun close() {
-        screen.update { if (it?.busy == true) it else null }
+        screen.update { if (it != null && compressing()) it else null }
     }
 
     /** Compresses the session on [focus] (blank: none); the sheet then shows the new fill, a new breakdown and the core's words (D7). */
     suspend fun compress(focus: String?) {
-        if (screen.value?.busy != false) return  // closed, or one already runs
-        screen.update { it?.copy(busy = true, error = null, outcome = null) }
-        try {
-            val said = compress.invoke(focus)
-            screen.update { it?.copy(busy = false, meter = meter(), breakdown = null, outcome = said) }
+        if (screen.value == null) return  // closed; a second tap is the chat's to refuse (V6)
+        screen.update { it?.copy(error = null, outcome = null) }
+        val said = try {
+            compress.invoke(focus)
         } catch (failed: Exception) {
-            screen.update { it?.copy(busy = false, error = forUser(failed)) }
+            screen.update { it?.copy(error = forUser(failed)) }
             return
         }
+        screen.update { it?.copy(meter = meter(), breakdown = null, error = null, outcome = said) }
         read()
     }
 

@@ -397,10 +397,11 @@ class ChatScreenTest {
         compose.onNodeWithTag("compress").performScrollTo().performClick()
         assertEquals(null, focuses[1])  // a blank focus is none
 
-        context = context.copy(busy = true)
+        chat = chat.copy(compressing = true)  // the chat's session compresses (invariant 6)
         compose.onNodeWithTag("compress").assertIsNotEnabled()
         compose.onNodeWithTag("context-compressing").assertExists()
 
+        chat = chat.copy(compressing = false)
         context = ContextUi(meter, breakdown, outcome = "Compressed: 6 → 2 messages\nApprox request size: ~9,000 → ~2,100 tokens")
         compose.onNodeWithTag("context-outcome").assert(hasText("Compressed: 6 → 2 messages", substring = true))
         compose.onNodeWithTag("compress").assertIsEnabled()
@@ -428,10 +429,26 @@ class ChatScreenTest {
     }
 
     @Test
+    fun aCompressionHoldsSendAndRetry() {
+        var chat by mutableStateOf(answered.copy(compressing = true))
+        compose.setContent { ChatScreen(chat, onSend = {}, onRetry = {}) }
+
+        compose.onNodeWithTag("draft").performTextInput("next")
+        compose.onNodeWithTag("send").assertExists().assertIsNotEnabled()  // Send waits; Stop does not end a compression (V2)
+        compose.onNodeWithTag("stop").assertDoesNotExist()
+        compose.onNodeWithTag("retry").assertDoesNotExist()
+
+        chat = chat.copy(compressing = false)
+        compose.onNodeWithTag("send").assertIsEnabled()
+        compose.onNodeWithTag("retry").assertExists()
+    }
+
+    @Test
     fun theSheetClosesOnBackButNotWhileCompressing() {
-        var context: ContextUi? by mutableStateOf(ContextUi(meter, breakdown, busy = true))
+        var chat by mutableStateOf(answered.copy(compressing = true))
+        var context: ContextUi? by mutableStateOf(ContextUi(meter, breakdown))
         var closes = 0
-        compose.setContent { ChatScreen(answered, onSend = {}, context = context, onCloseContext = { closes++; context = null }) }
+        compose.setContent { ChatScreen(chat, onSend = {}, context = context, onCloseContext = { closes++; context = null }) }
         compose.onNodeWithTag("context-panel").assertExists()
         val ui = InstrumentationRegistry.getInstrumentation().uiAutomation
 
@@ -440,7 +457,7 @@ class ChatScreenTest {
         compose.onNodeWithTag("context-panel").assertExists()
         assertEquals(0, closes)
 
-        context = context!!.copy(busy = false)
+        chat = chat.copy(compressing = false)
         compose.waitForIdle()
         ui.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
         compose.waitForIdle()

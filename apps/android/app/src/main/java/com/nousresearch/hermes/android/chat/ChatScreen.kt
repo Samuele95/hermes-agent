@@ -137,7 +137,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
             // The agent's plan while it works through it (D1: a turn that ended leaves no stale plan pinned).
             chat.todos?.takeIf { chat.running && it.active }?.let { TodoStrip(it) }
             Composer(chat, onSend, onStop, onSetup, onContext)
-            context?.let { ContextSheet(it, running = chat.busy, onCompress = onCompress, onClose = onCloseContext) }
+            context?.let { ContextSheet(it, running = chat.busy, compressing = chat.compressing, onCompress = onCompress, onClose = onCloseContext) }
         }
     }
 }
@@ -369,7 +369,10 @@ private fun Problem(text: String, modifier: Modifier = Modifier) {
     }
 }
 
-/** The desktop's composer: a rounded field, the model it will ask beneath, and Send — or Stop while a turn runs or is about to. */
+/**
+ * The desktop's composer: a rounded field, the model it will ask beneath, and Send — or Stop while a turn runs or is
+ * about to; Send waits while the session compresses.
+ */
 @Composable
 private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, onSetup: (() -> Unit)?, onContext: (() -> Unit)?) {
     var draft by rememberSaveable { mutableStateOf("") }
@@ -401,7 +404,7 @@ private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, o
                     Icon(HermesIcons.Stop, stringResource(R.string.chat_stop), Modifier.size(14.dp))
                 }
             } else {
-                FilledIconButton({ onSend(draft.trim()); draft = "" }, Modifier.size(36.dp).testTag("send"), enabled = draft.isNotBlank()) {
+                FilledIconButton({ onSend(draft.trim()); draft = "" }, Modifier.size(36.dp).testTag("send"), enabled = draft.isNotBlank() && !chat.compressing) {
                     Icon(HermesIcons.Send, stringResource(R.string.chat_send), Modifier.size(18.dp))
                 }
             }

@@ -45,6 +45,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.serialization.json.JsonPrimitive
+import java.util.concurrent.atomic.AtomicLong
 
 /** The core session a chat follows: [runtime] is the id its frames carry, [stored] the key its stored row goes by. */
 data class SessionRef(val runtime: String, val stored: String) {
@@ -71,6 +72,10 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         const val NOT_CLOSED = "Hermes could not close it yet, so it was not deleted; try again in a moment."
         /** Said when Compress is asked for while a reply is being written. */
         const val STILL_REPLYING = "Hermes is still replying; compress when the reply has ended."
+        /** Said when a prompt, a switch or a second compression is asked for while the core compresses the chat's session (invariant 6). */
+        const val STILL_COMPRESSING = "Hermes is compressing this conversation; try again when it has finished."
+        /** Said when Compress is asked for before the chat has a session (improve #6). */
+        const val NOTHING_TO_COMPRESS = "Nothing to compress yet."
     }
 
     /**
@@ -84,6 +89,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     }
 
     private val lock = Any()
+    private val holds = AtomicLong()  // one TurnHost key per compression (improve #2, V8)
     private var live = Live()  // guarded by lock
     private val shown = MutableStateFlow(Chat())
     val state: StateFlow<Chat> = shown.asStateFlow()
@@ -161,6 +167,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
 
     /** [opened] with [switching] already held. */
     private suspend fun opening(): Deferred<LeftSessions.Outcome>? {
+        refuseWhileCompressing()
         val created = core.call(Methods.SESSION_CREATE, SessionCreateParams(source = SOURCE))
         val chat = Chat(model = created.info.model.ifBlank { null }, meter = created.info.usage?.let(ContextMeter::of))
         return switchTo(SessionRef(created.sessionId, created.storedSessionId), chat, created.info.desktopContract)
@@ -255,6 +262,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
 
     /** [resumed] with [switching] already held. */
     private suspend fun resuming(sessionId: String): Deferred<LeftSessions.Outcome>? {
+        refuseWhileCompressing()
         val resumed = core.call(Methods.SESSION_RESUME, SessionResumeParams(sessionId = sessionId, source = SOURCE))
         val inTurn = resumed.running == true
         val chat = Chat(entries = transcriptOf(resumed.messages),
@@ -264,6 +272,11 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         // The live info's key first (the core's own); the reply's session_key next; the caller's id as the last resort.
         val stored = resumed.info.storedSessionId.ifBlank { null } ?: resumed.sessionKey ?: resumed.storedSessionId ?: sessionId
         return switchTo(SessionRef(resumed.sessionId, stored), chat, resumed.info.desktopContract, open)
+    }
+
+    /** Invariant 6: no switch while the core compresses the chat's session; [switching] is held, so none is admitted meanwhile. */
+    private fun refuseWhileCompressing() {
+        if (synchronized(lock) { live.chat.compressing }) throw SetupRefusal(STILL_COMPRESSING)
     }
 
     /**
@@ -348,11 +361,15 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         fallback
     }
 
-    /** Sends [text] to the chat's session; nothing while a turn runs or is about to (Stop stands where Send was). */
+    /**
+     * Sends [text] to the chat's session; nothing while a turn runs or is about to (Stop stands where Send was); refused
+     * while the session compresses.
+     */
     suspend fun send(text: String) {
         var session: String? = null
         change { now ->  // the session and the bubble decided in one change (EJ-78)
             val ref = checkNotNull(now.ref) { "open() the chat first" }
+            if (now.chat.compressing) throw SetupRefusal(STILL_COMPRESSING)  // invariant 6 (V4)
             if (now.chat.busy) now else { session = ref.runtime; now.copy(chat = now.chat.sent(text)) }
         }
         val to = session ?: return  // V5: a second tap before the turn started
@@ -438,27 +455,40 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     /**
      * Compresses the chat's session, as the desktop's /compress does: the core summarizes the earlier conversation (on
      * [focus] when given; its own forms like `here 2` too) and answers with what it kept, which the chat then shows with
-     * the new fill (invariant 5). Not while a turn runs. [turns] keeps the app alive meanwhile under its own key: a
-     * compression is a model call (DC-B10). Returns what it did, in the core's words; a refusal is thrown.
+     * the new fill (invariant 5). Not while a turn runs or another compression of it does; while it runs no prompt,
+     * switch or own-row delete is admitted (invariant 6). [turns] keeps the app alive meanwhile under a key of its own
+     * (DC-B10, improve #2). Returns what it did, in the core's words; a refusal is thrown, also when no session is open.
      */
-    suspend fun compress(focus: String?): String? {
-        val (session, busy) = synchronized(lock) { live.ref?.runtime to live.chat.busy }
-        if (session == null) return null
-        if (busy) throw SetupRefusal(STILL_REPLYING)
-        val hold = "compress:$session"
+    suspend fun compress(focus: String?): String {
+        // Admitted with [switching] held (V3): no open, resume or own-row delete is half done, and none starts until
+        // the flag is set (invariant 6). Decided in one change; a refusal leaves the chat as it was.
+        val session = switching.withLock {
+            var admitted: String? = null
+            change { now ->
+                val ref = now.ref ?: throw SetupRefusal(NOTHING_TO_COMPRESS)
+                if (now.chat.busy) throw SetupRefusal(STILL_REPLYING)
+                if (now.chat.compressing) throw SetupRefusal(STILL_COMPRESSING)
+                admitted = ref.runtime
+                now.copy(chat = now.chat.copy(compressing = true))
+            }
+            checkNotNull(admitted)
+        }
+        val hold = "compress:$session#${holds.incrementAndGet()}"  // its own, never the turn's key (DC-B10, V8)
         turns.begin(hold)
         try {
             val result = core.call(Methods.SESSION_COMPRESS,
                                    SessionCompressParams(sessionId = session, focusTopic = focus?.trim()?.ifEmpty { null }))
             change { now ->
-                // The chat left, or a turn began or was sent meanwhile: that session's own frames are the truth (as resync; V4).
+                // The chat left, or a turn began or was sent meanwhile: that session's own frames are the truth (as resync; I4-V4).
                 val ref = now.ref
                 if (ref?.runtime != session || now.chat.busy) now
                 else now.copy(ref = result.info?.storedSessionId?.ifBlank { null }?.let { ref.copy(stored = it) } ?: ref,  // D4
-                              chat = now.chat.compressed(result))
+                              chat = now.chat.compressed(result).copy(compressing = false))
             }
             return compressionOutcome(result)
         } finally {
+            // Success, refusal, failure or cancellation: the session is the chat's again (V7).
+            change { now -> if (now.ref?.runtime == session && now.chat.compressing) now.copy(chat = now.chat.copy(compressing = false)) else now }
             turns.end(hold)
         }
     }

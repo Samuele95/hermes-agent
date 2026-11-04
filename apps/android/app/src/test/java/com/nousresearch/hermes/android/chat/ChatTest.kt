@@ -345,6 +345,16 @@ class ChatTest {
     }
 
     @Test
+    fun aCompressionHoldsRetryAndOnlyTheSessionEndsIt() {
+        val compressing = Chat(listOf(Entry.User("a", 1), Entry.Reply("b", TurnStatus.COMPLETE)), compressing = true)
+
+        assertEquals(null, compressing.retryTarget())
+        assertEquals(Retry(0, "a", 1), compressing.copy(compressing = false).retryTarget())
+        // No frame ends it: only ChatSession.compress sets and clears it (invariant 6).
+        assertTrue(compressing.after(event("error", """{"message":"x"}"""), event("session.info", "{}")).compressing)
+    }
+
+    @Test
     fun rewindingKeepsWhatCameBeforeThePrompt() {
         val reply = Entry.Reply("r", TurnStatus.COMPLETE)
         val chat = Chat(listOf(Entry.User("a", 1), reply, Entry.User("b", 2), Entry.Notice("x")), model = "kimi-k2")
