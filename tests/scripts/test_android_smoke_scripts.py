@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -51,9 +52,10 @@ if argv[:2] == ["shell", "pm"] or argv[:3] == ["shell", "am", "force-stop"]:
 if argv == ["get-serialno"]:
     answer("FAKE0001\\n")
 if argv[:3] == ["shell", "am", "instrument"]:
-    test_class = argv[argv.index("class") + 1]
+    test_class = argv[argv.index("class") + 1] if "class" in argv else ""
     method = test_class.split("#", 1)[1] if "#" in test_class else None
-    status = int(text("instrument.status").strip() or 0)
+    status = text(f"instrument.{{method}}.status") if method else ""
+    status = int(status.strip() or text("instrument.status").strip() or 0)
     answer(text(f"instrument.{{method}}.txt" if method else "instrument.txt"), status)
 if argv == ["logcat", "-d", "-b", "crash"]:
     answer(text("crash.txt"))
@@ -96,6 +98,15 @@ def failure_stack(frames: int) -> str:
     return "\n".join(lines)
 
 
+def early_assumption(tests: int) -> str:
+    """A long run whose first test was an assumption failure (-4), the rest passing: ~250 KB, over the pipe buffer."""
+    lines = ["INSTRUMENTATION_STATUS_CODE: -4"]
+    lines += [f"INSTRUMENTATION_STATUS: stream=line {i} padding padding padding" for i in range(4000)]
+    lines += ["INSTRUMENTATION_STATUS_CODE: 0"] * tests
+    lines += ["", f"OK ({tests} test{'s' if tests != 1 else ''})", ""]
+    return "\n".join(lines)
+
+
 # About 150 KB of matching lines: well over the 64 KiB pipe buffer, so `head` closing early is a
 # deterministic SIGPIPE for the writer, not a race.
 BIG_STACK = failure_stack(3000)
@@ -107,9 +118,9 @@ SMOKE_CHECKS = [
     "the smoke test ran and passed",
     "nothing on the core's stdout (python.stdout)",
     "no crash",
-    "the key is not in the log",
+    "the endpoint key is not in the log",
     "the app's files are readable (run-as)",
-    "the key is in no file of the app",
+    "the endpoint key is in no file of the app",
 ]
 SSH_CHECKS = [
     "the ssh smoke test ran and passed",
@@ -253,3 +264,69 @@ def test_restart_smoke_runs_its_log_checks_after_a_failed_phase_b(fake_adb, phas
         "ok   nothing on the core's stdout (python.stdout)",
         "ok   no crash",
     ]), done.stderr
+
+
+def test_restart_smoke_runs_every_check_when_phase_a_exits_non_zero(fake_adb):
+    fake_adb.put(f"instrument.{PHASE_A}.txt", SMALL_STACK)
+    fake_adb.put(f"instrument.{PHASE_A}.status", "1")
+    done = run("restart_smoke.sh", fake_adb.env)
+    assert (done.returncode, checks(done.stdout)) == (1, [
+        "FAIL " + PHASE_A_CHECK,
+        "ok   nothing on the core's stdout (python.stdout)",
+        "ok   no crash",
+    ]), done.stderr
+    assert NOT_RUN in done.stdout
+    assert len([c for c in fake_adb.calls() if c[:3] == ["shell", "am", "instrument"]]) == 1
+
+
+def test_restart_smoke_runs_its_log_checks_when_phase_b_exits_non_zero(fake_adb):
+    fake_adb.put(f"instrument.{PHASE_A}.txt", PASSED_1)
+    fake_adb.put(f"instrument.{PHASE_B}.txt", SMALL_STACK)
+    fake_adb.put(f"instrument.{PHASE_B}.status", "1")
+    done = run("restart_smoke.sh", fake_adb.env)
+    assert (done.returncode, checks(done.stdout)) == (1, [
+        "ok   " + PHASE_A_CHECK,
+        "ok   the app's process is gone",
+        "FAIL " + PHASE_B_CHECK,
+        "ok   nothing on the core's stdout (python.stdout)",
+        "ok   no crash",
+    ]), done.stderr
+
+
+def test_ssh_smoke_runs_every_check_when_the_instrumentation_exits_non_zero(fake_adb):
+    fake_adb.put("instrument.txt", SMALL_STACK)
+    fake_adb.put("instrument.status", "1")
+    done = run("ssh_smoke.sh", fake_adb.env)
+    assert (done.returncode, checks(done.stdout)) == (1, expect(SSH_FAILED, SSH_CHECKS)), done.stderr
+
+
+# Under pipefail, `printf | grep -q` turns grep's early exit at the -4 into a SIGPIPE (141) that `!` reads as
+# "no failure status"; the checks must hold on such a run.
+def test_restart_smoke_fails_phase_a_on_an_early_assumption_in_a_long_run(fake_adb):
+    fake_adb.put(f"instrument.{PHASE_A}.txt", early_assumption(1))
+    done = run("restart_smoke.sh", fake_adb.env)
+    assert (done.returncode, checks(done.stdout)) == (1, [
+        "FAIL " + PHASE_A_CHECK,
+        "ok   nothing on the core's stdout (python.stdout)",
+        "ok   no crash",
+    ]), done.stderr
+    assert NOT_RUN in done.stdout
+
+
+def test_smoke_fails_on_an_early_assumption_in_a_long_run(fake_adb):
+    fake_adb.put("instrument.txt", early_assumption(4))
+    done = run("smoke.sh", fake_adb.env)
+    assert (done.returncode, checks(done.stdout)) == (1, expect({SMOKE_CHECKS[0]: False}, SMOKE_CHECKS)), done.stderr
+
+
+SCRIPTS = ["smoke.sh", "restart_smoke.sh", "ssh_smoke.sh"]
+DEFINES = re.compile(r"^\s*(check|passed|excerpt)\(\)", re.MULTILINE)
+
+
+def test_each_script_uses_the_one_copy_of_the_checks():
+    for script in SCRIPTS:
+        text = (APP / "scripts" / script).read_text(encoding="utf-8")
+        assert len(re.findall(r'^source .*/smoke_lib\.sh"$', text, re.MULTILINE)) == 1, script
+        assert not DEFINES.findall(text), script
+    lib = (APP / "scripts" / "smoke_lib.sh").read_text(encoding="utf-8")
+    assert sorted(DEFINES.findall(lib)) == ["check", "excerpt", "passed"]

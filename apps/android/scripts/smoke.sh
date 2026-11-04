@@ -9,50 +9,26 @@
 #   SMOKE_BASE_URL  SMOKE_MODEL  SMOKE_REVERSE_PORT (empty: the phone reaches the URL itself)
 #   SMOKE_KEY (a dummy by default: it travels the keystore path, Ollama ignores it)  ANDROID_SERIAL
 set -euo pipefail
+source "$(cd "$(dirname "$0")" && pwd)/smoke_lib.sh"
 
-base_url=${SMOKE_BASE_URL:-http://127.0.0.1:11434/v1}
-model=${SMOKE_MODEL:-gemma4:12b-it-q8_0}
-key=${SMOKE_KEY:-sk-hermes-smoke-not-a-secret}
-reverse_port=${SMOKE_REVERSE_PORT-11434}
-app=com.nousresearch.hermes.debug
-root=$(cd "$(dirname "$0")/.." && pwd)
-apk=${SMOKE_APK:-$root/app/build/outputs/apk/debug/app-debug.apk}
-test_apk=${SMOKE_TEST_APK:-$root/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk}
+install_clean
 
-failed=0
-check() {  # check <description> <command...>: report, and remember a failure
-    local what=$1; shift
-    if "$@"; then echo "ok   $what"; else echo "FAIL $what"; failed=1; fi
-}
-
-adb install -r "$apk" >/dev/null
-adb install -r "$test_apk" >/dev/null
-adb shell pm clear "$app" >/dev/null
-if [ -n "$reverse_port" ]; then adb reverse "tcp:$reverse_port" "tcp:$reverse_port" >/dev/null; fi
-adb logcat -c
-
-echo "smoke: $model at $base_url on device $(adb get-serialno)"
+echo "smoke at $(revision): $model at $base_url on device $(adb get-serialno)"
 began=$(date +%s)
 result=$(adb shell am instrument -w -r -e class com.nousresearch.hermes.android.SmokeTest,com.nousresearch.hermes.android.StopSmokeTest,com.nousresearch.hermes.android.HistorySmokeTest,com.nousresearch.hermes.android.BackgroundQuestionSmokeTest \
-    -e baseUrl "$base_url" -e model "$model" -e key "$key" "$app.test/androidx.test.runner.AndroidJUnitRunner") || true  # a failed run is the check's to report
+    -e baseUrl "$base_url" -e model "$model" -e key "$key" "$runner") || true  # a failed run is the check's to report
 echo "instrumentation finished in $(( $(date +%s) - began )) s"
 adb logcat -d -s HermesSmoke:I | grep -E "reply after|stopped turn|resumed reply|notified" | sed 's/^.*HermesSmoke: /  /' | cut -c1-300 || true
 
 # OK (4 tests) also follows a test that did not really pass: -1 error, -2 failure, -3 ignored, -4 assumption.
-check "the smoke test ran and passed" \
-    sh -c 'printf "%s" "$1" | grep -q "OK (4 tests)" && ! printf "%s" "$1" | grep -q "INSTRUMENTATION_STATUS_CODE: -[1234]"' _ "$result"
-# Under pipefail, head's early exit (SIGPIPE, 141) or no matching line (grep, 1) must not end the script here.
-if [ "$failed" != 0 ]; then
-    printf '%s\n' "$result" | grep -E "INSTRUMENTATION_STATUS: stack=|^\s+at |Error" | head -20 || true
-fi
+check "the smoke test ran and passed" passed 4 "$result"
+[ "$failed" = 0 ] || excerpt 20 "INSTRUMENTATION_STATUS: stack=|^\s+at |Error" "$result"
 
 log=$(adb logcat -d)
-check "nothing on the core's stdout (python.stdout)" test "$(printf '%s\n' "$log" | grep -c 'python.stdout' || true)" = 0
-check "no crash" test -z "$(adb logcat -d -b crash)"
-check "the key is not in the log" test "$(printf '%s\n' "$log" | grep -cF "$key" || true)" = 0
-# run-as must reach the app's files first, or the search below would find nothing and pass.
-check "the app's files are readable (run-as)" sh -c 'adb shell run-as "$1" ls files >/dev/null' _ "$app"
-check "the key is in no file of the app" \
-    test -z "$(adb shell run-as "$app" grep -rlF "$key" files cache no_backup/secrets 2>/dev/null || true)"
+check_core_stdout "$log"
+check_no_crash
+check_key_not_logged "$log"
+check_files_readable
+check_key_in_no_file
 
 exit "$failed"

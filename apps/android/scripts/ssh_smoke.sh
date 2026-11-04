@@ -10,24 +10,11 @@
 # Same endpoint settings as scripts/smoke.sh: SMOKE_BASE_URL  SMOKE_MODEL  SMOKE_REVERSE_PORT  SMOKE_KEY  ANDROID_SERIAL
 # SSH_SMOKE_PORT (2222)  SSH_SMOKE_PYTHON (default: the activated test interpreter)
 set -euo pipefail
+source "$(cd "$(dirname "$0")" && pwd)/smoke_lib.sh"
 
-base_url=${SMOKE_BASE_URL:-http://127.0.0.1:11434/v1}
-model=${SMOKE_MODEL:-gemma4:12b-it-q8_0}
-key=${SMOKE_KEY:-sk-hermes-smoke-not-a-secret}
-reverse_port=${SMOKE_REVERSE_PORT-11434}
 ssh_port=${SSH_SMOKE_PORT:-2222}
 python=${SSH_SMOKE_PYTHON:-${__HERMES_TEST_PYTHON:-python3}}
 marker=ssh-marker-$(date +%s)-$RANDOM
-app=com.nousresearch.hermes.debug
-root=$(cd "$(dirname "$0")/.." && pwd)
-apk=${SMOKE_APK:-$root/app/build/outputs/apk/debug/app-debug.apk}
-test_apk=${SMOKE_TEST_APK:-$root/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk}
-
-failed=0
-check() {  # check <description> <command...>: report, and remember a failure
-    local what=$1; shift
-    if "$@"; then echo "ok   $what"; else echo "FAIL $what"; failed=1; fi
-}
 
 host=$(mktemp -d)
 server=""
@@ -46,20 +33,16 @@ for _ in $(seq 100); do grep -q '^fingerprint ' "$host/server.out" && break; sle
 fingerprint=$(sed -n 's/^fingerprint //p' "$host/server.out")
 [ -n "$fingerprint" ] || { echo "the SSH server did not start:"; cat "$host/server.err"; exit 1; }
 
-adb install -r "$apk" >/dev/null
-adb install -r "$test_apk" >/dev/null
-adb shell pm clear "$app" >/dev/null
-if [ -n "$reverse_port" ]; then adb reverse "tcp:$reverse_port" "tcp:$reverse_port" >/dev/null; fi
+install_clean
 adb reverse "tcp:$ssh_port" "tcp:$ssh_port" >/dev/null
-adb logcat -c
 
-echo "ssh smoke at $(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown): $model at $base_url," \
+echo "ssh smoke at $(revision): $model at $base_url," \
      "host 127.0.0.1:$ssh_port ($fingerprint) on device $(adb get-serialno)"
 began=$(date +%s)
 result=$(adb shell am instrument -w -r -e class com.nousresearch.hermes.android.SshSmokeTest \
     -e baseUrl "$base_url" -e model "$model" -e key "$key" \
     -e sshPort "$ssh_port" -e fingerprint "$fingerprint" -e marker "$marker" \
-    "$app.test/androidx.test.runner.AndroidJUnitRunner") || true  # a failed run is the check's to report
+    "$runner") || true  # a failed run is the check's to report
 echo "instrumentation finished in $(( $(date +%s) - began )) s"
 adb logcat -d -s HermesSmoke:I | grep "turn after" | sed 's/^.*HermesSmoke: /  /' || true
 # The chat as the test left it (SshSmokeTest saves it); SSH_SMOKE_SCREENSHOT names where it goes.
@@ -69,12 +52,8 @@ if [ -n "${SSH_SMOKE_SCREENSHOT:-}" ]; then
 fi
 
 # OK (1 test) also follows a test that did not really pass: -1 error, -2 failure, -3 ignored, -4 assumption.
-check "the ssh smoke test ran and passed" \
-    sh -c 'printf "%s" "$1" | grep -q "OK (1 test)" && ! printf "%s" "$1" | grep -q "INSTRUMENTATION_STATUS_CODE: -[1234]"' _ "$result"
-# Under pipefail, head's early exit (SIGPIPE, 141) or no matching line (grep, 1) must not end the script here.
-if [ "$failed" != 0 ]; then
-    printf '%s\n' "$result" | grep -E "INSTRUMENTATION_STATUS: stack=|^\s+at |Error" | head -20 || true
-fi
+check "the ssh smoke test ran and passed" passed 1 "$result"
+[ "$failed" = 0 ] || excerpt 20 "INSTRUMENTATION_STATUS: stack=|^\s+at |Error" "$result"
 
 log=$(adb logcat -d)
 shown_key=$(printf '%s\n' "$log" | sed -n 's/^.*HermesSmoke: public key [^ ]* \([^ ]*\).*$/\1/p' | tail -1)
@@ -83,12 +62,11 @@ check "the host was logged in to with the public key the app showed" \
 # The turn's log entry (SshSmokeTest) spans one logcat line per line of the reply.
 turn=$(printf '%s\n' "$log" | sed -n '/HermesSmoke: turn after/,$p' | grep 'HermesSmoke: ' || true)  # none: the next check reports it
 check "the host's command output came back in the reply" sh -c 'printf "%s" "$1" | grep -qF "Reply(text=" && printf "%s" "$1" | grep -qF "$2"' _ "$turn" "$marker"
-check "nothing on the core's stdout (python.stdout)" test "$(printf '%s\n' "$log" | grep -c 'python.stdout' || true)" = 0
-check "no crash" test -z "$(adb logcat -d -b crash)"
+check_core_stdout "$log"
+check_no_crash
 check "no private key in the log" test "$(printf '%s\n' "$log" | grep -c 'PRIVATE KEY' || true)" = 0
-check "the endpoint key is not in the log" test "$(printf '%s\n' "$log" | grep -cF "$key" || true)" = 0
-# run-as must reach the app's files first, or the searches below would find nothing and pass.
-check "the app's files are readable (run-as)" sh -c 'adb shell run-as "$1" ls files >/dev/null' _ "$app"
+check_key_not_logged "$log"
+check_files_readable
 check "the host key is pinned in the app's known_hosts" \
     sh -c 'adb shell run-as "$1" cat files/.ssh/known_hosts | grep -q "^\[127.0.0.1\]:$2 "' _ "$app" "$ssh_port"
 check "the terminal is back on the phone after the test (terminal.backend: local)" \
