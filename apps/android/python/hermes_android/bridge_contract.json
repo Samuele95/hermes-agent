@@ -44,6 +44,19 @@
       "base_url": "string",
       "model": "string",
       "has_key": "boolean"
+    },
+    "CronRun": {
+      "session_id": "string",
+      "started_at": "integer",
+      "ended_at": "integer?",
+      "messages": "integer",
+      "preview": "string?",
+      "active": "boolean"
+    },
+    "DeliveryTarget": {
+      "id": "string",
+      "name": "string",
+      "home_set": "boolean"
     }
   },
   "calls": {
@@ -240,6 +253,56 @@
         "check": "TelegramCheck",
         "bot": "string?",
         "message": "string?"
+      }
+    },
+    "cron_update": {
+      "summary": "Edits a job by its id through the core's cronjob update: null leaves a field as it is; the core judges the schedule and the prompt and refuses in its own words.",
+      "params": {
+        "job_id": "string",
+        "name": "string?",
+        "schedule": "string?",
+        "prompt": "string?",
+        "deliver": "string?",
+        "repeat": "integer?"
+      },
+      "reply": {
+        "job_id": "string"
+      }
+    },
+    "cron_trigger": {
+      "summary": "Makes a job due now (cron.jobs.trigger_job) so the gateway's ticker runs it at its next tick; nothing runs in this process. A finished or unknown job is refused.",
+      "params": {
+        "job_id": "string"
+      },
+      "reply": {
+        "next_run_at": "string?"
+      }
+    },
+    "cron_runs": {
+      "summary": "A job's past runs, newest first: its own cron sessions, at most limit (1 to 100); active means not ended and active in the last 300 s.",
+      "params": {
+        "job_id": "string",
+        "limit": "integer"
+      },
+      "reply": {
+        "runs": "[CronRun]"
+      }
+    },
+    "cron_delivery_targets": {
+      "summary": "The platforms a job can deliver to, each with whether its home channel is set; Bot Chat is left out and Local is the app's own.",
+      "params": {},
+      "reply": {
+        "targets": "[DeliveryTarget]"
+      }
+    },
+    "cron_scheduler": {
+      "summary": "The cron ticker's own record: seconds since its last heartbeat and last good tick (null when there is no stamp), its last error redacted, and the core's staleness threshold.",
+      "params": {},
+      "reply": {
+        "heartbeat_age_s": "integer?",
+        "success_age_s": "integer?",
+        "last_error": "string?",
+        "stale_after_s": "integer"
       }
     }
   },

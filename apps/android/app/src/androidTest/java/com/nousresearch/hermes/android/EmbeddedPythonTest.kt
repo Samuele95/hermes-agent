@@ -1,11 +1,20 @@
 package com.nousresearch.hermes.android
 
+import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.nousresearch.hermes.bridge.CoreError
 import com.nousresearch.hermes.bridge.CoreEvent
 import com.nousresearch.hermes.bridge.CoreGateway
+import com.nousresearch.hermes.bridge.EmbeddedBridge
 import com.nousresearch.hermes.bridge.EmbeddedPython
+import com.nousresearch.hermes.bridge.ask
+import com.nousresearch.hermes.bridge.contract.BridgeCalls
+import com.nousresearch.hermes.bridge.contract.CronRunsParams
+import com.nousresearch.hermes.bridge.contract.CronSchedulerReply
+import com.nousresearch.hermes.bridge.contract.CronTriggerParams
+import com.nousresearch.hermes.bridge.contract.CronUpdateParams
+import com.nousresearch.hermes.bridge.contract.DeliveryTarget
 import com.nousresearch.hermes.bridge.protocol.ClientCapabilitiesParams
 import com.nousresearch.hermes.bridge.protocol.CronAction
 import com.nousresearch.hermes.bridge.protocol.CronManageParams
@@ -22,6 +31,7 @@ import com.nousresearch.hermes.bridge.protocol.SessionTitleParams
 import java.net.InetAddress
 import java.net.ServerSocket
 import kotlin.concurrent.thread
+import kotlin.system.measureTimeMillis
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
@@ -175,6 +185,70 @@ class EmbeddedPythonTest {
             assertTrue("$id is still listed after its removal", after.none { it.jobId == id })
         } finally {
             watcher.cancel()
+            // A failed run leaves no job behind on the shared phone.
+            runCatching { core.call(Methods.CRON_MANAGE, CronManageParams(action = CronAction.REMOVE, name = id)) }
+        }
+    }
+
+    @Test
+    fun theCronBridgeCallsAnswerOnThePhone() = runBlocking {
+        core // the interpreter starts with the core
+        // A weekly interval, as J1's probe: the debug app's :gateway ticker never finds it due here.
+        val added = core.call(
+            Methods.CRON_MANAGE,
+            CronManageParams(
+                action = CronAction.ADD, name = "j2 probe ${System.nanoTime()}", schedule = "every 10080m",
+                prompt = "Say hello.", deliver = "local",
+            ),
+        )
+        val id = checkNotNull(added.jobId) { "add answered ${added.error}" }
+        val took = linkedMapOf<String, Long>() // each call holds hermes-python (none is blocking)
+        try {
+            var edited: String? = null
+            took["cron_update"] = measureTimeMillis {
+                edited = EmbeddedBridge.ask(
+                    BridgeCalls.CRON_UPDATE, CronUpdateParams(id, null, "every 20160m", "Say hello again.", null, null),
+                ).jobId
+            }
+            assertEquals(id, edited)
+            val row = core.call(Methods.CRON_MANAGE, CronManageParams(includeDisabled = JsonPrimitive(true)))
+                .jobs.orEmpty().single { it.jobId == id }
+            assertEquals("every 20160m", row.schedule)
+            assertEquals("Say hello again.", row.promptPreview)
+            assertEquals("scheduled", row.state)
+            assertEquals(added.job!!.name, row.name)
+
+            // The job never ran; the call goes through the chat process's shared state.db handle.
+            var runs: Int? = null
+            took["cron_runs"] = measureTimeMillis { runs = EmbeddedBridge.ask(BridgeCalls.CRON_RUNS, CronRunsParams(id, 20)).runs.size }
+            assertEquals(0, runs)
+
+            var ticker: CronSchedulerReply? = null
+            took["cron_scheduler"] = measureTimeMillis { ticker = EmbeddedBridge.ask(BridgeCalls.CRON_SCHEDULER) }
+            val facts = ticker!!.let { "heartbeat ${it.heartbeatAgeS} s, success ${it.successAgeS} s, last error ${it.lastError != null}" }
+            Log.i("J2Probe", "cron_scheduler: $facts")
+            assertEquals(facts, 200, ticker!!.staleAfterS)
+            assertTrue(facts, listOf(ticker!!.heartbeatAgeS, ticker!!.successAgeS).all { it == null || it >= 0 })
+
+            var targets: List<DeliveryTarget> = emptyList()
+            took["cron_delivery_targets"] = measureTimeMillis { targets = EmbeddedBridge.ask(BridgeCalls.CRON_DELIVERY_TARGETS).targets }
+            val listed = targets.joinToString { "${it.id} home=${it.homeSet}" }
+            Log.i("J2Probe", "cron_delivery_targets: [$listed]")
+            assertTrue(listed, targets.none { it.id.startsWith("bot-chat") })
+            assertTrue(listed, targets.all { it.id.isNotBlank() && it.name.isNotBlank() })
+
+            val removed = core.call(Methods.CRON_MANAGE, CronManageParams(action = CronAction.REMOVE, name = id))
+            assertEquals(id, removed.removedJob!!.id)
+            // Only after the removal, so nothing becomes due on the shared phone (a fire would run an agent turn).
+            var gone: CoreError? = null
+            took["cron_trigger"] = measureTimeMillis {
+                gone = assertThrows(CoreError::class.java) {
+                    runBlocking { EmbeddedBridge.ask(BridgeCalls.CRON_TRIGGER, CronTriggerParams(id)) }
+                }
+            }
+            assertEquals("That job no longer exists.", gone!!.message)
+        } finally {
+            Log.i("J2Probe", "took ms: $took")
             // A failed run leaves no job behind on the shared phone.
             runCatching { core.call(Methods.CRON_MANAGE, CronManageParams(action = CronAction.REMOVE, name = id)) }
         }

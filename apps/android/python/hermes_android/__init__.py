@@ -298,3 +298,33 @@ def telegram_check(arg: str) -> str:
     from hermes_android import telegram
 
     return telegram.check(arg)
+
+
+def cron_update(arg: str) -> str:
+    from hermes_android import cron
+
+    return cron.update(arg)
+
+
+def cron_trigger(arg: str) -> str:
+    from hermes_android import cron
+
+    return cron.trigger(arg)
+
+
+def cron_runs(arg: str) -> str:
+    from hermes_android import cron
+
+    return cron.runs(arg)
+
+
+def cron_delivery_targets(arg: str) -> str:
+    from hermes_android import cron
+
+    return cron.delivery_targets(arg)
+
+
+def cron_scheduler(arg: str) -> str:
+    from hermes_android import cron
+
+    return cron.scheduler(arg)

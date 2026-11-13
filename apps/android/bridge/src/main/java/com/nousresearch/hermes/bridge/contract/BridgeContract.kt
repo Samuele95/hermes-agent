@@ -78,6 +78,23 @@ data class SavedEndpoint(
 )
 
 @Serializable
+data class CronRun(
+    @SerialName("session_id") val sessionId: String,
+    @SerialName("started_at") val startedAt: Int,
+    @SerialName("ended_at") val endedAt: Int?,
+    val messages: Int,
+    val preview: String?,
+    val active: Boolean,
+)
+
+@Serializable
+data class DeliveryTarget(
+    val id: String,
+    val name: String,
+    @SerialName("home_set") val homeSet: Boolean,
+)
+
+@Serializable
 data class RuntimeFactsReply(
     val python: String,
     val sqlite: String,
@@ -249,6 +266,55 @@ data class TelegramCheckReply(
     val message: String?,
 )
 
+@Serializable
+data class CronUpdateParams(
+    @SerialName("job_id") val jobId: String,
+    val name: String?,
+    val schedule: String?,
+    val prompt: String?,
+    val deliver: String?,
+    val repeat: Int?,
+)
+
+@Serializable
+data class CronUpdateReply(
+    @SerialName("job_id") val jobId: String,
+)
+
+@Serializable
+data class CronTriggerParams(
+    @SerialName("job_id") val jobId: String,
+)
+
+@Serializable
+data class CronTriggerReply(
+    @SerialName("next_run_at") val nextRunAt: String?,
+)
+
+@Serializable
+data class CronRunsParams(
+    @SerialName("job_id") val jobId: String,
+    val limit: Int,
+)
+
+@Serializable
+data class CronRunsReply(
+    val runs: List<CronRun>,
+)
+
+@Serializable
+data class CronDeliveryTargetsReply(
+    val targets: List<DeliveryTarget>,
+)
+
+@Serializable
+data class CronSchedulerReply(
+    @SerialName("heartbeat_age_s") val heartbeatAgeS: Int?,
+    @SerialName("success_age_s") val successAgeS: Int?,
+    @SerialName("last_error") val lastError: String?,
+    @SerialName("stale_after_s") val staleAfterS: Int,
+)
+
 /** Every call the app may make into its Python half. */
 object BridgeCalls {
     /** The interpreter facts the app shows. */
@@ -293,6 +359,16 @@ object BridgeCalls {
     val TELEGRAM_STATUS = BridgeCall("telegram_status", NoParams.serializer(), TelegramStatusReply.serializer())
     /** Asks Telegram who the held token belongs to: ok (bot named), refused by Telegram, or Telegram out of reach. */
     val TELEGRAM_CHECK = BridgeCall("telegram_check", NoParams.serializer(), TelegramCheckReply.serializer(), blocking = true)
+    /** Edits a job by its id through the core's cronjob update: null leaves a field as it is; the core judges the schedule and the prompt and refuses in its own words. */
+    val CRON_UPDATE = BridgeCall("cron_update", CronUpdateParams.serializer(), CronUpdateReply.serializer())
+    /** Makes a job due now (cron.jobs.trigger_job) so the gateway's ticker runs it at its next tick; nothing runs in this process. A finished or unknown job is refused. */
+    val CRON_TRIGGER = BridgeCall("cron_trigger", CronTriggerParams.serializer(), CronTriggerReply.serializer())
+    /** A job's past runs, newest first: its own cron sessions, at most limit (1 to 100); active means not ended and active in the last 300 s. */
+    val CRON_RUNS = BridgeCall("cron_runs", CronRunsParams.serializer(), CronRunsReply.serializer())
+    /** The platforms a job can deliver to, each with whether its home channel is set; Bot Chat is left out and Local is the app's own. */
+    val CRON_DELIVERY_TARGETS = BridgeCall("cron_delivery_targets", NoParams.serializer(), CronDeliveryTargetsReply.serializer())
+    /** The cron ticker's own record: seconds since its last heartbeat and last good tick (null when there is no stamp), its last error redacted, and the core's staleness threshold. */
+    val CRON_SCHEDULER = BridgeCall("cron_scheduler", NoParams.serializer(), CronSchedulerReply.serializer())
 
     /** The calls that may wait on the network (`blocking` in the contract): EmbeddedPython runs them on their own thread. */
     val BLOCKING: Set<String> = setOf("probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check")

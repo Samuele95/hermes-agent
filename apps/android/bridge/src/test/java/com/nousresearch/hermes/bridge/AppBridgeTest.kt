@@ -1,13 +1,17 @@
 package com.nousresearch.hermes.bridge
 
 import com.nousresearch.hermes.bridge.contract.BridgeCalls
+import com.nousresearch.hermes.bridge.contract.CronRunsParams
+import com.nousresearch.hermes.bridge.contract.CronUpdateParams
 import com.nousresearch.hermes.bridge.contract.Pinned
 import com.nousresearch.hermes.bridge.contract.SaveCustomEndpointParams
 import com.nousresearch.hermes.bridge.contract.SshHostKeyParams
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** The app's typed bridge calls send the contract's request and read its reply (D26). */
@@ -48,5 +52,33 @@ class AppBridgeTest {
         }
 
         assertEquals("Could not reach h:22", refused.message)
+    }
+
+    @Test
+    fun aJobEditSendsEveryDeclaredFieldWithNullForTheUnchangedOnes() = runBlocking {
+        val saved = answering("""{"job_id":"a1b2c3d4e5f6"}""")
+            .ask(BridgeCalls.CRON_UPDATE, CronUpdateParams("a1b2c3d4e5f6", null, "every 2h", null, null, null))
+
+        assertEquals(Json.parseToJsonElement("""{"job_id":"a1b2c3d4e5f6","name":null,"schedule":"every 2h","prompt":null,"deliver":null,"repeat":null}"""),
+                     Json.parseToJsonElement(sent.single().second))
+        assertEquals("a1b2c3d4e5f6", saved.jobId)
+    }
+
+    @Test
+    fun theCronRepliesDecodeTheirNullableFields() = runBlocking {
+        val run = answering("""{"runs":[{"session_id":"cron_a1b2c3d4e5f6_20261113_090000","started_at":1794583456,"ended_at":null,"messages":4,"preview":null,"active":true}]}""")
+            .ask(BridgeCalls.CRON_RUNS, CronRunsParams("a1b2c3d4e5f6", 20)).runs.single()
+        assertNull(run.endedAt)
+        assertEquals(1794583456, run.startedAt)
+        assertTrue(run.active)
+
+        val ticker = answering("""{"heartbeat_age_s":null,"success_age_s":null,"last_error":null,"stale_after_s":200}""")
+            .ask(BridgeCalls.CRON_SCHEDULER)
+        assertNull(ticker.heartbeatAgeS)
+        assertEquals(200, ticker.staleAfterS)
+
+        val target = answering("""{"targets":[{"id":"telegram","name":"Telegram","home_set":false}]}""")
+            .ask(BridgeCalls.CRON_DELIVERY_TARGETS).targets.single()
+        assertEquals(false, target.homeSet)
     }
 }
