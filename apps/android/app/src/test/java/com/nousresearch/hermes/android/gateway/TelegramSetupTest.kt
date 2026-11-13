@@ -29,6 +29,7 @@ class TelegramSetupTest {
         override fun all(): Map<String, ByteArray> = held.toMap()
     }
     private var secretsChanged = 0
+    private var enableFails: Exception? = null  // thrown by the bridge on telegram_enable, after the call is recorded
     private val calls = mutableListOf<Pair<String, String>>()
     private val answers = mutableMapOf(
         "telegram_status" to """{"token":false,"allowed_user":null,"sdk":true,"enabled":true,"live":null}""",
@@ -39,6 +40,7 @@ class TelegramSetupTest {
         timeline += function
         if (function == "secrets_changed") { secretsChanged++; return@TelegramSetup "{}" }
         calls += function to arg
+        if (function == "telegram_enable") enableFails?.let { throw it }
         if (function == "telegram_enable" && function !in answers) return@TelegramSetup arg  // {"enabled":<sent>}
         answers.getValue(function)
     }
@@ -181,6 +183,8 @@ class TelegramSetupTest {
     }
 
     private fun sentEnable() = calls.filter { it.first == "telegram_enable" }.map { Json.parseToJsonElement(it.second) }
+
+    private fun afterCheck() = timeline.dropWhile { it != "telegram_check" }.drop(1)
 
     private fun enabled(on: Boolean) = Json.parseToJsonElement("""{"enabled":$on}""")
 
@@ -338,20 +342,65 @@ class TelegramSetupTest {
     }
 
     @Test
-    fun aRefusedTokenReplacingAHeldOneSwitchesTheBotOffBeforeItGoes() = runTest {
-        holdToken()
-        answers["telegram_check"] = """{"check":"refused","bot":null,"message":"Telegram refused the token (401)"}"""
+    fun aRefusedTokenReplacingAHeldOneGoesFirstAndTheBotIsSwitchedOff() = runTest {
+        holdToken(enabled = true)
+        answers["telegram_check"] = """{"check":"refused","bot":null,"message":"$REFUSED_WORDS"}"""
         telegram.open()
 
         telegram.save("bad".toByteArray(), "42")
 
-        val switchOff = timeline.indexOf("telegram_enable")
-        assertTrue("a held token's replacement is switched off before it goes (D40): $timeline",
-                   switchOff >= 0 && switchOff < timeline.indexOf("delete TELEGRAM_BOT_TOKEN"))
+        assertEquals("the refused token goes first, then the switch-off, then the core is told: $timeline",
+                     listOf("delete TELEGRAM_BOT_TOKEN", "telegram_enable", "secrets_changed"), afterCheck())
         assertEquals(listOf(enabled(false)), sentEnable())
         assertNull(held["TELEGRAM_BOT_TOKEN"])
-        assertEquals(false, telegram.state.value?.tokenHeld)
-        assertEquals("Telegram refused the token (401)", telegram.state.value?.error)
+        assertEquals(2, secretsChanged)  // once to try it, once to forget it
+        val state = telegram.state.value!!
+        assertEquals(false, state.tokenHeld)
+        assertEquals(false, state.enabled)
+        assertEquals(false, state.busy)
+        assertEquals("Telegram's words alone: the switch-off worked", REFUSED_WORDS, state.error)
+        assertEquals(PlatformLive(PlatformState.DISABLED), state.live)
+    }
+
+    @Test
+    fun aRefusedReplacementWhoseSwitchOffThrowsStillLosesTheToken() = runTest {
+        holdToken(enabled = true)
+        answers["telegram_check"] = """{"check":"refused","bot":null,"message":"$REFUSED_WORDS"}"""
+        enableFails = java.io.IOException("binder died")
+        telegram.open()
+        val token = "bad".toByteArray()
+
+        telegram.save(token, "42")
+
+        assertFalse("a refused token stays when its switch-off throws (/architect #3)", secrets.contains("TELEGRAM_BOT_TOKEN"))
+        assertEquals("the switch-off was attempted and the core still told: $timeline",
+                     listOf("delete TELEGRAM_BOT_TOKEN", "telegram_enable", "secrets_changed"), afterCheck())
+        assertEquals(2, secretsChanged)
+        val state = telegram.state.value!!
+        assertEquals(false, state.tokenHeld)
+        assertEquals(false, state.busy)
+        assertEquals("still on, as the core last read it: the switch-off failed", true, state.enabled)
+        assertEquals(PlatformLive(PlatformState.NOT_CONFIGURED), state.live)
+        assertEquals("$REFUSED_WORDS The bot could not be switched off and is still on without a token: " +
+                     "Something went wrong (IOException).", state.error)
+        assertTrue("the caller's copy is wiped", token.all { it == 0.toByte() })
+        assertTrue("no plaintext copy left behind", handedOut.all { copy -> copy.all { it == 0.toByte() } })
+    }
+
+    @Test
+    fun aRefusedReplacementWhoseSwitchOffTheCoreRefusesShowsBothWords() = runTest {
+        holdToken(enabled = true)
+        answers["telegram_check"] = """{"check":"refused","bot":null,"message":"$REFUSED_WORDS"}"""
+        answers["telegram_enable"] = """{"error":"config.yaml is locked"}"""
+        telegram.open()
+
+        telegram.save("bad".toByteArray(), "42")
+
+        assertFalse("the refused token is gone though the core kept the bot on", secrets.contains("TELEGRAM_BOT_TOKEN"))
+        val state = telegram.state.value!!
+        assertEquals(true, state.enabled)
+        assertTrue("the core's own words follow Telegram's: ${state.error}",
+                   state.error.orEmpty().startsWith(REFUSED_WORDS) && state.error.orEmpty().endsWith(": config.yaml is locked"))
     }
 
     @Test
@@ -414,6 +463,7 @@ class TelegramSetupTest {
     }
 
     private companion object {
+        const val REFUSED_WORDS = "Telegram refused the token (401): check it with @BotFather."
         const val FATAL_42 = """{"state":"fatal","error_message":"Conflict: terminated by other getUpdates request","writer_pid":42,
             "updated_at":"2026-11-13T15:48:13.243611+00:00"}"""
         const val CONNECTED_42 = """{"state":"connected","error_message":null,"writer_pid":42,
