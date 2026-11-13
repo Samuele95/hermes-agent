@@ -48,6 +48,7 @@ import com.nousresearch.hermes.android.chat.PromptAnswers
 import com.nousresearch.hermes.android.chat.SessionActions
 import com.nousresearch.hermes.android.gateway.GatewayScreen
 import com.nousresearch.hermes.android.gateway.GatewayUi
+import com.nousresearch.hermes.android.gateway.TelegramActions
 import com.nousresearch.hermes.android.gateway.TelegramSetup
 import com.nousresearch.hermes.android.jobs.JobActions
 import com.nousresearch.hermes.android.jobs.JobFormActions
@@ -56,8 +57,10 @@ import com.nousresearch.hermes.android.jobs.JobRunsActions
 import com.nousresearch.hermes.android.jobs.JobsControl
 import com.nousresearch.hermes.android.jobs.JobsScreen
 import com.nousresearch.hermes.android.jobs.JobsUi
+import com.nousresearch.hermes.bridge.CoreEvent
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import com.nousresearch.hermes.android.setup.SettingsScreen
 import com.nousresearch.hermes.android.setup.SetupScreen
@@ -92,7 +95,7 @@ class MainActivity : ComponentActivity() {
                             }
                             val gateway by app.gateway.state.collectAsState()
                             gateway?.let {
-                                GatewayPanel(it, app, state.telegram)
+                                GatewayPanel(it, app, state.telegram, state.gateway.events)
                                 return@Surface
                             }
                             val jobs by state.jobs.state.collectAsState()
@@ -170,11 +173,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** The gateway screen, kept current while it shows, and the battery dialog when the gateway was just turned on. */
+    /**
+     * The gateway screen, kept current while it shows, and the battery dialog when the gateway was just turned on;
+     * and the bot's live state, read again on each `platforms.changed` and each status change.
+     */
     @Composable
-    private fun GatewayPanel(ui: GatewayUi, app: HermesApplication, telegram: TelegramSetup) {
+    private fun GatewayPanel(ui: GatewayUi, app: HermesApplication, telegram: TelegramSetup, events: Flow<CoreEvent>) {
         val bot by telegram.state.collectAsState()
         LaunchedEffect(Unit) { app.telegram { open() } }
+        LaunchedEffect(Unit) { withContext(Dispatchers.IO) { telegram.follow(events) } }
+        LaunchedEffect(ui.status) { app.telegram { refreshLive() } }
         LaunchedEffect(Unit) {
             while (true) {
                 withContext(Dispatchers.IO) { app.gateway.refresh() }
@@ -196,7 +204,9 @@ class MainActivity : ComponentActivity() {
                       telegram = bot, onTelegramSave = { token, user -> app.telegram { save(token, user) } },
                       onRestart = app::restartGateway,
                       // Jobs sits under the Gateway page in the chain: this page closes for it to show (V8).
-                      onJobs = { telegram.close(); app.gateway.close(); app.jobs { open() } })
+                      onJobs = { telegram.close(); app.gateway.close(); app.jobs { open() } },
+                      onTelegram = TelegramActions(setEnabled = { on -> app.telegram { setEnabled(on) } }, askRemove = telegram::askRemove,
+                                                   confirmRemove = { app.telegram { confirmRemove() } }))
     }
 
     /** The jobs page, kept current while it shows: each `cron.changed`, and every 30 s for the ticker's age (DC-J16). */
