@@ -1,14 +1,20 @@
 package com.nousresearch.hermes.android.jobs
 
+import com.nousresearch.hermes.android.chat.StoredSessionId
 import com.nousresearch.hermes.android.gateway.GatewaySeen
 import com.nousresearch.hermes.android.gateway.GatewayStatus
 import com.nousresearch.hermes.bridge.contract.CronDeliveryTargetsReply
+import com.nousresearch.hermes.bridge.contract.CronRun
 import com.nousresearch.hermes.bridge.contract.CronSchedulerReply
 import com.nousresearch.hermes.bridge.contract.CronUpdateParams
 import com.nousresearch.hermes.bridge.protocol.CronAction
 import com.nousresearch.hermes.bridge.protocol.CronJobRow
 import com.nousresearch.hermes.bridge.protocol.CronManageParams
 import com.nousresearch.hermes.bridge.protocol.CronManageResult
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 import kotlinx.serialization.json.JsonPrimitive
 import com.nousresearch.hermes.bridge.contract.DeliveryTarget as TargetRow
 
@@ -145,6 +151,41 @@ private val WALL_MINUTE = Regex("""^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})""")
 
 /** The core's ISO time as its own wall time to the minute (`2026-11-13 18:05`); any other text as the core wrote it. */
 fun wallTime(iso: String): String = WALL_MINUTE.find(iso)?.let { "${it.groupValues[1]} ${it.groupValues[2]}" } ?: iso
+
+/** How many of a job's runs the sheet asks for (§3.3: `cron_runs(id, 20)`); the core caps any ask at 100. */
+const val RUNS_SHOWN = 20
+
+/**
+ * One past run of a job, as the core keeps it: its own stored session [sessionId] (the app never reads the job
+ * out of it, EJ-62), when it began and ended (epoch s; [endedAt] null: no end recorded), its [messages], the
+ * core's [preview] of its first prompt, and [active]: no end and active in the last 300 s (the core's window).
+ */
+data class JobRun(val sessionId: StoredSessionId, val startedAt: Long, val endedAt: Long?, val messages: Int,
+                  val preview: String?, val active: Boolean) {
+    companion object {
+        /** The run a core row describes, or null for a row without a session id (skipped, never a crash). */
+        fun of(row: CronRun): JobRun? {
+            if (row.sessionId.isBlank()) return null
+            // No check of the id's shape: the core's query already binds it to the job.
+            return JobRun(StoredSessionId(row.sessionId), row.startedAt.toLong(), row.endedAt?.toLong(), row.messages,
+                          row.preview?.trim()?.ifEmpty { null }, row.active)
+        }
+    }
+}
+
+/** Where a run stands: still going ([RUNNING]), never closed and quiet ([UNFINISHED]), or closed ([ENDED]). */
+enum class RunPhase { RUNNING, UNFINISHED, ENDED }
+
+/** A run with no end is running while the core calls it active; otherwise it never closed (V9). */
+val JobRun.phase: RunPhase get() = when {
+    endedAt != null -> RunPhase.ENDED
+    active -> RunPhase.RUNNING
+    else -> RunPhase.UNFINISHED
+}
+
+/** A run's start (epoch s) as the phone's wall time to the minute (`2026-11-13 09:30`), as [wallTime] writes the core's. */
+fun runTime(epochS: Long, zone: TimeZone = TimeZone.getDefault()): String =
+    SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.ROOT).apply { timeZone = zone }.format(Date(epochS * 1000))
 
 /** A span of [minutes] in the largest whole unit: `12 min`, `3 h`, `2 d`. */
 fun elapsed(minutes: Int): String = when {

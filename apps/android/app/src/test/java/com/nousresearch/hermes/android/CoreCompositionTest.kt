@@ -4,8 +4,10 @@ import com.nousresearch.hermes.android.chat.ContextUi
 import com.nousresearch.hermes.android.chat.FakeCoreGateway
 import com.nousresearch.hermes.android.chat.Notifier
 import com.nousresearch.hermes.android.chat.RuntimeSessionId
+import com.nousresearch.hermes.android.chat.StoredSessionId
 import com.nousresearch.hermes.android.gateway.GatewaySeen
 import com.nousresearch.hermes.android.gateway.GatewayStatus
+import com.nousresearch.hermes.android.jobs.JobId
 import com.nousresearch.hermes.android.jobs.JobsWarning
 import com.nousresearch.hermes.android.turn.TurnHost
 import com.nousresearch.hermes.bridge.AppBridge
@@ -57,7 +59,12 @@ class CoreCompositionTest {
         override fun startGateway(paths: HermesPaths, secrets: SecretStore, events: FrameSink) = error("not the chat's core")
         override val bridge = AppBridge { function, _ ->
             bridgeCalls += function
-            if (function == "runtime_facts") """{"python":"3.14.7","sqlite":"3.53.4","fts5":true,"executable":""}""" else "{}"
+            when (function) {
+                "runtime_facts" -> """{"python":"3.14.7","sqlite":"3.53.4","fts5":true,"executable":""}"""
+                "cron_runs" -> """{"runs":[{"session_id":"cron_j1_20261113_093000","started_at":1794562200,"ended_at":1794562260,
+                                  "messages":4,"preview":"Say hello.","active":false}]}"""
+                else -> "{}"
+            }
         }
     }
     private val secrets = object : SecretStore {
@@ -144,6 +151,34 @@ class CoreCompositionTest {
 
         // The bridge's "{}" is no ticker record: the warning is the gateway the composition was given.
         assertEquals(JobsWarning.GatewayOff(GatewayStatus.FAILED), ready.jobs.state.value?.warning)
+    }
+
+    @Test
+    fun aJobsRunOpensInTheComposedChat() = runTest(UnconfinedTestDispatcher()) {
+        val ready = composeCore(runtime, paths, secrets, turns, Notifier.None, backgroundScope)
+
+        ready.jobs.open()
+        ready.jobs.showRuns(JobId("j1"))
+        ready.jobs.openRun(StoredSessionId("cron_j1_20261113_093000"))
+
+        assertEquals("cron_j1_20261113_093000",
+                     core.calls.last { it.first == "session.resume" }.second.getValue("session_id").jsonPrimitive.content)
+        assertEquals(RuntimeSessionId("s-last"), ready.chat.sessionId)
+        assertNull(ready.jobs.state.value)
+    }
+
+    @Test
+    fun aRunTheComposedChatCannotOpenKeepsTheJobsPage() = runTest(UnconfinedTestDispatcher()) {
+        val ready = composeCore(runtime, paths, secrets, turns, Notifier.None, backgroundScope)
+        resumeReply = { """{"session_id":"s-last","message_count":1,"messages":[{"kind":"user"}],"info":{}}""" }  // no role: undecodable
+
+        ready.jobs.open()
+        ready.jobs.showRuns(JobId("j1"))
+        ready.jobs.openRun(StoredSessionId("cron_j1_20261113_093000"))
+
+        assertNotNull(ready.jobs.state.value)
+        assertNotNull(ready.jobs.state.value!!.runs!!.error)
+        assertEquals(RuntimeSessionId("s1"), ready.chat.sessionId)
     }
 
     private companion object {

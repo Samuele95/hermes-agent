@@ -61,6 +61,6 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, secrets: Secre
     val facts = bridge.ask(BridgeCalls.RUNTIME_FACTS)
     val fts = if (facts.fts5) "with FTS5" else "without FTS5"
     return CoreState.Ready(gateway, chat, setup, SshSetup(secrets, bridge), TelegramSetup(secrets, bridge), history, context,
-                           ApprovalSettings(gateway), JobsControl(gateway, bridge, seen),
+                           ApprovalSettings(gateway), JobsControl(gateway, bridge, seen, resume = chat::resume),
                            "Python ${facts.python} · SQLite ${facts.sqlite} $fts")
 }

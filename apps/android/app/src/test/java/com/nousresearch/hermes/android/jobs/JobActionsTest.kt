@@ -50,7 +50,7 @@ class JobActionsTest {
     }
     private var seen = GatewaySeen(GatewayStatus.RUNNING, pid = 42)
     private var clock = 1_000L
-    private val control = JobsControl(core, bridge, seen = { seen }, now = { clock })
+    private val control = JobsControl(core, bridge, seen = { seen }, resume = {}, now = { clock })
 
     private val j1 = JobId("j1")
     private val j2 = JobId("j2")

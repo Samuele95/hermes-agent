@@ -1,5 +1,6 @@
 package com.nousresearch.hermes.android.jobs
 
+import com.nousresearch.hermes.android.chat.StoredSessionId
 import com.nousresearch.hermes.android.forUser
 import com.nousresearch.hermes.android.gateway.GatewaySeen
 import com.nousresearch.hermes.android.gateway.GatewayStatus
@@ -7,6 +8,7 @@ import com.nousresearch.hermes.bridge.AppBridge
 import com.nousresearch.hermes.bridge.CoreGateway
 import com.nousresearch.hermes.bridge.ask
 import com.nousresearch.hermes.bridge.contract.BridgeCalls
+import com.nousresearch.hermes.bridge.contract.CronRunsParams
 import com.nousresearch.hermes.bridge.contract.CronTriggerParams
 import com.nousresearch.hermes.bridge.protocol.CronAction
 import com.nousresearch.hermes.bridge.protocol.CronManageParams
@@ -26,12 +28,19 @@ import kotlin.coroutines.cancellation.CancellationException
  * refused. [form] is the job being made or edited (its starting values; the typed draft is the sheet's), [targets]
  * where it may deliver, read when the form opens. [confirmDelete] the job a delete waits to be confirmed for; [queued]
  * the jobs Run now was asked for, until the core shows their run (V1); [gatewayRunning] whether the always-on gateway
- * was running at the last list (V2).
+ * was running at the last list (V2); [runs] the job whose past runs the sheet shows, while it shows.
  */
 data class JobsUi(val jobs: List<Job> = emptyList(), val warning: JobsWarning? = null, val busy: Boolean = false,
                   val error: String? = null, val form: JobForm? = null, val targets: List<DeliveryTarget> = emptyList(),
                   val confirmDelete: JobId? = null, val queued: Map<JobId, RunMark> = emptyMap(),
-                  val gatewayRunning: Boolean = false)
+                  val gatewayRunning: Boolean = false, val runs: RunsView? = null)
+
+/**
+ * The runs sheet of [job]: its past runs, newest first, as the core last listed them; [loaded] false while the
+ * first read is on its way; [error] the core's words when a read or an open failed (V3).
+ */
+data class RunsView(val job: JobId, val runs: List<JobRun> = emptyList(), val loaded: Boolean = false,
+                    val error: String? = null)
 
 /** Run now is offered for [job] (§2.4 invariant 3, F1): the gateway runs, the job is scheduled, and not already queued. */
 fun JobsUi.offersRunNow(job: Job): Boolean = gatewayRunning && job.state == JobState.SCHEDULED && job.id !in queued
@@ -46,6 +55,17 @@ private fun JobsUi.acting(id: JobId): JobsUi? =
 /** Deleting the confirmed job: busy with the confirmation gone, or null when not admitted (invariant 4). */
 private fun JobsUi.deleting(): JobsUi? =
     if (busy || form != null || confirmDelete == null) null else copy(confirmDelete = null, busy = true, error = null)
+
+/** Showing [id]'s runs: the sheet open and reading, or null when not admitted (busy, a form open, or not listed). */
+private fun JobsUi.showing(id: JobId): JobsUi? =
+    if (busy || form != null || jobs.none { it.id == id }) null else copy(runs = RunsView(id), error = null)
+
+/** Opening the shown run [run]: busy, or null when not admitted (busy, a form open, or [run] not in the sheet). */
+private fun JobsUi.opening(run: StoredSessionId): JobsUi? {
+    val view = runs ?: return null
+    return if (busy || form != null || view.runs.none { it.sessionId == run }) null
+           else copy(busy = true, runs = view.copy(error = null))
+}
 
 /** Asking Run now for the listed job [id], with the gateway as seen at the tap: busy, or null when not offered (V10). */
 private fun JobsUi.triggering(id: JobId): JobsUi? {
@@ -62,13 +82,18 @@ private fun JobsUi.triggering(id: JobId): JobsUi? {
  * runs one now only by making it due for the gateway's ticker (the app's `cron_trigger`, never a run in this process),
  * offered while the gateway runs and the job is scheduled, marked queued until the core shows its run or two minutes
  * pass (D39 F1, §2.4); after each it lists again, never patching the list.
+ * It shows a job's past runs as the core's own per-job query lists them (the app's `cron_runs`, by the job's id,
+ * never derived from the session list), and opens one by continuing its session in the chat, the drawer's way,
+ * closing the page only once the chat took it (D39 F7).
  * [state] is null while closed. [gateway] is the core, [bridge] the app's Python half (the ticker's record), [seen]
- * the app's own observation of the always-on gateway, [now] a monotonic clock in milliseconds (V3).
+ * the app's own observation of the always-on gateway, [resume] continues a stored session in the chat (the chat's own
+ * `session.resume`, the call the drawer's pick makes), [now] a monotonic clock in milliseconds (V3).
  */
 class JobsControl(
     private val gateway: CoreGateway,
     private val bridge: AppBridge,
     private val seen: () -> GatewaySeen,
+    private val resume: suspend (StoredSessionId) -> Unit,
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
     private val screen = MutableStateFlow<JobsUi?>(null)
@@ -83,10 +108,57 @@ class JobsControl(
         screen.value = null
     }
 
-    /** Lists the jobs again into an open page; a closed page asks nothing. */
+    /** Lists the jobs again into an open page, and the open sheet's runs; a closed page asks nothing. */
     suspend fun refresh() {
         if (screen.value == null) return
         relist()
+        screen.value?.runs?.job?.let { readRuns(it) }  // the open sheet's runs, read again (V6)
+    }
+
+    /** Shows the past runs of the listed job [id] in a sheet, read from the core by its id (F7); null closes the sheet. */
+    suspend fun showRuns(id: JobId?) {
+        if (id == null) {
+            screen.update { ui -> if (ui == null || ui.busy) ui else ui.copy(runs = null) }
+            return
+        }
+        val before = screen.getAndUpdate { it?.showing(id) ?: it }  // a read, not busy: as the form's targets
+        before?.showing(id) ?: return
+        readRuns(id)
+    }
+
+    /** Continues the shown run [run] in the chat, then closes the page; a run the core cannot open keeps the sheet, with its words. */
+    suspend fun openRun(run: StoredSessionId) {
+        val before = screen.getAndUpdate { it?.opening(run) ?: it }  // one atomic step: a double tap opens once
+        before?.opening(run) ?: return
+        holdingBusy {
+            try {
+                resume.invoke(run)  // the chat's own session.resume: jobs/ sends no session call of its own
+            } catch (failed: Exception) {
+                val words = forUser(failed)
+                screen.update { it?.copy(busy = false, runs = it.runs?.copy(error = words)) }
+                return
+            }
+            screen.value = null  // only once the chat took the run; the chat now shows it
+        }
+    }
+
+    /** Reads [id]'s runs into the sheet still open for it; a sheet closed or moved to another job meanwhile is left as it is. */
+    private suspend fun readRuns(id: JobId) {
+        val read = try {
+            // By the job's id (invariant 2), in the core's order, newest first: never re-sorted, never parsed.
+            Result.success(bridge.ask(BridgeCalls.CRON_RUNS, CronRunsParams(id.value, RUNS_SHOWN)).runs.mapNotNull(JobRun::of))
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failed: Exception) {
+            Result.failure(failed)
+        }
+        // A failed read keeps the runs shown, with the words (V6).
+        val words = read.exceptionOrNull()?.let { forUser(it as Exception) }
+        screen.update { ui ->
+            val view = ui?.runs?.takeIf { it.job == id } ?: return@update ui
+            ui.copy(runs = read.fold({ view.copy(runs = it, loaded = true, error = null) },
+                                     { view.copy(loaded = true, error = words) }))
+        }
     }
 
     /** Lists again on each `cron.changed` until cancelled (the page runs it while it shows); other signals are not the jobs'. */
@@ -275,7 +347,7 @@ class JobsControl(
         // form keeps its targets and its save's busy and error (V11). Outside a form a list ends busy: a cron.changed
         // from an action's own write may end it a moment before that action's re-list, which is accepted, as the list
         // it shows is already the core's state after the write. Queued marks and a confirmation last only while the
-        // core's list still bears them out (V4, V9, V12).
+        // core's list still bears them out (V4, V9, V12), and the runs sheet only while its job is listed.
         val seenNow = seen()
         val warning = jobsWarning(seenNow, ticker, jobs)
         val at = now()
@@ -283,6 +355,7 @@ class JobsControl(
             it?.let { ui -> ui.copy(jobs = jobs, warning = warning, gatewayRunning = seenNow.status == GatewayStatus.RUNNING,
                                     queued = stillQueued(ui.queued, jobs, at),
                                     confirmDelete = ui.confirmDelete?.takeIf { id -> jobs.any { j -> j.id == id } },
+                                    runs = ui.runs?.takeIf { view -> jobs.any { j -> j.id == view.job } },
                                     busy = ui.form != null && ui.busy, error = if (ui.form != null) ui.error else null) }
         }
     }

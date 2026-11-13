@@ -43,7 +43,7 @@ class JobsSaveTest {
             else -> error("unexpected $function")
         }
     }
-    private val control = JobsControl(core, bridge, seen = { GatewaySeen(GatewayStatus.RUNNING, pid = 42) })
+    private val control = JobsControl(core, bridge, seen = { GatewaySeen(GatewayStatus.RUNNING, pid = 42) }, resume = {})
 
     private val listCalls get() = core.calls.filter { it.first == "cron.manage" && it.second["action"] == null }
     private val addCalls get() = core.calls.filter { it.second["action"] == JsonPrimitive("add") }
