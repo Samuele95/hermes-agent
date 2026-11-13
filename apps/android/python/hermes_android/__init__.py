@@ -16,9 +16,11 @@ Every other call from the app goes through :func:`call`, which admits only the c
 from __future__ import annotations
 
 import json
+import logging
 import os
 import site
 import sys
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -38,6 +40,7 @@ class Native(Protocol):
 
 _transport: EmbeddedTransport | None = None
 _gateway: GatewayHost | None = None
+_warm: threading.Thread | None = None
 
 
 def prepare(paths: dict[str, str]) -> None:
@@ -63,7 +66,7 @@ def prepare(paths: dict[str, str]) -> None:
 
 
 def start(paths: dict[str, str], native: Native) -> None:
-    global _transport, _gateway
+    global _transport, _gateway, _warm
     prepare(paths)
     # Registered before the core's first env load (tui_gateway.server's import), which applies it.
     from hermes_android import secrets
@@ -78,6 +81,29 @@ def start(paths: dict[str, str], native: Native) -> None:
 
     seed_bundled_skills()  # the CLI does it at its startup, which the app's host never runs
     _transport = EmbeddedTransport.connect(native.emit)
+    _warm = _warm_delivery_targets()
+
+
+def _warm_delivery_targets() -> threading.Thread:
+    """The job form's first ``cron_delivery_targets`` loads every plugin and platform adapter (about 2.8 s on the
+    phone) on ``hermes-python``, the thread that carries the chat's frames: load them now, beside it. This runs after
+    the keystore source and the core's env load, so never from :func:`prepare`. A form opened meanwhile waits on the
+    core's own locks."""
+    import cron.scheduler_delivery  # in sys.modules when start() returns
+    from agent.memory_provider import spawn_context_thread
+
+    thread = spawn_context_thread(_load_delivery_targets, name="hermes-prewarm")
+    thread.start()
+    return thread
+
+
+def _load_delivery_targets() -> None:
+    from cron.scheduler_delivery import cron_delivery_targets
+
+    try:
+        cron_delivery_targets()
+    except Exception:  # the first form then pays the cost, as before
+        logging.getLogger(__name__).debug("warming the delivery targets failed", exc_info=True)
 
 
 def submit(frame: str) -> None:
@@ -86,7 +112,10 @@ def submit(frame: str) -> None:
 
 
 def stop() -> None:
-    global _transport, _gateway
+    global _transport, _gateway, _warm
+    if _warm is not None:
+        _warm.join(timeout=60)
+        _warm = None
     if _transport is not None:
         _transport.close()
         _transport = None
