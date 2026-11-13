@@ -49,8 +49,11 @@ private fun userStopped(context: Context, pid: Int): Boolean =
 /** Where `GatewayService` keeps its own record of the gateway's state (app-private, not backed up). */
 fun gatewayRecordFile(context: Context): File = File(context.noBackupFilesDir, "gateway_runtime.json")
 
-/** What runs, from the gateway service's own record and the `:gateway` process alive now. */
-fun observeGateway(context: Context): Pair<GatewayStatus, String?> {
+/**
+ * What runs, from the gateway service's own record and the `:gateway` process alive now, read once: the
+ * observation's pid is the one its status was judged against.
+ */
+fun observeGateway(context: Context): GatewaySeen {
     val record = runCatching { GatewayRecord.parse(gatewayRecordFile(context).readText()) }.getOrNull()
     // Force stop and a reboot are the user's ends, asked only of a running record whose process is gone (D38).
     return statusOf(record, gatewayPid(context)) { r -> endedOnPurpose(r, bootCount(context), userStopped(context, r.pid)) }

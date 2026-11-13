@@ -10,6 +10,7 @@ import org.junit.Test
 class GatewayControlTest {
     private val launched = mutableListOf<String>()
     private var running = GatewayStatus.STOPPED
+    private var reason: String? = null
     private var exempt = false
     private var refuse = false
     private val settings = object : GatewaySettings {
@@ -21,7 +22,7 @@ class GatewayControlTest {
             launched += "start"
         }
         override fun stop() { launched += "stop" }
-    }, observe = { running to null }, batteryExempt = { exempt })
+    }, observe = { GatewaySeen(running, reason) }, batteryExempt = { exempt })
 
     @Test
     fun theScreenShowsWhatRunsNotAStoredWish() {
@@ -34,6 +35,27 @@ class GatewayControlTest {
         control.refresh()
 
         assertEquals(GatewayStatus.STOPPED, control.state.value?.status)
+    }
+
+    @Test
+    fun aFailureIsShownWithItsReason() {
+        running = GatewayStatus.FAILED
+        reason = "no network"
+        control.open()
+
+        assertEquals(GatewayUi(GatewayStatus.FAILED, startAtBoot = false, reason = "no network"), control.state.value)
+
+        running = GatewayStatus.RUNNING
+        reason = null
+        control.refresh()
+
+        assertNull(control.state.value?.reason)
+
+        running = GatewayStatus.FAILED
+        reason = "exited with code 78"
+        control.refresh()
+
+        assertEquals("exited with code 78", control.state.value?.reason)
     }
 
     @Test

@@ -18,6 +18,14 @@ enum class GatewayStatus {
 }
 
 /**
+ * The gateway as observed once: its [status], the [reason] of a failure (only with [GatewayStatus.FAILED]), and
+ * [pid], the live `:gateway` process when that process wrote the gateway's record (null when none lives, or when
+ * the one alive has not written its own record yet). One immutable observation, so a reader never pairs one
+ * process's status with another's pid.
+ */
+data class GatewaySeen(val status: GatewayStatus, val reason: String? = null, val pid: Int? = null)
+
+/**
  * The gateway's own account of itself, written by its service in the `:gateway` process on every change and
  * read by the app's controls (the core's `gateway_state.json` is the core's business, not the app's). [boot] is
  * the phone's boot count when it was written (null in a record from an older build).
@@ -47,23 +55,24 @@ fun endedOnPurpose(record: GatewayRecord, bootNow: Int?, userRequested: Boolean)
  * it died without a planned stop ([GatewayStatus.DIED]: killed, or ended by its own watchdog; Samsung can keep
  * Android from restarting it, L21), unless [plannedEnd] says Android ended it on the user's behalf (Force stop) or
  * the phone restarted since, which reads as stopped. A new process that has not written its own record is starting.
+ * [GatewaySeen.pid] is [alivePid] only when the record is that process's own.
  */
-fun statusOf(record: GatewayRecord?, alivePid: Int?, plannedEnd: (GatewayRecord) -> Boolean = { false }): Pair<GatewayStatus, String?> = when {
+fun statusOf(record: GatewayRecord?, alivePid: Int?, plannedEnd: (GatewayRecord) -> Boolean = { false }): GatewaySeen = when {
     // The record is written before the process ends: while its writer lives, the gateway is still stopping.
     record != null && record.pid == alivePid &&
-        record.state in setOf(GatewayRecord.State.STOPPED, GatewayRecord.State.FAILED) -> GatewayStatus.STOPPING to null
-    record?.state == GatewayRecord.State.FAILED -> GatewayStatus.FAILED to record.reason
+        record.state in setOf(GatewayRecord.State.STOPPED, GatewayRecord.State.FAILED) -> GatewaySeen(GatewayStatus.STOPPING)
+    record?.state == GatewayRecord.State.FAILED -> GatewaySeen(GatewayStatus.FAILED, record.reason)
     // Its writer is gone without recording a stop or a failure: killed, or ended by a watchdog (D38, L21).
     record != null && alivePid == null && record.state in LIVE ->
-        (if (plannedEnd(record)) GatewayStatus.STOPPED else GatewayStatus.DIED) to null
-    record == null || record.pid != alivePid -> (if (alivePid != null) GatewayStatus.STARTING else GatewayStatus.STOPPED) to null
-    else -> when (record.state) {
+        GatewaySeen(if (plannedEnd(record)) GatewayStatus.STOPPED else GatewayStatus.DIED)
+    record == null || record.pid != alivePid -> GatewaySeen(if (alivePid != null) GatewayStatus.STARTING else GatewayStatus.STOPPED)
+    else -> GatewaySeen(when (record.state) {
         GatewayRecord.State.STARTING -> GatewayStatus.STARTING
         GatewayRecord.State.RUNNING -> GatewayStatus.RUNNING
         GatewayRecord.State.RESTARTING -> GatewayStatus.RESTARTING
         GatewayRecord.State.STOPPED, GatewayRecord.State.FAILED -> GatewayStatus.STOPPED
-    } to null
-}
+    })
+}.copy(pid = alivePid?.takeIf { it == record?.pid })
 
 /** Starts and stops the `:gateway` process's service. */
 interface GatewayLauncher {
@@ -90,7 +99,7 @@ data class GatewayUi(val status: GatewayStatus, val startAtBoot: Boolean, val as
 class GatewayControl(
     private val settings: GatewaySettings,
     private val launcher: GatewayLauncher,
-    private val observe: () -> Pair<GatewayStatus, String?>,
+    private val observe: () -> GatewaySeen,
     private val batteryExempt: () -> Boolean,
 ) {
     private val screen = MutableStateFlow<GatewayUi?>(null)
@@ -109,9 +118,9 @@ class GatewayControl(
     val restarting: Boolean get() = restartPending.get() || reviving.get()
 
     fun open() {
-        val (status, reason) = observe()
-        screen.value = GatewayUi(status, settings.startAtBoot, reason = reason)
-        if (status == GatewayStatus.DIED) revive()
+        val seen = observe()
+        screen.value = GatewayUi(seen.status, settings.startAtBoot, reason = seen.reason)
+        if (seen.status == GatewayStatus.DIED) revive()
     }
 
     /**
@@ -120,7 +129,7 @@ class GatewayControl(
      * is left alone. Returns whether a start was sent; one the system refuses leaves the gateway shown as died.
      */
     fun revive(): Boolean {
-        if (observe().first != GatewayStatus.DIED) return false
+        if (observe().status != GatewayStatus.DIED) return false
         try {
             launcher.start()
         } catch (_: IllegalStateException) {  // incl. ForegroundServiceStartNotAllowedException
@@ -139,7 +148,8 @@ class GatewayControl(
 
     /** Re-reads what runs, for a screen that is showing; finishes a restart once the old gateway has stopped. */
     fun refresh() {
-        val (status, reason) = observe()
+        val seen = observe()
+        val status = seen.status
         // A revived gateway's process is up (or ended again on its own): from now on the screen shows what is.
         if (status != GatewayStatus.DIED) reviving.set(false)
         // STOPPED, FAILED and DIED all mean the old process is gone (a live writer reads as STOPPING).
@@ -154,7 +164,7 @@ class GatewayControl(
             reviving.get() -> GatewayStatus.STARTING
             else -> status
         }
-        screen.update { it?.copy(status = shown, reason = reason.takeUnless { restartPending.get() || reviving.get() }) }
+        screen.update { it?.copy(status = shown, reason = seen.reason.takeUnless { restartPending.get() || reviving.get() }) }
     }
 
     /**
@@ -162,7 +172,7 @@ class GatewayControl(
      * drains and stops first (its process ends), then [refresh] starts the new one; one that does not run starts.
      */
     fun restart() {
-        if (observe().first in ENDED) {
+        if (observe().status in ENDED) {
             turnOn()
             return
         }
@@ -173,7 +183,7 @@ class GatewayControl(
 
     fun turnOn() {
         // The old gateway is still ending (its stop recorded, its process alive): a start now would land in it.
-        if (observe().first == GatewayStatus.STOPPING) {
+        if (observe().status == GatewayStatus.STOPPING) {
             restartPending.set(true)
             screen.update { it?.copy(status = GatewayStatus.RESTARTING, askBatteryExemption = !batteryExempt()) }
             return

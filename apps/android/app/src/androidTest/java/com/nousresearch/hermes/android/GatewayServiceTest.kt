@@ -14,6 +14,7 @@ import com.nousresearch.hermes.android.gateway.GatewayRecord
 import com.nousresearch.hermes.android.gateway.GatewayService
 import com.nousresearch.hermes.android.gateway.GatewayStatus
 import com.nousresearch.hermes.android.gateway.bootCount
+import com.nousresearch.hermes.android.gateway.observeGateway
 import com.nousresearch.hermes.android.gateway.writeGatewayRecord
 import java.io.File
 import org.json.JSONObject
@@ -171,6 +172,7 @@ class GatewayServiceTest {
         control.turnOn()
         waitFor("the controls to see it serving") { control.refresh(); control.state.value?.status?.takeIf { it == GatewayStatus.RUNNING } }
         val before = waitFor("the :gateway process") { gatewayPid() }
+        assertEquals("the observation names the serving process", before, observeGateway(context).pid)
 
         beforePlannedStop()
         control.restart()
@@ -181,11 +183,13 @@ class GatewayServiceTest {
             gatewayPid()?.takeIf { it != before && control.state.value?.status == GatewayStatus.RUNNING }
         }
         assertNotEquals(before, after)
+        assertEquals(after, observeGateway(context).pid)
         noCrashRestart()  // the new gateway started once the old process had ended, not inside it
         beforePlannedStop()
         control.turnOff()
         waitFor("the controls to see it stopped", 60) { control.refresh(); control.state.value?.status?.takeIf { it == GatewayStatus.STOPPED } }
         waitFor("the :gateway process to end", 30) { if (gatewayPid() == null) true else null }
+        assertNull(observeGateway(context).pid)
         staysStopped()
         control.close()
     }
