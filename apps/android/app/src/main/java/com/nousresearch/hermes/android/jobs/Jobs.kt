@@ -125,6 +125,22 @@ fun jobsWarning(seen: GatewaySeen, ticker: TickerFacts?, jobs: List<Job>): JobsW
     return if (age > ticker.staleAfterS) JobsWarning.NotTicking(maxOf(1, age / 60), ticker.lastError) else null
 }
 
+/** A Run now the user asked for (F1): the [lastAt] the core showed then, and when ([askedAtMs], monotonic). */
+data class RunMark(val lastAt: String?, val askedAtMs: Long)
+
+/** How long a queued mark lasts when nothing moves: two ticks of the gateway's 60 s ticker (§2.4 invariant 3). */
+const val QUEUED_FOR_MS = 120_000L
+
+/**
+ * The marks that still stand after a list: a job still listed and still scheduled whose last run is the one it
+ * showed when asked, asked less than [QUEUED_FOR_MS] ago. A moved `last_run_at` means the gateway ran it (V12).
+ */
+fun stillQueued(marks: Map<JobId, RunMark>, jobs: List<Job>, nowMs: Long): Map<JobId, RunMark> =
+    marks.filter { (id, mark) ->
+        val job = jobs.find { it.id == id }
+        job != null && job.state == JobState.SCHEDULED && job.last?.at == mark.lastAt && nowMs - mark.askedAtMs < QUEUED_FOR_MS
+    }
+
 private val WALL_MINUTE = Regex("""^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})""")
 
 /** The core's ISO time as its own wall time to the minute (`2026-11-13 18:05`); any other text as the core wrote it. */
