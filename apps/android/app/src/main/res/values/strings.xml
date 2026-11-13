@@ -188,6 +188,14 @@
     <string name="job_form_create">Create job</string>
     <string name="job_form_save">Save</string>
     <string name="job_form_cancel">Cancel</string>
+    <string name="job_actions">Job actions</string>
+    <string name="job_run_now">Run now</string>
+    <string name="job_pause">Pause</string>
+    <string name="job_resume">Resume</string>
+    <string name="job_delete">Delete</string>
+    <string name="job_queued">Queued: the gateway runs it within a minute</string>
+    <string name="job_delete_title">Delete this job?</string>
+    <string name="job_delete_body">This removes “%1$s” permanently: it stops running at once.</string>
     <string name="setup_forget_key">Forget the %1$s key on this phone</string>
     <string name="settings_title">Settings</string>
     <string name="approvals_title">Command approvals</string>

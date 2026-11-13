@@ -57,4 +57,10 @@ object HermesIcons {
     val Circle = icon("circle", "M3 12a9 9 0 1 0 18 0a9 9 0 1 0-18 0")
     val CircleCheck = icon("circle-check", "M3 12a9 9 0 1 0 18 0a9 9 0 1 0-18 0", "M9 12l2 2l4-4")
     val Ban = icon("ban", "M3 12a9 9 0 1 0 18 0a9 9 0 1 0-18 0", "M5.7 5.7l12.6 12.6")
+    val More = icon("dots-vertical", "M11 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0", "M11 19a1 1 0 1 0 2 0a1 1 0 1 0 -2 0",
+                    "M11 5a1 1 0 1 0 2 0a1 1 0 1 0 -2 0")
+    val Pause = icon("player-pause", "M6 6a1 1 0 0 1 1 -1h2a1 1 0 0 1 1 1v12a1 1 0 0 1 -1 1h-2a1 1 0 0 1 -1 -1l0 -12",
+                     "M14 6a1 1 0 0 1 1 -1h2a1 1 0 0 1 1 1v12a1 1 0 0 1 -1 1h-2a1 1 0 0 1 -1 -1l0 -12")
+    val Play = icon("player-play", "M7 4v16l13 -8l-13 -8")
+    val Bolt = icon("bolt", "M13 3l0 7l6 0l-8 11l0 -7l-6 0l8 -11")
 }
