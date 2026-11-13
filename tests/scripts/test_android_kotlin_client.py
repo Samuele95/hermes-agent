@@ -92,6 +92,24 @@ def test_methods_are_typed_descriptors():
     assert 'val THING_DO = Method("thing.do", Params.serializer(), Result.serializer())' in out
 
 
+def test_a_multi_line_description_keeps_every_sentence_in_its_kdoc():
+    # /improve 20261113T221531Z #2: only the first line used to survive (CronManageResult lost add/remove/pause).
+    result = dict(NAMED, description="Pass-through of the tool's JSON: ``list`` → ``jobs``\n"
+                                     "(+ ``scoped``); ``add`` → ``job``.\n\n"
+                                     "  A tool-level failure lands in ``error``; a */ stays inside.\n")
+    out = _render({"Params": EMPTY, "Result": result})
+
+    assert ("/** Pass-through of the tool's JSON: ``list`` → ``jobs`` (+ ``scoped``); ``add`` → ``job``. "
+            "A tool-level failure lands in ``error``; a * / stays inside. */\n@Serializable\ndata class Result(") in out
+
+
+def test_the_committed_cron_manage_result_kdoc_names_every_action():
+    text = gen.OUT.read_text(encoding="utf-8-sig")
+
+    assert ("``remove`` → ``removed_job``; ``pause``/``resume`` → ``job``. A tool-level failure lands in "
+            "``error``. */\n@Serializable\ndata class CronManageResult(") in text
+
+
 def test_a_construct_the_renderer_does_not_model_fails_generation():
     with pytest.raises(ValueError, match="oneOf"):
         _render({"Params": {"type": "object", "properties": {"x": {"oneOf": [{"type": "string"}]}}}, "Result": EMPTY})

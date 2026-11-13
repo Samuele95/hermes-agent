@@ -94,7 +94,9 @@ def _kotlin_string(text: str) -> str:
 
 
 def _doc(text: str | None) -> str:
-    line = (text or "").strip().splitlines()[0].strip() if (text or "").strip() else ""
+    """The whole description as one KDoc line: its lines joined by one space (blank lines dropped), as the
+    desktop's ``scripts/gen_gateway_contracts.py::_doc`` renders it, with ``*/`` defused."""
+    line = " ".join((text or "").split())
     return f"/** {line.replace('*/', '* /')} */\n" if line else ""
 
 

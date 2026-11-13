@@ -44,6 +44,14 @@ def test_a_call_without_params_or_reply_fields_uses_the_shared_empty_objects():
     assert "SecretsChangedParams" not in text and "SecretsChangedReply" not in text
 
 
+def test_a_multi_line_summary_stays_one_kdoc_line_above_its_descriptor():
+    text = _render({"secrets_changed": {"summary": "The keystore changed:\nre-read its secrets.",
+                                        "params": {}, "reply": {}}})
+
+    assert ('    /** The keystore changed: re-read its secrets. */\n'
+            '    val SECRETS_CHANGED = BridgeCall("secrets_changed", NoParams.serializer(), NoReply.serializer())') in text
+
+
 def test_a_nullable_string_must_be_present_but_may_be_null():
     text = _render({"status": {"params": {}, "reply": {"allowed_user": "string?"}}})
 

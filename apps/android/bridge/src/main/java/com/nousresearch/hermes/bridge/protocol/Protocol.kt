@@ -84,7 +84,7 @@ object Events {
     val TOOL_START = Event("tool.start", ToolStartPayload.serializer())
 }
 
-/** ``session_lifecycle._announce_cancelled_gateway_approvals`` (broadcast). */
+/** ``session_lifecycle._announce_cancelled_gateway_approvals`` (broadcast). One frame for every pending approval dropped by an interrupt / reap / teardown (#106678) — the deny-resolve is silent without it, so a reconnecting client's prompt looks lost rather than cancelled. ``cancelled_count`` is the number of dropped entries; ``request_ids`` omits empty/missing ids, so the two can disagree when an entry has no request_id. */
 @Serializable
 data class ApprovalCancelledPayload(
     @SerialName("session_id") val sessionId: String,
@@ -151,7 +151,7 @@ enum class CatalogAppState {
     @SerialName("unknown") UNKNOWN,
 }
 
-/** The non-secret Advanced choices the user approved on a catalog row; a Try again after the */
+/** The non-secret Advanced choices the user approved on a catalog row; a Try again after the operation settled repeats them. */
 @Serializable
 data class CatalogApproved(
     @SerialName("force") val force: Boolean,
@@ -212,7 +212,7 @@ data class ClarifyRequestParams(
     @SerialName("answers") val answers: Map<String, String?>? = null,
 )
 
-/** ``{answers}`` for the whole set (early locks go through the ``clarify.lock`` RPC); a response */
+/** ``{answers}`` for the whole set (early locks go through the ``clarify.lock`` RPC); a response without ``answers`` is cancel-all. */
 @Serializable
 data class ClarifyResult(
     @SerialName("answers") val answers: Map<String, String?>? = null,
@@ -241,7 +241,7 @@ data class CompressionSummary(
     @SerialName("note") val note: String? = null,
 )
 
-/** ``key`` selects one getter from ``_CONFIG_GETTERS``; ``cwd`` feeds the ``project`` getter, */
+/** ``key`` selects one getter from ``_CONFIG_GETTERS``; ``cwd`` feeds the ``project`` getter, ``session_id`` lets ``reasoning`` / ``fast`` answer with the session's live pin. */
 @Serializable
 data class ConfigGetParams(
     @SerialName("profile") val profile: String? = null,
@@ -250,7 +250,7 @@ data class ConfigGetParams(
     @SerialName("session_id") val sessionId: String? = null,
 )
 
-/** Union of every getter's payload: ``value`` for the simple words, ``config`` for ``full``, */
+/** Union of every getter's payload: ``value`` for the simple words, ``config`` for ``full``, ``mtime`` / ``mcp_rev`` for the poller, ``model`` / ``provider`` / ``providers`` for ``provider``, ``home`` / ``display`` for ``profile``, ``cwd`` / ``branch`` for ``project``, ``prompt``. */
 @Serializable
 data class ConfigGetResult(
     @SerialName("value") val value: String? = null,
@@ -277,7 +277,7 @@ data class ConfigProviderRef(
     @SerialName("authenticated") val authenticated: Boolean = false,
 )
 
-/** ``key`` picks the setter (``_CONFIG_SETTERS``, ``details_mode.<section>``, display toggles); */
+/** ``key`` picks the setter (``_CONFIG_SETTERS``, ``details_mode.<section>``, display toggles); ``value`` is the raw word/string the setter normalises (falsy non-strings are reported back in the error). ``scope`` applies to ``yolo`` / ``reasoning``; ``confirm_expensive_model`` to ``model``. */
 @Serializable
 data class ConfigSetParams(
     @SerialName("profile") val profile: String? = null,
@@ -288,7 +288,7 @@ data class ConfigSetParams(
     @SerialName("confirm_expensive_model") val confirmExpensiveModel: Boolean = false,
 )
 
-/** ``{key, value}`` plus the setter's extras: model switches add ``warning`` / */
+/** ``{key, value}`` plus the setter's extras: model switches add ``warning`` / ``confirm_required`` / ``confirm_message`` / ``scope`` / ``deferred``; ``focus`` adds ``tool_progress``; ``cwd`` adds ``cwd`` / ``branch``; ``personality`` adds ``history_reset`` / ``info``; ``yolo`` reports its ``scope``. ``value`` is a bool only for the display toggles. */
 @Serializable
 data class ConfigSetResult(
     @SerialName("key") val key: String,
@@ -311,7 +311,7 @@ data class ConnectionDisplay(
     @SerialName("suggested") val suggested: List<String>,
 )
 
-/** ``Target.snapshot``: the link minted up front rides here, never in the model result. ``extra`` */
+/** ``Target.snapshot``: the link minted up front rides here, never in the model result. ``extra`` keys a leg records (``tools``, ``hint``) are typed here as they appear. */
 @Serializable
 data class ConnectionOperationTarget(
     @SerialName("name") val name: String,
@@ -350,7 +350,7 @@ data class ConnectionOperationTarget(
     @SerialName("already_installed") val alreadyInstalled: Boolean? = null,
 )
 
-/** ``ConnectionOperation.request_payload``: opens the card; also the ``pending_connection`` resume */
+/** ``ConnectionOperation.request_payload``: opens the card; also the ``pending_connection`` resume snapshot so a client that missed the event restores the card with the server's deadline. */
 @Serializable
 data class ConnectionRequestPayload(
     @SerialName("op_id") val opId: String,
@@ -371,7 +371,7 @@ enum class ConnectionTargetAction {
     @SerialName("reconnect") RECONNECT,
 }
 
-/** One credential an MCP install still needs; the card renders a field per entry and sends the */
+/** One credential an MCP install still needs; the card renders a field per entry and sends the values back with the approval. */
 @Serializable
 data class ConnectionTargetEnvField(
     @SerialName("name") val name: String,
@@ -480,7 +480,7 @@ data class CronManageParams(
     @SerialName("profile") val profile: String? = null,
 )
 
-/** Pass-through of ``tools/cronjob_tools.py::cronjob`` JSON: ``list`` → ``jobs``/``count`` */
+/** Pass-through of ``tools/cronjob_tools.py::cronjob`` JSON: ``list`` → ``jobs``/``count`` (+ ``scoped`` when profile-scoped); ``add`` → the created job's summary + ``job``; ``remove`` → ``removed_job``; ``pause``/``resume`` → ``job``. A tool-level failure lands in ``error``. */
 @Serializable
 data class CronManageResult(
     @SerialName("success") val success: Boolean? = null,
@@ -517,7 +517,7 @@ data class ErrorPayload(
     @SerialName("message") val message: String,
 )
 
-/** ``agent/error_surface.py::_surface`` — advisory {layer, code, retryable} (+ identity, + auth hint, */
+/** ``agent/error_surface.py::_surface`` — advisory {layer, code, retryable} (+ identity, + auth hint, + ``resets_at`` epoch seconds when the provider named when its limit lifts). */
 @Serializable
 data class ErrorSurface(
     @SerialName("layer") val layer: String,
@@ -533,7 +533,7 @@ data class GatewayCapabilitiesResult(
     @SerialName("per_session_exclusive_submit") val perSessionExclusiveSubmit: Boolean,
 )
 
-/** ``session_auto_continue._inflight_snapshot``: the live (or retained failed) turn a reconnecting */
+/** ``session_auto_continue._inflight_snapshot``: the live (or retained failed) turn a reconnecting client rebuilds its bubbles from. */
 @Serializable
 data class InflightTurn(
     @SerialName("assistant") val assistant: String = "",
@@ -571,7 +571,7 @@ data class McpServerStatus(
     @SerialName("error") val error: String? = null,
 )
 
-/** ``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` / */
+/** ``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` / ``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text`` only) / ``compute_host_bridge`` (``text`` + ``status``). */
 @Serializable
 data class MessageCompletePayload(
     @SerialName("text") val text: JsonElement = JsonPrimitive(""),
@@ -621,7 +621,7 @@ data class ModelDisconnectResult(
     @SerialName("disconnected") val disconnected: Boolean,
 )
 
-/** One ``hermes_cli/inventory.py::build_models_payload`` provider row (the union of every field */
+/** One ``hermes_cli/inventory.py::build_models_payload`` provider row (the union of every field the builder sets; ``pricing_pending`` / ``free_tier_pending`` mark the cached-only path). */
 @Serializable
 data class ModelOptionProvider(
     @SerialName("slug") val slug: String,
@@ -665,7 +665,7 @@ data class ModelOptionsResult(
     @SerialName("provider") val provider: String = "",
 )
 
-/** ``hermes_cli/inventory.py::_apply_pricing`` — formatted $/Mtok strings (``""`` unknown, */
+/** ``hermes_cli/inventory.py::_apply_pricing`` — formatted $/Mtok strings (``""`` unknown, ``"free"``); the sale fields are Nous Portal-only. */
 @Serializable
 data class ModelPricing(
     @SerialName("input") val input: String,
@@ -689,7 +689,7 @@ data class NousLoginParams(
     @SerialName("session_id") val sessionId: String? = null,
 )
 
-/** ``approved``: the account is stored (auth.json) and Nous lists as signed in; ``model`` is the */
+/** ``approved``: the account is stored (auth.json) and Nous lists as signed in; ``model`` is the default the config now carries when the sign-in moved it. */
 @Serializable
 data class NousLoginPollResult(
     @SerialName("status") val status: String,
@@ -712,7 +712,7 @@ data class NousLoginStartResult(
     @SerialName("poll_interval") val pollInterval: Long,
 )
 
-/** One unanswered server→client request (``server_requests.Request.snapshot``); the reconnecting */
+/** One unanswered server→client request (``server_requests.Request.snapshot``); the reconnecting client re-delivers it to its request handlers. */
 @Serializable
 data class OpenRequestEntry(
     @SerialName("id") val id: String,
@@ -720,7 +720,7 @@ data class OpenRequestEntry(
     @SerialName("params") val params: JsonObject,
 )
 
-/** One unresolved ``tools/approval.py`` gateway queue entry as ``server._approval_request_payload`` */
+/** One unresolved ``tools/approval.py`` gateway queue entry as ``server._approval_request_payload`` renders it (command redacted; ``choices`` precomputed). The key set is owned by the approval tool. */
 @Serializable
 data class PendingApproval(
     @SerialName("request_id") val requestId: String? = null,
@@ -735,7 +735,7 @@ data class PendingApproval(
     @SerialName("tool_name") val toolName: String? = null,
 )
 
-/** Committed SQLite row addresses for the agent's current-turn suffix. Missing ids are */
+/** Committed SQLite row addresses for the agent's current-turn suffix. Missing ids are unproven, never negative acknowledgements. ``complete`` permits retiring the whole local turn only when the original turn boundary, every row and final body are still accounted for; compaction, redirects and partial writes conservatively leave it false. Row ids are scoped to the owning profile's store, as in ``SessionMessage.row_id``. */
 @Serializable
 data class PersistedTurn(
     @SerialName("row_ids") val rowIds: List<Long>,
@@ -767,7 +767,7 @@ data class ProjectRef(
     @SerialName("primary_path") val primaryPath: String? = null,
 )
 
-/** ``text`` is normally a string; the relay / hosted paths may hand a structured (parts list) */
+/** ``text`` is normally a string; the relay / hosted paths may hand a structured (parts list) payload, and the busy path renders it. Truncation (rewind / edit / regenerate) needs explicit consent: ``confirm_truncate`` plus one durable target (``truncate_before_row_id`` preferred, ``truncate_before_message_id``, or the legacy ``truncate_before_user_ordinal``). */
 @Serializable
 data class PromptSubmitParams(
     @SerialName("session_id") val sessionId: String,
@@ -789,7 +789,7 @@ data class PromptSubmitParams(
     @SerialName("rebind_survivor_row_ids") val rebindSurvivorRowIds: List<Long>? = null,
 )
 
-/** ``status`` is absent only on the typed-stop-phrase reply (``voice_stopped``). After a */
+/** ``status`` is absent only on the typed-stop-phrase reply (``voice_stopped``). After a truncation the survivor row ids let the client rebind its cached ``rowId``s (``None`` map entries: drop the cached id). ``turn_isolation`` marks a compute-host dispatch. */
 @Serializable
 data class PromptSubmitResult(
     @SerialName("status") val status: PromptSubmitStatus? = null,
@@ -808,7 +808,7 @@ enum class PromptSubmitStatus {
     @SerialName("redirected") REDIRECTED,
 }
 
-/** ``hermes_cli/inventory.py::_apply_limits`` — ``account``: the whole login is rate-limited until */
+/** ``hermes_cli/inventory.py::_apply_limits`` — ``account``: the whole login is rate-limited until ``resets_at`` (ISO, absent when unknown); ``models``: only these models are, each until its time. */
 @Serializable
 data class ProviderLimit(
     @SerialName("scope") val scope: String,
@@ -816,14 +816,14 @@ data class ProviderLimit(
     @SerialName("models") val models: Map<String, String>? = null,
 )
 
-/** ``hermes_cli/inventory.py::_apply_usage`` — the provider's subscription usage, from cache. */
+/** ``hermes_cli/inventory.py::_apply_usage`` — the provider's subscription usage, from cache. Multi-entry credential pools carry ``accounts`` (one row per account; the legacy ``windows`` stays EMPTY there — a provider-wide percentage across different logins would be fabricated). Single-account providers keep the legacy ``windows`` gauge. */
 @Serializable
 data class ProviderUsage(
     @SerialName("windows") val windows: List<ProviderUsageWindow>? = null,
     @SerialName("accounts") val accounts: List<ProviderUsageAccount>? = null,
 )
 
-/** One account of a provider's credential pool (``hermes_cli/inventory.py::_pool_usage_accounts``). */
+/** One account of a provider's credential pool (``hermes_cli/inventory.py::_pool_usage_accounts``). ``id`` is a stable non-secret account identity (never a key or URL); ``label`` may be empty (UI falls back to a localized "Account N"). ``windows`` is empty while the account's usage is not yet known — state carries the meaning, never a fabricated gauge. ``state``: ``ready`` — live quota below the cap (numeric windows present); ``limited`` — a live credential-wide cooldown or exhausted account-scoped quota windows; ``unknown`` — no live numeric windows (failed/empty fetch, stale snapshot, provider without a usage API); ``unavailable`` — DEAD auth row (kept visible, never a quota row). ``resets_at``: for a limited account, the LATEST of its exhausted account-scoped windows (or a live cooldown when later); ``None`` when unknown (the frontend renders its own advisory, e.g. the earliest limited sibling). */
 @Serializable
 data class ProviderUsageAccount(
     @SerialName("id") val id: String,
@@ -833,7 +833,7 @@ data class ProviderUsageAccount(
     @SerialName("resets_at") val resetsAt: String? = null,
 )
 
-/** One subscription usage window (``agent/account_usage.py::AccountUsageWindow``): e.g. the 5-hour */
+/** One subscription usage window (``agent/account_usage.py::AccountUsageWindow``): e.g. the 5-hour session or the weekly cap, with how much of it is spent and when it rolls over (ISO). ``scope``: ``account`` — exhausting the window exhausts the whole login (Codex session/weekly, so a limited account's resets_at must wait for it); ``model`` — the window caps only one model family (Anthropic Opus/Sonnet weekly) and can never imply the account itself is out of quota. */
 @Serializable
 data class ProviderUsageWindow(
     @SerialName("label") val label: String,
@@ -874,7 +874,7 @@ data class SecretRequestParams(
     @SerialName("metadata") val metadata: JsonObject? = null,
 )
 
-/** One create-time transcript row (``session_history._coerce_seed_history``); ``text`` is the */
+/** One create-time transcript row (``session_history._coerce_seed_history``); ``text`` is the legacy alias of ``content``; only ``display_kind: "hidden"`` is accepted from the wire. Clients forward stored rows verbatim (``_row_id``, ``timestamp``, …) and the coercer drops what it does not use, so the row stays open. */
 @Serializable
 data class SeedMessage(
     @SerialName("role") val role: String,
@@ -902,7 +902,7 @@ data class SessionCompressParams(
     @SerialName("focus_topic") val focusTopic: String? = null,
 )
 
-/** In-process: the before/after summary + replacement transcript. Compute host: its result passes */
+/** In-process: the before/after summary + replacement transcript. Compute host: its result passes through (hence open) with ``turn_isolation``; a lock held elsewhere answers ``compressed: false``. */
 @Serializable
 data class SessionCompressResult(
     @SerialName("status") val status: String? = null,
@@ -928,7 +928,7 @@ data class SessionContextBreakdownParams(
     @SerialName("profile") val profile: String? = null,
 )
 
-/** ``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds) */
+/** ``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds) plus the per-file context manifest (empty until the agent exists). */
 @Serializable
 data class SessionContextBreakdownResult(
     @SerialName("categories") val categories: List<ContextCategory>,
@@ -1024,7 +1024,7 @@ data class SessionListResult(
     @SerialName("sessions") val sessions: List<SessionListRow>,
 )
 
-/** ``methods_session._session_row_summary``; ``resolved_id`` only on a title lookup that followed a */
+/** ``methods_session._session_row_summary``; ``resolved_id`` only on a title lookup that followed a compression lineage to its tip. */
 @Serializable
 data class SessionListRow(
     @SerialName("id") val id: String,
@@ -1038,7 +1038,7 @@ data class SessionListRow(
     @SerialName("_lineage_root_id") val LineageRootId: String? = null,
 )
 
-/** ``tui_gateway/server.py::_session_info`` — the ``session.info`` event and the ``info`` field of */
+/** ``tui_gateway/server.py::_session_info`` — the ``session.info`` event and the ``info`` field of ``session.create`` / ``session.resume`` / ``session.activate`` results. */
 @Serializable
 data class SessionLiveInfo(
     @SerialName("model") val model: String = "",
@@ -1164,7 +1164,7 @@ data class SessionUsagePayload(
     @SerialName("usage") val usage: Usage,
 )
 
-/** ``provider_configured`` is the loose answer; the boot record's fields (``ready``, */
+/** ``provider_configured`` is the loose answer; the boot record's fields (``ready``, ``free_tier_account``, ``free_tier_route``, ``other_providers``, ``inference_provider``) ride along on the launch profile. An unknown ``profile`` answers ``ok=False`` + ``error``. */
 @Serializable
 data class SetupStatusResult(
     @SerialName("provider_configured") val providerConfigured: Boolean? = null,
@@ -1217,7 +1217,7 @@ enum class SkillsAction {
     @SerialName("inspect") INSPECT,
 }
 
-/** ``query`` is the search text / hub identifier / browse page (digits); ``page`` / ``page_size`` */
+/** ``query`` is the search text / hub identifier / browse page (digits); ``page`` / ``page_size`` apply to ``browse``. */
 @Serializable
 data class SkillsManageParams(
     @SerialName("profile") val profile: String? = null,
@@ -1227,7 +1227,7 @@ data class SkillsManageParams(
     @SerialName("page_size") val pageSize: Long? = null,
 )
 
-/** Shape follows the action: ``list`` → ``skills`` (category → names); ``search`` → ``results``; */
+/** Shape follows the action: ``list`` → ``skills`` (category → names); ``search`` → ``results``; ``install`` → ``installed`` + ``name``; ``browse`` → ``items`` + paging; ``inspect`` → ``info``. */
 @Serializable
 data class SkillsManageResult(
     @SerialName("skills") val skills: Map<String, List<String>>? = null,
@@ -1248,7 +1248,7 @@ data class StatusUpdatePayload(
     @SerialName("text") val text: String,
 )
 
-/** ``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``), */
+/** ``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``), ``agent_callbacks._agent_cbs`` (reasoning.delta / thinking.delta), ``tool_progress._progress_reasoning`` (reasoning.available). ``verbose`` rides only when the session's verbose reasoning mode is on. */
 @Serializable
 data class StreamDeltaPayload(
     @SerialName("text") val text: String,
@@ -1292,7 +1292,7 @@ data class ToolGeneratingPayload(
     @SerialName("name") val name: String,
 )
 
-/** ``tools.tool_labels.ToolLabel`` — what one call executed through the tool_search bridge is, */
+/** ``tools.tool_labels.ToolLabel`` — what one call executed through the tool_search bridge is, in words. Clients render ``text`` (or ``app``/``action`` in their own columns) and never parse the tool name themselves. */
 @Serializable
 data class ToolLabel(
     @SerialName("kind") val kind: ToolLabelKind,
@@ -1312,7 +1312,7 @@ enum class ToolLabelKind {
     @SerialName("tool") TOOL,
 }
 
-/** ``tool_progress._on_tool_start`` (+ ``agent_callbacks._mirror_subagent_to_child`` rows with */
+/** ``tool_progress._on_tool_start`` (+ ``agent_callbacks._mirror_subagent_to_child`` rows with ``preview`` and empty ``args``). ``todos``/``revision`` are NOT set by the emitter; kept optional because tool.start rows may pass through connector redaction unchanged. */
 @Serializable
 data class ToolStartPayload(
     @SerialName("tool_id") val toolId: String,
@@ -1324,7 +1324,7 @@ data class ToolStartPayload(
     @SerialName("labels") val labels: List<ToolLabel>? = null,
 )
 
-/** One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``): */
+/** One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``): ``text``, display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the durable ``row_id`` rewind targets, and for tool rows raw ``content``, ``tool_call_id``, ``name``, ``context`` and ``args``. Assistant detail sidecars (``reasoning``, …) ride as extra keys. */
 @Serializable
 data class TranscriptMessage(
     @SerialName("role") val role: String,
@@ -1378,7 +1378,7 @@ data class Usage(
     @SerialName("cost_status") val costStatus: String? = null,
 )
 
-/** The answer to any one-string prompt (sudo, secret, vault prompts, desktop bridges): */
+/** The answer to any one-string prompt (sudo, secret, vault prompts, desktop bridges): ``''`` means skipped / declined. */
 @Serializable
 data class ValueResult(
     @SerialName("value") val value: String,
