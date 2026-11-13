@@ -5,6 +5,13 @@ the environment, where the ``android_keystore`` secret source puts it (D8). Who 
 numeric Telegram user id, written to config.yaml as ``telegram.allow_from``, which the Telegram adapter
 turns into its allowlist: messages from anyone else are ignored. Each function takes and returns JSON;
 an ``{"error"}`` answer is for the user.
+
+Switching the bot off or on (D39, blueprint §3.2) is config.yaml's ``platforms.telegram.enabled``, written
+under the app's config lock (``_config.mutate``), never the dotenv file: an explicit false beats a held token, so the
+token and the allowed user stay, and the gateway applies it at its next start. The bot's live state is the
+core's own entry in ``gateway_state.json`` (``gateway.status.read_runtime_status``), passed on as written,
+with the pid that wrote it; whether it describes the running gateway is the app's call, by ``writer_pid``
+against its own gateway record.
 """
 
 from __future__ import annotations
@@ -33,18 +40,61 @@ def _allow(cfg: dict, user: str) -> None:
     cfg["telegram"] = {**(section if isinstance(section, dict) else {}), "allow_from": [user]}
 
 
+def enable(arg: str) -> str:
+    """Switches the bot ``{"enabled"}`` on or off in config.yaml, under the app's config lock."""
+    on = json.loads(arg)["enabled"]
+    return json.dumps({"enabled": _config.mutate(lambda cfg: _switch(cfg, on))})
+
+
+def _switch(cfg: dict, on: bool) -> bool:
+    """The edit itself, on a loaded config (no I/O): every other platform and key of the section are kept."""
+    platforms = cfg.get("platforms")
+    platforms = platforms if isinstance(platforms, dict) else {}
+    section = platforms.get("telegram")
+    section = section if isinstance(section, dict) else {}
+    cfg["platforms"] = {**platforms, "telegram": {**section, "enabled": on}}
+    return on
+
+
 def status(_arg: str) -> str:
-    """Whether a token is held, who may talk to the bot, and whether this build carries the Telegram SDK
-    (``sdk``: the app cannot install it later, so a payload without it has no Telegram)."""
+    """Whether a token is held, who may talk to the bot, whether this build carries the Telegram SDK
+    (``sdk``: the app cannot install it later, so a payload without it has no Telegram), whether config.yaml
+    lets the bot run (``enabled``, the gateway's own reading: absent leaves it to the token), and the core's
+    last entry for the bot (``live``)."""
     import pm.extras
     from agent.secret_scope import get_secret_str
+    from gateway.status import read_runtime_status
     from hermes_cli.config import load_config
+    from utils import is_truthy_value
 
-    section = load_config().get("telegram")
+    config = load_config()
+    section = config.get("telegram")
     allowed = section.get("allow_from") if isinstance(section, dict) else None
     user = str(allowed[0]) if isinstance(allowed, list) and allowed else None
+    platforms = config.get("platforms")
+    switch = platforms.get("telegram") if isinstance(platforms, dict) else None
+    switch = switch if isinstance(switch, dict) else {}
     return json.dumps({"token": get_secret_str("TELEGRAM_BOT_TOKEN").strip() != "", "allowed_user": user,
-                       "sdk": pm.extras.available("telegram")})
+                       "sdk": pm.extras.available("telegram"),
+                       "enabled": True if "enabled" not in switch else is_truthy_value(switch["enabled"], default=False),
+                       "live": _live(read_runtime_status())})
+
+
+def _live(runtime: object) -> dict | None:
+    """The core's entry for the bot as written, each field only when of its declared type (the file is
+    another process's); the error leaves redacted, since an adapter's message may carry the Bot API URL."""
+    platforms = runtime.get("platforms") if isinstance(runtime, dict) else None
+    entry = platforms.get("telegram") if isinstance(platforms, dict) else None
+    if not isinstance(entry, dict):
+        return None
+    from agent.redact import redact_sensitive_text
+
+    state, error, pid, updated = (entry.get(key) for key in ("state", "error_message", "writer_pid", "updated_at"))
+    return {"state": state if isinstance(state, str) else None,
+            "error_message": redact_sensitive_text(error, force=True, redact_url_credentials=True)
+            if isinstance(error, str) else None,
+            "writer_pid": pid if isinstance(pid, int) and not isinstance(pid, bool) else None,
+            "updated_at": updated if isinstance(updated, str) else None}
 
 
 def check(_arg: str) -> str:

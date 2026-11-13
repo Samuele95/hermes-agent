@@ -22,7 +22,7 @@ class TelegramSetupTest {
     private var secretsChanged = 0
     private val calls = mutableListOf<Pair<String, String>>()
     private val answers = mutableMapOf(
-        "telegram_status" to """{"token":false,"allowed_user":null,"sdk":true}""",
+        "telegram_status" to """{"token":false,"allowed_user":null,"sdk":true,"enabled":true,"live":null}""",
         "telegram_configure" to """{"allowed_user":"42"}""",
         "telegram_check" to """{"check":"ok","bot":"@phone_hermes_bot","message":null}""",
     )
@@ -34,7 +34,7 @@ class TelegramSetupTest {
 
     @Test
     fun openingShowsWhatIsSetUp() = runTest {
-        answers["telegram_status"] = """{"token":true,"allowed_user":"42","sdk":true}"""
+        answers["telegram_status"] = """{"token":true,"allowed_user":"42","sdk":true,"enabled":true,"live":null}"""
 
         telegram.open()
 
@@ -43,7 +43,7 @@ class TelegramSetupTest {
 
     @Test
     fun aBuildWithoutTheTelegramLibrarySaysSo() = runTest {
-        answers["telegram_status"] = """{"token":false,"allowed_user":null,"sdk":false}"""
+        answers["telegram_status"] = """{"token":false,"allowed_user":null,"sdk":false,"enabled":true,"live":null}"""
 
         telegram.open()
 
@@ -118,7 +118,7 @@ class TelegramSetupTest {
     @Test
     fun savingWithoutANewTokenKeepsTheOneHeld() = runTest {
         held["TELEGRAM_BOT_TOKEN"] = "123:abc".toByteArray()
-        answers["telegram_status"] = """{"token":true,"allowed_user":"7","sdk":true}"""
+        answers["telegram_status"] = """{"token":true,"allowed_user":"7","sdk":true,"enabled":true,"live":null}"""
         telegram.open()
 
         telegram.save(null, "42")

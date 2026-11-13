@@ -95,6 +95,14 @@ data class DeliveryTarget(
 )
 
 @Serializable
+data class PlatformEntry(
+    val state: String?,
+    @SerialName("error_message") val errorMessage: String?,
+    @SerialName("writer_pid") val writerPid: Int?,
+    @SerialName("updated_at") val updatedAt: String?,
+)
+
+@Serializable
 data class RuntimeFactsReply(
     val python: String,
     val sqlite: String,
@@ -257,6 +265,8 @@ data class TelegramStatusReply(
     val token: Boolean,
     @SerialName("allowed_user") val allowedUser: String?,
     val sdk: Boolean,
+    val enabled: Boolean,
+    val live: PlatformEntry?,
 )
 
 @Serializable
@@ -264,6 +274,16 @@ data class TelegramCheckReply(
     val check: TelegramCheck,
     val bot: String?,
     val message: String?,
+)
+
+@Serializable
+data class TelegramEnableParams(
+    val enabled: Boolean,
+)
+
+@Serializable
+data class TelegramEnableReply(
+    val enabled: Boolean,
 )
 
 @Serializable
@@ -355,10 +375,12 @@ object BridgeCalls {
     val TERMINAL_LOCAL = BridgeCall("terminal_local", NoParams.serializer(), TerminalLocalReply.serializer())
     /** Sets the one Telegram user the bot answers (config.yaml telegram.allow_from, Dv32). */
     val TELEGRAM_CONFIGURE = BridgeCall("telegram_configure", TelegramConfigureParams.serializer(), TelegramConfigureReply.serializer())
-    /** Whether a token is held, who may talk to the bot, and whether this build has the Telegram SDK. */
+    /** Whether a token is held, who may talk to the bot, whether this build has the Telegram SDK, whether config.yaml lets the bot run (enabled), and the core's own last entry for it in gateway_state.json (live, as written, with the pid that wrote it; null when there is none). */
     val TELEGRAM_STATUS = BridgeCall("telegram_status", NoParams.serializer(), TelegramStatusReply.serializer())
     /** Asks Telegram who the held token belongs to: ok (bot named), refused by Telegram, or Telegram out of reach. */
     val TELEGRAM_CHECK = BridgeCall("telegram_check", NoParams.serializer(), TelegramCheckReply.serializer(), blocking = true)
+    /** Switches the phone's Telegram bot on or off (config.yaml platforms.telegram.enabled, under the app's config lock; off beats a held token); the token and the allowed user stay, and the gateway applies it at its next start. */
+    val TELEGRAM_ENABLE = BridgeCall("telegram_enable", TelegramEnableParams.serializer(), TelegramEnableReply.serializer())
     /** Edits a job by its id through the core's cronjob update: null leaves a field as it is; the core judges the schedule and the prompt and refuses in its own words. */
     val CRON_UPDATE = BridgeCall("cron_update", CronUpdateParams.serializer(), CronUpdateReply.serializer())
     /** Makes a job due now (cron.jobs.trigger_job) so the gateway's ticker runs it at its next tick; nothing runs in this process. A finished or unknown job is refused. */

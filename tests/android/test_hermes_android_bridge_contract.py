@@ -151,7 +151,7 @@ def test_an_error_reply_passes_for_every_call(monkeypatch):
 
 
 def test_a_nullable_field_takes_null(monkeypatch):
-    _record(monkeypatch, "telegram_status", {"token": False, "allowed_user": None, "sdk": True})
+    _record(monkeypatch, "telegram_status", {"token": False, "allowed_user": None, "sdk": True, "enabled": True, "live": None})
 
     assert json.loads(hermes_android.call("telegram_status", "{}"))["allowed_user"] is None
 
@@ -162,7 +162,7 @@ def test_real_calls_answer_their_declared_replies():
     assert set(facts) == set(CONTRACT["calls"]["runtime_facts"]["reply"])
 
     assert json.loads(hermes_android.call("gateway_state", "{}")) == {"gateway": "stopped"}
-    assert set(json.loads(hermes_android.call("telegram_status", "{}"))) == {"token", "allowed_user", "sdk"}
+    assert set(json.loads(hermes_android.call("telegram_status", "{}"))) == {"token", "allowed_user", "sdk", "enabled", "live"}
 
 
 def test_an_event_line_is_held_to_its_declared_fields():

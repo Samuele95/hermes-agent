@@ -300,6 +300,12 @@ def telegram_check(arg: str) -> str:
     return telegram.check(arg)
 
 
+def telegram_enable(arg: str) -> str:
+    from hermes_android import telegram
+
+    return telegram.enable(arg)
+
+
 def cron_update(arg: str) -> str:
     from hermes_android import cron
 

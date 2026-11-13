@@ -6,6 +6,7 @@ import com.nousresearch.hermes.bridge.contract.CronUpdateParams
 import com.nousresearch.hermes.bridge.contract.Pinned
 import com.nousresearch.hermes.bridge.contract.SaveCustomEndpointParams
 import com.nousresearch.hermes.bridge.contract.SshHostKeyParams
+import com.nousresearch.hermes.bridge.contract.TelegramEnableParams
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
@@ -80,5 +81,22 @@ class AppBridgeTest {
         val target = answering("""{"targets":[{"id":"telegram","name":"Telegram","home_set":false}]}""")
             .ask(BridgeCalls.CRON_DELIVERY_TARGETS).targets.single()
         assertEquals(false, target.homeSet)
+    }
+
+    @Test
+    fun theBotSwitchSendsItsOneFieldAndTheStatusCarriesTheCoresEntry() = runBlocking {
+        val switched = answering("""{"enabled":false}""").ask(BridgeCalls.TELEGRAM_ENABLE, TelegramEnableParams(false))
+        assertEquals(Json.parseToJsonElement("""{"enabled":false}"""), Json.parseToJsonElement(sent.single().second))
+        assertEquals(false, switched.enabled)
+
+        val status = answering("""{"token":true,"allowed_user":"42","sdk":true,"enabled":false,"live":{"state":"fatal","error_message":"Conflict: terminated by other getUpdates request","writer_pid":12345,"updated_at":"2026-11-13T15:48:13.243611+00:00"}}""")
+            .ask(BridgeCalls.TELEGRAM_STATUS)
+        assertEquals(false, status.enabled)
+        assertEquals(12345, status.live!!.writerPid)
+        assertEquals("fatal", status.live!!.state)
+
+        val none = answering("""{"token":true,"allowed_user":"42","sdk":true,"enabled":false,"live":null}""")
+            .ask(BridgeCalls.TELEGRAM_STATUS)
+        assertNull(none.live)
     }
 }

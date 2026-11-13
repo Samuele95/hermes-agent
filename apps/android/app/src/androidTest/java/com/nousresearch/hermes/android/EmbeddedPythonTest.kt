@@ -1,8 +1,11 @@
 package com.nousresearch.hermes.android
 
+import android.app.ActivityManager
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.nousresearch.hermes.android.gateway.GatewayRecord
+import com.nousresearch.hermes.android.gateway.gatewayRecordFile
 import com.nousresearch.hermes.bridge.CoreError
 import com.nousresearch.hermes.bridge.CoreEvent
 import com.nousresearch.hermes.bridge.CoreGateway
@@ -15,6 +18,8 @@ import com.nousresearch.hermes.bridge.contract.CronSchedulerReply
 import com.nousresearch.hermes.bridge.contract.CronTriggerParams
 import com.nousresearch.hermes.bridge.contract.CronUpdateParams
 import com.nousresearch.hermes.bridge.contract.DeliveryTarget
+import com.nousresearch.hermes.bridge.contract.TelegramEnableParams
+import com.nousresearch.hermes.bridge.contract.TelegramStatusReply
 import com.nousresearch.hermes.bridge.protocol.ClientCapabilitiesParams
 import com.nousresearch.hermes.bridge.protocol.CronAction
 import com.nousresearch.hermes.bridge.protocol.CronManageParams
@@ -28,6 +33,7 @@ import com.nousresearch.hermes.bridge.protocol.SessionContextBreakdownParams
 import com.nousresearch.hermes.bridge.protocol.SessionCreateParams
 import com.nousresearch.hermes.bridge.protocol.SessionDeleteParams
 import com.nousresearch.hermes.bridge.protocol.SessionTitleParams
+import java.io.File
 import java.net.InetAddress
 import java.net.ServerSocket
 import kotlin.concurrent.thread
@@ -251,6 +257,49 @@ class EmbeddedPythonTest {
             Log.i("J2Probe", "took ms: $took")
             // A failed run leaves no job behind on the shared phone.
             runCatching { core.call(Methods.CRON_MANAGE, CronManageParams(action = CronAction.REMOVE, name = id)) }
+        }
+    }
+
+    @Test
+    fun theBotSwitchAndItsLiveEntryAnswerOnThePhone() = runBlocking {
+        core // the interpreter starts with the core
+        val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext
+        val took = linkedMapOf<String, Long>() // each call holds hermes-python (neither is blocking)
+        val config = File(app.filesDir, ".hermes/config.yaml") // the path TelegramSetupDeviceTest reads
+        val original = config.takeIf { it.exists() }?.readText()
+        var before: TelegramStatusReply? = null
+        took["telegram_status"] = measureTimeMillis { before = EmbeddedBridge.ask(BridgeCalls.TELEGRAM_STATUS) }
+        val was = before!!
+        // §8 risk (b), observed only: the entry's writer against the :gateway process and the app's own record.
+        val gatewayPid = app.getSystemService(ActivityManager::class.java).runningAppProcesses
+            ?.firstOrNull { it.processName == "${app.packageName}:gateway" }?.pid
+        val record = runCatching { GatewayRecord.parse(gatewayRecordFile(app).readText()) }.getOrNull()
+        Log.i("J3Probe", "telegram_status: enabled=${was.enabled} token=${was.token} " +
+            "live=${was.live?.let { "state=${it.state} writerPid=${it.writerPid} updatedAt=${it.updatedAt}" }}")
+        Log.i("J3Probe", ":gateway pid=$gatewayPid record=${record?.let { "${it.state} pid=${it.pid}" }}")
+        assertTrue("writer_pid ${was.live?.writerPid}", was.live?.writerPid.let { it == null || it > 0 })
+        try {
+            var switched: Boolean? = null
+            took["telegram_enable"] = measureTimeMillis {
+                switched = EmbeddedBridge.ask(BridgeCalls.TELEGRAM_ENABLE, TelegramEnableParams(!was.enabled)).enabled
+            }
+            assertEquals(!was.enabled, switched)
+            var after: TelegramStatusReply? = null
+            took["telegram_status again"] = measureTimeMillis { after = EmbeddedBridge.ask(BridgeCalls.TELEGRAM_STATUS) }
+            assertEquals(!was.enabled, after!!.enabled)
+            assertEquals(was.token, after!!.token)
+            assertEquals(was.allowedUser, after!!.allowedUser)
+            if (was.enabled) {
+                assertTrue(config.readText().contains("enabled: false"))
+            }
+        } finally {
+            Log.i("J3Probe", "took ms: $took")
+            Log.i("J3Probe", "config.yaml had the key before: ${original?.contains(Regex("(?m)^platforms:\\n  telegram:\\n    enabled:"))}")
+            runCatching { EmbeddedBridge.ask(BridgeCalls.TELEGRAM_ENABLE, TelegramEnableParams(was.enabled)) }
+            // The shared phone gets config.yaml back as it was: with no token, an explicit `enabled: true` is not
+            // the same as no key, since the gateway then starts a Telegram adapter that fails and stops it all.
+            if (original != null) config.writeText(original) else config.delete()
+            assertEquals(was.enabled, EmbeddedBridge.ask(BridgeCalls.TELEGRAM_STATUS).enabled)
         }
     }
 
