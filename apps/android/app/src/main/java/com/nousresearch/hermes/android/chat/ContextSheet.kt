@@ -16,7 +16,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.ModalBottomSheetProperties
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Text
@@ -53,12 +52,13 @@ class ContextActions(val open: () -> Unit, val compress: (focus: String?) -> Uni
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ContextSheet(ui: ContextUi, running: Boolean, compressing: Boolean, onCompress: (focus: String?) -> Unit, onClose: () -> Unit) {
-    // The swipe goes through the sheet's state, Back and an outside tap through its properties: all three wait for Compress.
+    // The swipe goes through the sheet's state, Back and an outside tap through onDismissRequest: all three wait for
+    // Compress, read live. Not through its properties: material3 1.4.0 fixes the window's Back callback from
+    // shouldDismissOnBackPress when the sheet opens, so a sheet opened mid-compress would never close on Back.
     val busy by rememberUpdatedState(compressing)
     val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true, confirmValueChange = { it != SheetValue.Hidden || !busy })
-    ModalBottomSheet(onDismissRequest = { if (!compressing) onClose() }, modifier = Modifier.testTag("context-panel"), sheetState = sheet,
-                     containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                     properties = ModalBottomSheetProperties(shouldDismissOnBackPress = !compressing, shouldDismissOnClickOutside = !compressing)) {
+    ModalBottomSheet(onDismissRequest = { if (!busy) onClose() }, modifier = Modifier.testTag("context-panel"), sheetState = sheet,
+                     containerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 24.dp)) {
             Header(ui.meter)
             Breakdown(ui)
