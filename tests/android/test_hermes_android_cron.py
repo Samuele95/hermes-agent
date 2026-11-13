@@ -211,3 +211,30 @@ def test_the_tickers_last_error_leaves_redacted(home):
 
     assert KEY not in last_error
     assert "provider refused key" in last_error
+
+
+@pytest.mark.parametrize(
+    ("wire", "kind", "display"),
+    [
+        ("every 30m", "interval", "every 30m"),
+        ("30 9 * * *", "cron", "30 9 * * *"),
+        ("30 9 * * 1-5", "cron", "30 9 * * 1-5"),
+        ("in 45m", "once", "once in 45m"),
+    ],
+)
+def test_the_forms_schedule_presets_parse_in_the_core(home, wire, kind, display):
+    """The forms the app's presets render (JobFormTest pins the same text) are the core's grammar."""
+    from cron.jobs import parse_schedule
+
+    parsed = parse_schedule(wire)
+
+    assert (parsed["kind"], parsed["display"]) == (kind, display)
+
+
+@pytest.mark.parametrize("display", ["once in 45m", "once at 2026-11-13 18:05"])
+def test_a_schedules_display_is_not_its_grammar(home, display):
+    """Why an edit never sends the schedule back unless it was changed (DC-J8)."""
+    from cron.jobs import parse_schedule
+
+    with pytest.raises(ValueError, match="Invalid schedule"):
+        parse_schedule(display)
