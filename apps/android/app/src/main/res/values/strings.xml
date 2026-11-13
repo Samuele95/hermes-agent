@@ -196,6 +196,19 @@
     <string name="job_queued">Queued: the gateway runs it within a minute</string>
     <string name="job_delete_title">Delete this job?</string>
     <string name="job_delete_body">This removes “%1$s” permanently: it stops running at once.</string>
+    <string name="job_runs">Past runs</string>
+    <string name="job_runs_title">Past runs of “%1$s”</string>
+    <string name="job_runs_explain">Tap a run to read it in the chat. A message you send there continues that run\'s conversation.</string>
+    <string name="job_runs_reading">Reading the runs…</string>
+    <string name="job_runs_empty">No runs yet</string>
+    <string name="job_runs_close">Close</string>
+    <string name="job_run_open">Open in the chat</string>
+    <string name="job_run_running">Running</string>
+    <string name="job_run_unfinished">No end recorded</string>
+    <plurals name="job_run_messages">
+        <item quantity="one">%d message</item>
+        <item quantity="other">%d messages</item>
+    </plurals>
     <string name="setup_forget_key">Forget the %1$s key on this phone</string>
     <string name="settings_title">Settings</string>
     <string name="approvals_title">Command approvals</string>

@@ -34,6 +34,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nousresearch.hermes.android.R
+import com.nousresearch.hermes.android.chat.StoredSessionId
 import com.nousresearch.hermes.android.gateway.GatewayStatus
 import com.nousresearch.hermes.android.ui.CodeFont
 import com.nousresearch.hermes.android.ui.Hermes
@@ -45,19 +46,24 @@ import com.nousresearch.hermes.android.ui.SecondaryButton
 
 /**
  * What the page does with a job (automation-02, -06): make a [newJob], [edit] the one tapped, the [form] sheet's
- * actions, and with [row] each row's menu.
+ * actions, with [row] each row's menu, and with [runs] the runs sheet.
  */
-class JobActions(val newJob: () -> Unit, val edit: (JobId) -> Unit, val form: JobFormActions, val row: JobRowActions? = null)
+class JobActions(val newJob: () -> Unit, val edit: (JobId) -> Unit, val form: JobFormActions, val row: JobRowActions? = null,
+                 val runs: JobRunsActions? = null)
 
 /** What a job row's menu does (automation-03, -04, -05); [askDelete] takes null to stop asking. */
 class JobRowActions(val pause: (JobId) -> Unit, val resume: (JobId) -> Unit, val runNow: (JobId) -> Unit,
                     val askDelete: (JobId?) -> Unit, val confirmDelete: () -> Unit)
 
+/** What the runs sheet does (automation-07): [show] a job's past runs (null closes the sheet), [open] one in the chat. */
+class JobRunsActions(val show: (JobId?) -> Unit, val open: (StoredSessionId) -> Unit)
+
 /**
  * The Scheduled jobs page (automation-01, automation-10): why the jobs will not run, when they will not, then every
  * job the core holds with its schedule, state, next and last run and last error. [onOpenGateway] opens the Gateway
  * page over this one. With [actions], a tap opens the job's form and New job makes one, in a sheet over the page.
- * With [JobActions.row], a row's ⋮ menu runs, pauses, resumes or deletes it; Delete asks first.
+ * With [JobActions.row], a row's ⋮ menu runs, pauses, resumes or deletes it; Delete asks first. With [JobActions.runs],
+ * Past runs in that menu opens the job's runs in a sheet, and a tap on one opens it in the chat.
  */
 @Composable
 fun JobsScreen(state: JobsUi, onOpenGateway: () -> Unit, onClose: () -> Unit, modifier: Modifier = Modifier,
@@ -79,12 +85,14 @@ fun JobsScreen(state: JobsUi, onOpenGateway: () -> Unit, onClose: () -> Unit, mo
             state.jobs.forEach { job ->
                 JobRow(job, state, onEdit = actions?.let { a -> { a.edit(job.id) } },
                        menu = actions?.row?.let { a ->
-                           { JobMenu(job, state, open = menuFor == job.id, onOpen = { menuFor = job.id }, onDismiss = { menuFor = null }, a) }
+                           { JobMenu(job, state, open = menuFor == job.id, onOpen = { menuFor = job.id }, onDismiss = { menuFor = null }, a,
+                                     onRuns = actions.runs?.let { r -> { r.show(job.id) } }) }
                        })
             }
         }
     }
     if (actions != null) state.form?.let { JobFormSheet(state, it, actions.form) }
+    if (actions != null) actions.runs?.let { r -> state.runs?.let { view -> JobRunsSheet(state, view, r) } }
     actions?.row?.let { a -> state.confirmDelete?.let { id -> DeleteDialog(state.jobs.find { it.id == id }?.name ?: id.value, state.busy, a) } }
 }
 
@@ -176,10 +184,12 @@ private fun JobRow(job: Job, state: JobsUi, onEdit: (() -> Unit)?, menu: (@Compo
 
 /**
  * A row's ⋮ button and its menu, as the drawer's row menu and Desktop's sidebar: Run now while offered (F1), Pause for
- * a job that could still fire, Resume for a paused one (V5), Delete always. The controller checks each again.
+ * a job that could still fire, Resume for a paused one (V5), Past runs for every job with [onRuns] (V8), Delete always.
+ * The controller checks each again.
  */
 @Composable
-private fun JobMenu(job: Job, state: JobsUi, open: Boolean, onOpen: () -> Unit, onDismiss: () -> Unit, actions: JobRowActions) {
+private fun JobMenu(job: Job, state: JobsUi, open: Boolean, onOpen: () -> Unit, onDismiss: () -> Unit, actions: JobRowActions,
+                    onRuns: (() -> Unit)?) {
     val id = job.id.value
     Box(Modifier.padding(top = 4.dp)) {
         IconButton(onOpen, Modifier.testTag("job-menu-$id"), enabled = !state.busy) {
@@ -190,6 +200,7 @@ private fun JobMenu(job: Job, state: JobsUi, open: Boolean, onOpen: () -> Unit, 
             if (state.offersRunNow(job)) MenuItem("job-run-now", R.string.job_run_now, HermesIcons.Bolt) { onDismiss(); actions.runNow(job.id) }
             if (job.firing) MenuItem("job-pause", R.string.job_pause, HermesIcons.Pause) { onDismiss(); actions.pause(job.id) }
             if (job.state == JobState.PAUSED) MenuItem("job-resume", R.string.job_resume, HermesIcons.Play) { onDismiss(); actions.resume(job.id) }
+            if (onRuns != null) MenuItem("job-runs", R.string.job_runs, HermesIcons.History) { onDismiss(); onRuns() }
             MenuItem("job-delete", R.string.job_delete, HermesIcons.Trash, MaterialTheme.colorScheme.error) { onDismiss(); actions.askDelete(job.id) }
         }
     }

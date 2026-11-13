@@ -52,6 +52,7 @@ import com.nousresearch.hermes.android.gateway.TelegramSetup
 import com.nousresearch.hermes.android.jobs.JobActions
 import com.nousresearch.hermes.android.jobs.JobFormActions
 import com.nousresearch.hermes.android.jobs.JobRowActions
+import com.nousresearch.hermes.android.jobs.JobRunsActions
 import com.nousresearch.hermes.android.jobs.JobsControl
 import com.nousresearch.hermes.android.jobs.JobsScreen
 import com.nousresearch.hermes.android.jobs.JobsUi
@@ -213,7 +214,8 @@ class MainActivity : ComponentActivity() {
                                         form = JobFormActions(save = { f -> app.jobs { save(f) } }, cancel = jobs::cancelForm),
                                         row = JobRowActions(pause = { id -> app.jobs { pause(id) } }, resume = { id -> app.jobs { resume(id) } },
                                                             runNow = { id -> app.jobs { runNow(id) } }, askDelete = jobs::askDelete,
-                                                            confirmDelete = { app.jobs { confirmDelete() } })))
+                                                            confirmDelete = { app.jobs { confirmDelete() } }),
+                                        runs = JobRunsActions(show = { id -> app.jobs { showRuns(id) } }, open = { run -> app.jobs { openRun(run) } })))
     }
 
     /** Text onto the clipboard: the SSH public key for the host's authorized_keys, or what the user copied in the chat (F10). */
