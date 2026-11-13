@@ -2,6 +2,7 @@ package com.nousresearch.hermes.android.jobs
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,6 +14,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,22 +31,34 @@ import com.nousresearch.hermes.android.ui.Hint
 import com.nousresearch.hermes.android.ui.Page
 import com.nousresearch.hermes.android.ui.PrimaryButton
 
+/** What the page does with a job (automation-02, -06): make a [newJob], [edit] the one tapped, and the [form] sheet's actions. */
+class JobActions(val newJob: () -> Unit, val edit: (JobId) -> Unit, val form: JobFormActions)
+
 /**
  * The Scheduled jobs page (automation-01, automation-10): why the jobs will not run, when they will not, then every
  * job the core holds with its schedule, state, next and last run and last error. [onOpenGateway] opens the Gateway
- * page over this one; the rows take no tap yet.
+ * page over this one. With [actions], a tap opens the job's form and New job makes one, in a sheet over the page.
  */
 @Composable
-fun JobsScreen(state: JobsUi, onOpenGateway: () -> Unit, onClose: () -> Unit, modifier: Modifier = Modifier) {
-    Page(stringResource(R.string.jobs_title), modifier.testTag("jobs"), onBack = onClose, backTag = "jobs-close", busy = state.busy) {
+fun JobsScreen(state: JobsUi, onOpenGateway: () -> Unit, onClose: () -> Unit, modifier: Modifier = Modifier,
+               actions: JobActions? = null) {
+    Page(stringResource(R.string.jobs_title), modifier.testTag("jobs"), onBack = onClose, backTag = "jobs-close", busy = state.busy,
+         action = actions?.let { a ->
+             {
+                 TextButton(a.newJob, Modifier.testTag("jobs-new"), enabled = !state.busy) { Text(stringResource(R.string.jobs_new)) }
+             }
+         }) {
         state.warning?.let { Warning(it, onOpenGateway) }
         Hint(stringResource(R.string.jobs_explain))
         state.error?.let { Hint(it, Modifier.padding(top = 12.dp).testTag("jobs-error"), color = MaterialTheme.colorScheme.error) }
         if (!state.busy && state.jobs.isEmpty() && state.error == null) {
             Hint(stringResource(R.string.jobs_empty), Modifier.padding(top = 12.dp).testTag("jobs-empty"))
         }
-        Column(Modifier.padding(top = 8.dp)) { state.jobs.forEach { JobRow(it) } }
+        Column(Modifier.padding(top = 8.dp)) {
+            state.jobs.forEach { job -> JobRow(job, enabled = !state.busy, onEdit = actions?.let { a -> { a.edit(job.id) } }) }
+        }
     }
+    if (actions != null) state.form?.let { JobFormSheet(state, it, actions.form) }
 }
 
 /** The banner: the gateway is off (with the way to turn it on), starting, or its ticker has stopped stamping. */
@@ -77,13 +91,14 @@ private fun Warning(warning: JobsWarning, onOpenGateway: () -> Unit) {
     }
 }
 
-/** One job, as the core lists it; not tappable yet (its actions come with J7). */
+/** One job, as the core lists it; with [onEdit], a tap opens its form (V10; J7's actions come beside it). */
 @Composable
-private fun JobRow(job: Job) {
+private fun JobRow(job: Job, enabled: Boolean, onEdit: (() -> Unit)?) {
     val id = job.id.value
     val quiet = MaterialTheme.colorScheme.onSurfaceVariant
+    val tap = onEdit?.let { Modifier.clickable(enabled = enabled, onClickLabel = stringResource(R.string.job_form_edit), onClick = it) } ?: Modifier
     Column(Modifier.fillMaxWidth().testTag("job-$id")) {
-        Column(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(Modifier.fillMaxWidth().then(tap).padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(job.name, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 val (label, tone) = when (job.state) {

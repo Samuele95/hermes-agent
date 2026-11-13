@@ -49,6 +49,8 @@ import com.nousresearch.hermes.android.chat.SessionActions
 import com.nousresearch.hermes.android.gateway.GatewayScreen
 import com.nousresearch.hermes.android.gateway.GatewayUi
 import com.nousresearch.hermes.android.gateway.TelegramSetup
+import com.nousresearch.hermes.android.jobs.JobActions
+import com.nousresearch.hermes.android.jobs.JobFormActions
 import com.nousresearch.hermes.android.jobs.JobsControl
 import com.nousresearch.hermes.android.jobs.JobsScreen
 import com.nousresearch.hermes.android.jobs.JobsUi
@@ -205,7 +207,9 @@ class MainActivity : ComponentActivity() {
                 delay(30_000)
             }
         }
-        JobsScreen(ui, onOpenGateway = app::openGateway, onClose = jobs::close)
+        JobsScreen(ui, onOpenGateway = app::openGateway, onClose = jobs::close,
+                   actions = JobActions(newJob = { app.jobs { newJob() } }, edit = { id -> app.jobs { edit(id) } },
+                                        form = JobFormActions(save = { f -> app.jobs { save(f) } }, cancel = jobs::cancelForm)))
     }
 
     /** Text onto the clipboard: the SSH public key for the host's authorized_keys, or what the user copied in the chat (F10). */

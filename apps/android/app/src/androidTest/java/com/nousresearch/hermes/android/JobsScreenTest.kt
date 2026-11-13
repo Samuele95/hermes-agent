@@ -12,6 +12,8 @@ import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.nousresearch.hermes.android.gateway.GatewayStatus
 import com.nousresearch.hermes.android.jobs.Job
+import com.nousresearch.hermes.android.jobs.JobActions
+import com.nousresearch.hermes.android.jobs.JobFormActions
 import com.nousresearch.hermes.android.jobs.JobId
 import com.nousresearch.hermes.android.jobs.JobState
 import com.nousresearch.hermes.android.jobs.JobsScreen
@@ -109,6 +111,27 @@ class JobsScreenTest {
 
         compose.onNodeWithTag("jobs-error").assertTextEquals("cron store unreadable")
         compose.onNodeWithTag("jobs-empty").assertDoesNotExist()
+    }
+
+    @Test
+    fun newJobAndATapOnARowAreTheFormsWaysIn() {
+        compose.setContent {
+            JobsScreen(JobsUi(listOf(news)), onOpenGateway = {}, onClose = {},
+                       actions = JobActions(newJob = { calls += "new" }, edit = { calls += "edit:${it.value}" },
+                                            form = JobFormActions(save = {}, cancel = {})))
+        }
+
+        compose.onNodeWithTag("jobs-new").performClick()
+        compose.onNodeWithTag("job-a1b2").performClick()
+
+        assertEquals(listOf("new", "edit:a1b2"), calls)
+    }
+
+    @Test
+    fun withoutActionsThereIsNoNewJob() {
+        show(JobsUi(listOf(news)))
+
+        compose.onNodeWithTag("jobs-new").assertDoesNotExist()
     }
 
     @Test
