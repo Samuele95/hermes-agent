@@ -80,6 +80,7 @@ import com.nousresearch.hermes.android.R
 import com.nousresearch.hermes.android.ui.CodeFont
 import com.nousresearch.hermes.android.ui.Hermes
 import com.nousresearch.hermes.android.ui.HermesIcons
+import com.nousresearch.hermes.android.ui.SecondaryButton
 import com.nousresearch.hermes.android.ui.Wordmark
 import com.nousresearch.hermes.bridge.protocol.TurnStatus
 import kotlinx.coroutines.delay
@@ -97,8 +98,8 @@ class ChatPlaces(val setup: (() -> Unit)? = null, val terminal: (() -> Unit)? = 
  * bubbles, the composer at the bottom naming the model, and a drawer with the sessions and the app's other places.
  * It holds only the draft; [onSend] gets the trimmed text, [onRetry] runs the last prompt again. [onSessions] hears the drawer open (load the sessions)
  * and close; [sessionActions] is the rows' menu (rename, delete). [contextActions] opens the context sheet from the meter,
- * compresses and closes it; [context] is that sheet while it is open. [places] are where the drawer, the top bar and the
- * model pill lead. The transcript follows a streaming reply only while the reader is at its end;
+ * compresses and closes it; [context] is that sheet while it is open. [places] are where the drawer, the top bar, the
+ * model pill and a notice's shortcut lead. The transcript follows a streaming reply only while the reader is at its end;
  * Jump brings it back (chat-17). [onCopy] puts an answer, one of the user's messages or a code block on the clipboard
  * (chat-09, chat-10); without it nothing offers Copy.
  */
@@ -135,7 +136,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
         Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).safeDrawingPadding()) {
             TopBar(onMenu = if (hasDrawer) ({ scope.launch { drawer.open() } }) else null, places?.newChat)
             if (chat.entries.isEmpty() && !chat.running && chat.prompts.isEmpty()) Intro(Modifier.weight(1f))
-            else Transcript(chat, onRetry, onCopy, picked, Modifier.weight(1f))
+            else Transcript(chat, onRetry, onCopy, picked, places?.gateway, Modifier.weight(1f))
             // One question at a time, the oldest first: the turn waits on it.
             if (answers != null) chat.prompts.firstOrNull()?.let { PromptCard(it, answers) }
             // The agent's plan while it works through it (D1: a turn that ended leaves no stale plan pinned).
@@ -176,7 +177,8 @@ private fun Intro(modifier: Modifier) {
 }
 
 @Composable
-private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, onCopy: ((String) -> Unit)?, picked: Int, modifier: Modifier) {
+private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, onCopy: ((String) -> Unit)?, picked: Int, onGateway: (() -> Unit)?,
+                       modifier: Modifier) {
     val list = rememberLazyListState()
     // chat-17 (F9, DC-B16): whether the list follows its newest row belongs to the view, never to the conversation.
     var following by rememberSaveable { mutableStateOf(true) }
@@ -201,7 +203,7 @@ private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, onCopy: ((String) -> 
             // The last answer carries Retry in its own action row, beside Copy (F10); after a turn that ended in a notice or a
             // tool row, Retry stands alone in words, as before.
             itemsIndexed(chat.entries) { i, entry ->
-                EntryRow(entry, onCopy, retry.takeIf { i == chat.entries.lastIndex && entry is Entry.Reply })
+                EntryRow(entry, onCopy, retry.takeIf { i == chat.entries.lastIndex && entry is Entry.Reply }, onGateway)
             }
             retry?.takeIf { chat.entries.last() !is Entry.Reply }?.let { item { RetryAction(failed = true, it) } }
             chat.reasoning?.takeIf { chat.running && it.isNotBlank() }?.let { text -> item { Reasoning(text, Modifier.testTag("reasoning-streaming")) } }
@@ -286,7 +288,7 @@ private fun JumpToLatest(modifier: Modifier, onClick: () -> Unit) {
 }
 
 @Composable
-private fun EntryRow(entry: Entry, onCopy: ((String) -> Unit)?, retry: (() -> Unit)?) {
+private fun EntryRow(entry: Entry, onCopy: ((String) -> Unit)?, retry: (() -> Unit)?, onGateway: (() -> Unit)?) {
     when (entry) {
         is Entry.User -> UserBubble(entry.text, onCopy)
         is Entry.Reply -> Column(Modifier.fillMaxWidth().testTag("entry-reply")) {
@@ -310,7 +312,13 @@ private fun EntryRow(entry: Entry, onCopy: ((String) -> Unit)?, retry: (() -> Un
         // Commentary reads like the agent's words, without the reply's reasoning fold (and, later, its actions).
         is Entry.Interim -> Column(Modifier.fillMaxWidth().testTag("entry-interim")) { Reply(entry.text, onCopy) }
         is Entry.Tool -> ToolRow(entry)
-        is Entry.Notice -> Problem(entry.text, Modifier.testTag("entry-notice"))
+        is Entry.Notice -> Column(Modifier.fillMaxWidth().testTag("entry-notice"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Problem(entry.text)
+            // The way to turn the gateway on (D39 F11), when the chat has one; the words name the drawer path either way.
+            if (entry.opens == NoticeShortcut.GATEWAY) onGateway?.let {
+                SecondaryButton(stringResource(R.string.jobs_turn_on), it, Modifier.testTag("notice-open-gateway"))
+            }
+        }
     }
 }
 

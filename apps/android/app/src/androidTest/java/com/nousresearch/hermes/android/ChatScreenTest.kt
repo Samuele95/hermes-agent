@@ -2,6 +2,8 @@ package com.nousresearch.hermes.android
 
 import android.accessibilityservice.AccessibilityService
 import androidx.compose.ui.test.assertHasClickAction
+import androidx.compose.ui.test.assertIsNotDisplayed
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.performScrollTo
@@ -39,6 +41,8 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.nousresearch.hermes.android.chat.Chat
 import com.nousresearch.hermes.android.chat.ChatScreen
+import com.nousresearch.hermes.android.chat.ChatSession
+import com.nousresearch.hermes.android.chat.NoticeShortcut
 import com.nousresearch.hermes.android.chat.Entry
 import com.nousresearch.hermes.android.chat.ContextMeter
 import com.nousresearch.hermes.android.chat.Todo
@@ -680,5 +684,39 @@ class ChatScreenTest {
 
         compose.onNodeWithTag("copy-reply").performClick()
         assertEquals(listOf("val x = \"hi\" // note", kotlinReply.text), copies)
+    }
+
+    @Test
+    fun theJobNoticeOpensTheGatewayPage() {
+        val went = mutableListOf<String>()
+        compose.setContent {
+            ChatScreen(Chat(listOf(Entry.User("every morning at 8, summarise the news"), Entry.Tool("t1", "cronjob_manage", done = true),
+                                   Entry.Notice(ChatSession.JOBS_NEED_GATEWAY, NoticeShortcut.GATEWAY))),
+                       onSend = {}, places = ChatPlaces(gateway = { went += "gateway" }))
+        }
+
+        compose.onNodeWithText(ChatSession.JOBS_NEED_GATEWAY).assertIsDisplayed()
+        compose.onNodeWithTag("notice-open-gateway").assertIsDisplayed().assertTextEquals("Turn on the gateway").performClick()
+
+        assertEquals(listOf("gateway"), went)
+        compose.onNodeWithTag("open-gateway").assertIsNotDisplayed()  // straight to the page, the drawer left closed
+    }
+
+    @Test
+    fun aNoticeOffersOnlyTheWayItNames() {
+        var chat by mutableStateOf(Chat(listOf(Entry.Notice("session busy"))))
+        var places by mutableStateOf<ChatPlaces?>(ChatPlaces(gateway = {}))
+        compose.setContent { ChatScreen(chat, onSend = {}, places = places) }
+
+        compose.onNodeWithText("session busy").assertIsDisplayed()
+        compose.onNodeWithTag("notice-open-gateway").assertDoesNotExist()  // a plain notice is words only
+
+        places = null
+        chat = Chat(listOf(Entry.Notice(ChatSession.JOBS_NEED_GATEWAY, NoticeShortcut.GATEWAY)))
+        compose.onNodeWithText("drawer → Gateway", substring = true).assertIsDisplayed()  // no place: the words name the way
+        compose.onNodeWithTag("notice-open-gateway").assertDoesNotExist()
+
+        places = ChatPlaces(gateway = {})
+        compose.onNodeWithTag("notice-open-gateway").assertIsDisplayed()
     }
 }
