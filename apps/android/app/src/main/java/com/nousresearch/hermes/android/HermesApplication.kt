@@ -207,9 +207,10 @@ class HermesApplication : Application() {
     private suspend fun start(): CoreState.Ready {
         val began = SystemClock.elapsedRealtime()
         val paths = withContext(Dispatchers.IO) { installRuntime(this@HermesApplication) }
-        val ready = composeCore(runtime, paths, secrets, ForegroundTurnHost(this), notifier, scope,
-                                PrefsKeyNames(getSharedPreferences("provider_keys", MODE_PRIVATE)),
-                                subnet = { wifiSubnet(this@HermesApplication) }, seen = seen)
+        val deps = CoreDeps(secrets, ForegroundTurnHost(this), notifier,
+                            keyNames = PrefsKeyNames(getSharedPreferences("provider_keys", MODE_PRIVATE)),
+                            subnet = { wifiSubnet(this@HermesApplication) }, seen = seen)
+        val ready = composeCore(runtime, paths, deps, scope)
         return ready.copy(about = "${ready.about} · ready in ${SystemClock.elapsedRealtime() - began} ms")
     }
 }

@@ -1,7 +1,10 @@
 package com.nousresearch.hermes.android
 
+import com.nousresearch.hermes.android.chat.ChatSession
 import com.nousresearch.hermes.android.chat.ContextUi
+import com.nousresearch.hermes.android.chat.Entry
 import com.nousresearch.hermes.android.chat.FakeCoreGateway
+import com.nousresearch.hermes.android.chat.NoticeShortcut
 import com.nousresearch.hermes.android.chat.Notifier
 import com.nousresearch.hermes.android.chat.RuntimeSessionId
 import com.nousresearch.hermes.android.chat.StoredSessionId
@@ -80,11 +83,13 @@ class CoreCompositionTest {
         override fun begin(turn: String) {}
         override fun end(turn: String) {}
     }
+    /** The platform's collaborators every composition starts from (after [secrets] and [turns]: properties initialise in order). */
+    private val deps = CoreDeps(secrets, turns, Notifier.None)
     private val paths = File("/data/app-files").let { HermesPaths(File(it, "runtime"), it, File(it, ".hermes"), File(it, "cache")) }
 
     @Test
     fun theComposedCoreHasOpenedTheChatsSessionAndSaysWhatRuns() = runTest(UnconfinedTestDispatcher()) {
-        val ready = composeCore(runtime, paths, secrets, turns, Notifier.None, backgroundScope)
+        val ready = composeCore(runtime, paths, deps, backgroundScope)
 
         assertEquals(listOf(paths), runtime.connected)
         assertEquals("android", core.calls.first { it.first == "session.create" }.second.getValue("source").jsonPrimitive.content)
@@ -96,14 +101,14 @@ class CoreCompositionTest {
     fun aCoreWithoutAProviderShowsSetupFirst() = runTest(UnconfinedTestDispatcher()) {
         configured = false
 
-        val ready = composeCore(runtime, paths, secrets, turns, Notifier.None, backgroundScope)
+        val ready = composeCore(runtime, paths, deps, backgroundScope)
 
         assertNotNull(ready.setup.state.value)
     }
 
     @Test
     fun aConfiguredCoreGoesStraightToTheChat() = runTest(UnconfinedTestDispatcher()) {
-        val ready = composeCore(runtime, paths, secrets, turns, Notifier.None, backgroundScope)
+        val ready = composeCore(runtime, paths, deps, backgroundScope)
 
         assertNull(ready.setup.state.value)
     }
@@ -112,7 +117,7 @@ class CoreCompositionTest {
     fun theComposedChatReopensTheCoresMostRecentConversation() = runTest(UnconfinedTestDispatcher()) {
         recent = "db-last"
 
-        val ready = composeCore(runtime, paths, secrets, turns, Notifier.None, backgroundScope)
+        val ready = composeCore(runtime, paths, deps, backgroundScope)
 
         assertEquals(RuntimeSessionId("s-last"), ready.chat.sessionId)
         assertFalse(core.calls.any { it.first == "session.create" })
@@ -124,7 +129,7 @@ class CoreCompositionTest {
         recent = "db-last"
         resumeReply = { """{"session_id":"s-last","message_count":1,"messages":[{"kind":"user"}],"info":{}}""" }  // no role: undecodable
 
-        val ready = composeCore(runtime, paths, secrets, turns, Notifier.None, backgroundScope)
+        val ready = composeCore(runtime, paths, deps, backgroundScope)
 
         assertEquals(RuntimeSessionId("s1"), ready.chat.sessionId)
         assertTrue(core.calls.any { it.first == "session.create" })
@@ -132,7 +137,7 @@ class CoreCompositionTest {
 
     @Test
     fun theContextPanelReadsTheChatsSession() = runTest(UnconfinedTestDispatcher()) {
-        val ready = composeCore(runtime, paths, secrets, turns, Notifier.None, backgroundScope)
+        val ready = composeCore(runtime, paths, deps, backgroundScope)
 
         ready.context.open()
 
@@ -144,8 +149,7 @@ class CoreCompositionTest {
 
     @Test
     fun theJobsPageIsClosedUntilOpenedAndSeesTheGatewayItIsGiven() = runTest(UnconfinedTestDispatcher()) {
-        val ready = composeCore(runtime, paths, secrets, turns, Notifier.None, backgroundScope,
-                                seen = { GatewaySeen(GatewayStatus.FAILED, "x") })
+        val ready = composeCore(runtime, paths, deps.copy(seen = { GatewaySeen(GatewayStatus.FAILED, "x") }), backgroundScope)
 
         assertNull(ready.jobs.state.value)
         assertFalse(core.calls.any { it.first == "cron.manage" })  // composing lists nothing
@@ -158,7 +162,7 @@ class CoreCompositionTest {
 
     @Test
     fun aJobsRunOpensInTheComposedChat() = runTest(UnconfinedTestDispatcher()) {
-        val ready = composeCore(runtime, paths, secrets, turns, Notifier.None, backgroundScope)
+        val ready = composeCore(runtime, paths, deps, backgroundScope)
 
         ready.jobs.open()
         ready.jobs.showRuns(JobId("j1"))
@@ -172,7 +176,7 @@ class CoreCompositionTest {
 
     @Test
     fun aRunTheComposedChatCannotOpenKeepsTheJobsPage() = runTest(UnconfinedTestDispatcher()) {
-        val ready = composeCore(runtime, paths, secrets, turns, Notifier.None, backgroundScope)
+        val ready = composeCore(runtime, paths, deps, backgroundScope)
         resumeReply = { """{"session_id":"s-last","message_count":1,"messages":[{"kind":"user"}],"info":{}}""" }  // no role: undecodable
 
         ready.jobs.open()
@@ -186,20 +190,51 @@ class CoreCompositionTest {
 
     @Test
     fun theBotIsJudgedAgainstTheGatewayTheCompositionIsGiven() = runTest(UnconfinedTestDispatcher()) {
-        val ready = composeCore(runtime, paths, secrets, turns, Notifier.None, backgroundScope,
-                                seen = { GatewaySeen(GatewayStatus.RUNNING, pid = 7) })
+        val ready = composeCore(runtime, paths, deps.copy(seen = { GatewaySeen(GatewayStatus.RUNNING, pid = 7) }), backgroundScope)
 
         ready.telegram.open()
 
         assertEquals(PlatformState.CONNECTED, ready.telegram.state.value?.live?.state)
 
-        val other = composeCore(runtime, paths, secrets, turns, Notifier.None, backgroundScope,
-                                seen = { GatewaySeen(GatewayStatus.RUNNING, pid = 8) })
+        val other = composeCore(runtime, paths, deps.copy(seen = { GatewaySeen(GatewayStatus.RUNNING, pid = 8) }), backgroundScope)
 
         other.telegram.open()
 
         assertEquals("the entry is pid 7's, the gateway given is pid 8", PlatformState.PENDING_RESTART,
                      other.telegram.state.value?.live?.state)
+    }
+
+    @Test
+    fun aCompositionGivenNoGatewaySeesItStopped() = runTest(UnconfinedTestDispatcher()) {
+        val ready = composeCore(runtime, paths, deps, backgroundScope)  // deps names no gateway
+
+        ready.jobs.open()
+
+        // Left out, the gateway is seen stopped (today's default), never running: the page warns.
+        assertEquals(JobsWarning.GatewayOff(GatewayStatus.STOPPED), ready.jobs.state.value?.warning)
+    }
+
+    @Test
+    fun theChatJudgesAJobTheAgentSchedulesByTheGatewayItIsGiven() = runTest(UnconfinedTestDispatcher()) {
+        var now = GatewaySeen(GatewayStatus.RUNNING)
+        val ready = composeCore(runtime, paths, deps.copy(seen = { now }), backgroundScope)
+
+        scheduled("t1")
+
+        assertTrue(ready.chat.state.value.entries.toString(), ready.chat.state.value.entries.none { it is Entry.Notice })
+
+        now = GatewaySeen(GatewayStatus.STOPPED)
+        scheduled("t2")
+
+        assertEquals(listOf(Entry.Notice(ChatSession.JOBS_NEED_GATEWAY, NoticeShortcut.GATEWAY)),
+                     ready.chat.state.value.entries.filterIsInstance<Entry.Notice>())
+    }
+
+    /** The agent schedules a job in the composed chat's session `s1` (the job tool's create, answered `success`). */
+    private suspend fun scheduled(id: String) {
+        core.emit("tool.start", "s1", """{"tool_id":"$id","name":"cronjob_manage"}""")
+        core.emit("tool.complete", "s1", """{"tool_id":"$id","name":"cronjob_manage","summary":"Scheduled the job",
+            "args":{"action":"create","schedule":"every 2m","prompt":"Say tick."},"result":{"success":true,"job_id":"ab12"}}""")
     }
 
     private companion object {

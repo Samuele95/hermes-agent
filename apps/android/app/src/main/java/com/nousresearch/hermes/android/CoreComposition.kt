@@ -35,33 +35,42 @@ fun installRuntime(context: Context): HermesPaths {
 }
 
 /**
+ * What the platform hands the chat process's core (D39 F12): the keystore [secrets], the [turns] host that keeps a
+ * running turn alive, the [notifier] for a question or reply while the app is off screen, the provider [keyNames],
+ * the phone's Wi-Fi [subnet] for the endpoint search, and [seen], the app's own observation of the always-on gateway:
+ * the one value the chat, the jobs page and the bot's live state all judge it by (§3.1). A field left out is today's
+ * default: names kept in memory, no subnet, a stopped gateway. Its lambdas compare by identity, so two values are
+ * never compared.
+ */
+data class CoreDeps(val secrets: SecretStore, val turns: TurnHost, val notifier: Notifier,
+                    val keyNames: KeyNames = KeyNames.InMemory(),
+                    val subnet: suspend () -> String? = { null },
+                    val seen: () -> GatewaySeen = { GatewaySeen(GatewayStatus.STOPPED) })
+
+/**
  * The chat process's composition root: starts [runtime]'s core and builds what the screens drive over it. The
  * chat is in the core's most recent conversation on return (a new one when there is none, or the core's setting says
- * not to reopen), and setup is showing already when the core has no provider yet. [subnet] names the
- * phone's Wi-Fi network for the endpoint search; [seen] is the app's own observation of the always-on gateway,
- * which the jobs page judges its warning from, and the bot's live state is judged against, and the chat says once
- * when the agent schedules a job it will not fire.
+ * not to reopen), and setup is showing already when the core has no provider yet. [deps] are the platform's
+ * collaborators; its [CoreDeps.seen] reaches every reader of the gateway's state.
  */
-suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, secrets: SecretStore, turns: TurnHost,
-                        notifier: Notifier, scope: CoroutineScope, keyNames: KeyNames = KeyNames.InMemory(),
-                        subnet: suspend () -> String? = { null },
-                        seen: () -> GatewaySeen = { GatewaySeen(GatewayStatus.STOPPED) }): CoreState.Ready {
-    val gateway = runtime.connect(paths, secrets)
+suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps, scope: CoroutineScope): CoreState.Ready {
+    val gateway = runtime.connect(paths, deps.secrets)
     val bridge = runtime.bridge
     val keepSecret: suspend (String, ByteArray) -> Unit = { name, value ->
-        secrets.put(name, value)
+        deps.secrets.put(name, value)
         bridge.secretsChanged()
     }
-    val chat = ChatSession(gateway, turns, scope, keepSecret, notifier, gatewaySeen = seen).apply { start() }
-    val setup = ProviderSetup(gateway, secrets, bridge, session = { chat.sessionId.value }, reopenChat = chat::open, keyNames = keyNames,
-                              subnet = subnet)
+    val chat = ChatSession(gateway, deps.turns, scope, keepSecret, deps.notifier, gatewaySeen = deps.seen).apply { start() }
+    val setup = ProviderSetup(gateway, deps.secrets, bridge, session = { chat.sessionId.value }, reopenChat = chat::open,
+                              keyNames = deps.keyNames, subnet = deps.subnet)
     val history = SessionHistory(list = chat::pastSessions, resume = chat::resume, rename = chat::rename, delete = chat::delete)
     val context = ContextPanel(meter = { chat.state.value.meter }, breakdown = chat::breakdown, compress = chat::compress, compressing = { chat.state.value.compressing })
     // Undispatched: setup is showing before the core is Ready, so the chat never flashes first.
     if (setup.needed()) scope.launch(start = CoroutineStart.UNDISPATCHED) { setup.open() }
     val facts = bridge.ask(BridgeCalls.RUNTIME_FACTS)
     val fts = if (facts.fts5) "with FTS5" else "without FTS5"
-    return CoreState.Ready(gateway, chat, setup, SshSetup(secrets, bridge), TelegramSetup(secrets, bridge, seen), history, context,
-                           ApprovalSettings(gateway), JobsControl(gateway, bridge, seen, resume = chat::resume),
+    return CoreState.Ready(gateway, chat, setup, SshSetup(deps.secrets, bridge),
+                           TelegramSetup(deps.secrets, bridge, deps.seen), history, context,
+                           ApprovalSettings(gateway), JobsControl(gateway, bridge, deps.seen, resume = chat::resume),
                            "Python ${facts.python} · SQLite ${facts.sqlite} $fts")
 }
