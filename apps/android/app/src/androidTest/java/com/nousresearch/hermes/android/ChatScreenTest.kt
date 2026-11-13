@@ -200,7 +200,7 @@ class ChatScreenTest {
         compose.setContent {
             ChatScreen(Chat(), onSend = {}, about = about,
                        places = ChatPlaces(setup = { went += "setup" }, terminal = { went += "ssh" }, gateway = { went += "gateway" },
-                                           settings = { went += "settings" }, newChat = { went += "new" }))
+                                           settings = { went += "settings" }, newChat = { went += "new" }, jobs = { went += "jobs" }))
         }
 
         compose.onNodeWithTag("open-drawer").performClick()
@@ -209,7 +209,7 @@ class ChatScreenTest {
         assertTrue("the runtime line is $height tall: a column of words, not one caption line", height <= 24.dp)
         compose.onNodeWithTag("drawer-new-chat").performClick()
         // Each link snaps the drawer closed, so the next one is reached through the menu again (its scrim covers the bar).
-        listOf("open-gateway", "open-ssh", "open-settings").forEach {
+        listOf("open-gateway", "open-jobs", "open-ssh", "open-settings").forEach {
             compose.onNodeWithTag("open-drawer").performClick()
             compose.onNodeWithTag(it).performClick()
             compose.waitForIdle()
@@ -217,7 +217,7 @@ class ChatScreenTest {
         compose.onNodeWithTag("new-chat").performClick()
         compose.onNodeWithTag("open-setup").performClick()
 
-        assertEquals(listOf("new", "gateway", "ssh", "settings", "new", "setup"), went)  // every link opens its own place
+        assertEquals(listOf("new", "gateway", "jobs", "ssh", "settings", "new", "setup"), went)  // every link opens its own place
     }
 
     @Test
@@ -231,7 +231,7 @@ class ChatScreenTest {
         places = ChatPlaces(gateway = {})
         compose.onNodeWithTag("open-drawer").assertExists().performClick()
         compose.onNodeWithTag("open-gateway").assertExists()
-        listOf("drawer-new-chat", "open-ssh", "open-settings", "new-chat", "open-setup").forEach { compose.onNodeWithTag(it).assertDoesNotExist() }
+        listOf("drawer-new-chat", "open-jobs", "open-ssh", "open-settings", "new-chat", "open-setup").forEach { compose.onNodeWithTag(it).assertDoesNotExist() }
     }
 
     @Test

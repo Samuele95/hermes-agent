@@ -5,7 +5,10 @@ import com.nousresearch.hermes.android.chat.ChatSession
 import com.nousresearch.hermes.android.chat.ContextPanel
 import com.nousresearch.hermes.android.chat.Notifier
 import com.nousresearch.hermes.android.chat.SessionHistory
+import com.nousresearch.hermes.android.gateway.GatewaySeen
+import com.nousresearch.hermes.android.gateway.GatewayStatus
 import com.nousresearch.hermes.android.gateway.TelegramSetup
+import com.nousresearch.hermes.android.jobs.JobsControl
 import com.nousresearch.hermes.android.setup.ApprovalSettings
 import com.nousresearch.hermes.android.setup.KeyNames
 import com.nousresearch.hermes.android.setup.ProviderSetup
@@ -35,11 +38,13 @@ fun installRuntime(context: Context): HermesPaths {
  * The chat process's composition root: starts [runtime]'s core and builds what the screens drive over it. The
  * chat is in the core's most recent conversation on return (a new one when there is none, or the core's setting says
  * not to reopen), and setup is showing already when the core has no provider yet. [subnet] names the
- * phone's Wi-Fi network for the endpoint search.
+ * phone's Wi-Fi network for the endpoint search; [seen] is the app's own observation of the always-on gateway,
+ * which the jobs page judges its warning from.
  */
 suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, secrets: SecretStore, turns: TurnHost,
                         notifier: Notifier, scope: CoroutineScope, keyNames: KeyNames = KeyNames.InMemory(),
-                        subnet: suspend () -> String? = { null }): CoreState.Ready {
+                        subnet: suspend () -> String? = { null },
+                        seen: () -> GatewaySeen = { GatewaySeen(GatewayStatus.STOPPED) }): CoreState.Ready {
     val gateway = runtime.connect(paths, secrets)
     val bridge = runtime.bridge
     val keepSecret: suspend (String, ByteArray) -> Unit = { name, value ->
@@ -56,5 +61,6 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, secrets: Secre
     val facts = bridge.ask(BridgeCalls.RUNTIME_FACTS)
     val fts = if (facts.fts5) "with FTS5" else "without FTS5"
     return CoreState.Ready(gateway, chat, setup, SshSetup(secrets, bridge), TelegramSetup(secrets, bridge), history, context,
-                           ApprovalSettings(gateway), "Python ${facts.python} · SQLite ${facts.sqlite} $fts")
+                           ApprovalSettings(gateway), JobsControl(gateway, bridge, seen),
+                           "Python ${facts.python} · SQLite ${facts.sqlite} $fts")
 }

@@ -30,6 +30,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.nousresearch.hermes.android.R
+import com.nousresearch.hermes.android.ui.Chevron
+import com.nousresearch.hermes.android.ui.ListRow
 import com.nousresearch.hermes.android.ui.SectionCaption
 import com.nousresearch.hermes.android.ui.PrimaryButton
 import com.nousresearch.hermes.android.ui.Page
@@ -38,13 +40,14 @@ import com.nousresearch.hermes.android.ui.Hermes
 
 /**
  * The optional always-on gateway (D12, D23): on/off from what runs, start at boot, and on Samsung phones
- * the system setting the app cannot change for the user ("Never sleeping apps").
+ * the system setting the app cannot change for the user ("Never sleeping apps"). [onJobs] leads to the jobs it
+ * runs (none when null).
  */
 @Composable
 fun GatewayScreen(state: GatewayUi, samsung: Boolean, onOn: () -> Unit, onOff: () -> Unit,
                   onStartAtBoot: (Boolean) -> Unit, onClose: () -> Unit, modifier: Modifier = Modifier,
                   telegram: TelegramState? = null, onTelegramSave: (ByteArray?, String) -> Unit = { _, _ -> },
-                  onRestart: () -> Unit = {}) {
+                  onRestart: () -> Unit = {}, onJobs: (() -> Unit)? = null) {
     Page(stringResource(R.string.gateway_screen_title), modifier.testTag("gateway"), onBack = onClose, backTag = "gateway-close") {
         Hint(stringResource(R.string.gateway_explain))
         val on = state.status in setOf(GatewayStatus.STARTING, GatewayStatus.RUNNING, GatewayStatus.RESTARTING)
@@ -79,6 +82,11 @@ fun GatewayScreen(state: GatewayUi, samsung: Boolean, onOn: () -> Unit, onOff: (
         Setting(stringResource(R.string.gateway_boot), state.startAtBoot, "gateway-boot", onStartAtBoot)
         Hint(stringResource(R.string.gateway_battery_hint), Modifier.padding(top = 12.dp))
         if (samsung) Hint(stringResource(R.string.gateway_samsung_hint), Modifier.padding(top = 8.dp).testTag("gateway-samsung-hint"))
+        onJobs?.let {
+            SectionCaption(stringResource(R.string.jobs_title), Modifier.padding(top = 12.dp))
+            ListRow(stringResource(R.string.gateway_jobs), Modifier.testTag("gateway-jobs"), detail = stringResource(R.string.gateway_jobs_detail),
+                    trailing = { Chevron() }, onClick = it)
+        }
         telegram?.let { TelegramSection(it, onTelegramSave) }
     }
 }

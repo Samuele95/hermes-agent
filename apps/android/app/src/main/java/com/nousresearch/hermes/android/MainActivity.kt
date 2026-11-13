@@ -49,6 +49,9 @@ import com.nousresearch.hermes.android.chat.SessionActions
 import com.nousresearch.hermes.android.gateway.GatewayScreen
 import com.nousresearch.hermes.android.gateway.GatewayUi
 import com.nousresearch.hermes.android.gateway.TelegramSetup
+import com.nousresearch.hermes.android.jobs.JobsControl
+import com.nousresearch.hermes.android.jobs.JobsScreen
+import com.nousresearch.hermes.android.jobs.JobsUi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -88,6 +91,11 @@ class MainActivity : ComponentActivity() {
                                 GatewayPanel(it, app, state.telegram)
                                 return@Surface
                             }
+                            val jobs by state.jobs.state.collectAsState()
+                            jobs?.let {
+                                JobsPanel(it, app, state.jobs)
+                                return@Surface
+                            }
                             ssh?.let {
                                 SshScreen(it, onLook = { target -> app.ssh { look(target) } }, onTrust = { app.ssh { trust() } },
                                           onCheck = { app.ssh { checkLogin() } }, onCopy = { copy("SSH public key", it) }, onClose = state.ssh::close,
@@ -111,7 +119,8 @@ class MainActivity : ComponentActivity() {
                                                         clarify = { p, given -> app.chat { clarify(p, given) } },
                                                         secret = { p, value -> app.chat { secret(p, value) } })
                             val places = ChatPlaces(setup = { app.setup { open() } }, terminal = { app.ssh { open() } }, gateway = app::openGateway,
-                                                    settings = { app.settings { open() } }, newChat = { app.chat { open() } })
+                                                    settings = { app.settings { open() } }, newChat = { app.chat { open() } },
+                                                    jobs = { app.jobs { open() } })
                             val contextActions = ContextActions(open = { app.context { open() } }, compress = { focus -> app.context { compress(focus) } },
                                                                 close = state.context::close)
                             ChatScreen(chat, about = state.about, answers = answers, places = places, onStop = { app.chat { cancel() } },
@@ -181,7 +190,22 @@ class MainActivity : ComponentActivity() {
                       onOff = app.gateway::turnOff, onStartAtBoot = app.gateway::setStartAtBoot,
                       onClose = { telegram.close(); app.gateway.close() },
                       telegram = bot, onTelegramSave = { token, user -> app.telegram { save(token, user) } },
-                      onRestart = app::restartGateway)
+                      onRestart = app::restartGateway,
+                      // Jobs sits under the Gateway page in the chain: this page closes for it to show (V8).
+                      onJobs = { telegram.close(); app.gateway.close(); app.jobs { open() } })
+    }
+
+    /** The jobs page, kept current while it shows: each `cron.changed`, and every 30 s for the ticker's age (DC-J16). */
+    @Composable
+    private fun JobsPanel(ui: JobsUi, app: HermesApplication, jobs: JobsControl) {
+        LaunchedEffect(Unit) { withContext(Dispatchers.IO) { jobs.follow() } }
+        LaunchedEffect(Unit) {
+            while (true) {
+                withContext(Dispatchers.IO) { jobs.refresh() }  // first on entry: back from the Gateway page (V9)
+                delay(30_000)
+            }
+        }
+        JobsScreen(ui, onOpenGateway = app::openGateway, onClose = jobs::close)
     }
 
     /** Text onto the clipboard: the SSH public key for the host's authorized_keys, or what the user copied in the chat (F10). */

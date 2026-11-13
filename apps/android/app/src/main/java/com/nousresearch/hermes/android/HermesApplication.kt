@@ -11,11 +11,13 @@ import com.nousresearch.hermes.android.chat.ChatSession
 import com.nousresearch.hermes.android.chat.ContextPanel
 import com.nousresearch.hermes.android.chat.SessionHistory
 import com.nousresearch.hermes.android.gateway.GatewayControl
+import com.nousresearch.hermes.android.gateway.GatewaySeen
 import com.nousresearch.hermes.android.gateway.PrefsGatewaySettings
 import com.nousresearch.hermes.android.gateway.ServiceGatewayLauncher
 import com.nousresearch.hermes.android.gateway.TelegramSetup
 import com.nousresearch.hermes.android.gateway.batteryExempt
 import com.nousresearch.hermes.android.gateway.observeGateway
+import com.nousresearch.hermes.android.jobs.JobsControl
 import com.nousresearch.hermes.android.setup.ApprovalSettings
 import com.nousresearch.hermes.android.setup.PrefsKeyNames
 import com.nousresearch.hermes.android.setup.ProviderSetup
@@ -45,7 +47,7 @@ sealed interface CoreState {
 
     data class Ready(val gateway: CoreGateway, val chat: ChatSession, val setup: ProviderSetup, val ssh: SshSetup,
                      val telegram: TelegramSetup, val history: SessionHistory, val context: ContextPanel,
-                     val settings: ApprovalSettings, val about: String) : CoreState
+                     val settings: ApprovalSettings, val jobs: JobsControl, val about: String) : CoreState
 
     data class Failed(val reason: String) : CoreState
 }
@@ -90,10 +92,13 @@ class HermesApplication : Application() {
     /** Provider keys, wrapped by the app's AndroidKeyStore key; the core reads them as environment variables. */
     val secrets: SecretStore by lazy { KeystoreSecretStore(File(noBackupFilesDir, "secrets")) { KeystoreSecretStore.androidKey() } }
 
+    /** The always-on gateway as observed now, one value shared by its controls and the jobs page (D38, D39). */
+    private val seen: () -> GatewaySeen = { observeGateway(this) }
+
     /** The optional always-on gateway's controls; they need no core (the gateway runs in its own process). */
     val gateway: GatewayControl by lazy {
         GatewayControl(PrefsGatewaySettings(getSharedPreferences("gateway", MODE_PRIVATE)), ServiceGatewayLauncher(this),
-                       observe = { observeGateway(this) }, batteryExempt = { batteryExempt(this) })
+                       observe = seen, batteryExempt = { batteryExempt(this) })
     }
 
     /**
@@ -191,6 +196,11 @@ class HermesApplication : Application() {
         scope.launch { (state.value as? CoreState.Ready)?.telegram?.action() }
     }
 
+    /** Runs one jobs-page action on the app's scope, so it outlives the activity that asked for it. */
+    fun jobs(action: suspend JobsControl.() -> Unit) {
+        scope.launch { (state.value as? CoreState.Ready)?.jobs?.action() }
+    }
+
     /** The core this process embeds; the one adapter is [EmbeddedPython]. */
     private val runtime: CoreRuntime = EmbeddedPython
 
@@ -199,7 +209,7 @@ class HermesApplication : Application() {
         val paths = withContext(Dispatchers.IO) { installRuntime(this@HermesApplication) }
         val ready = composeCore(runtime, paths, secrets, ForegroundTurnHost(this), notifier, scope,
                                 PrefsKeyNames(getSharedPreferences("provider_keys", MODE_PRIVATE)),
-                                subnet = { wifiSubnet(this@HermesApplication) })
+                                subnet = { wifiSubnet(this@HermesApplication) }, seen = seen)
         return ready.copy(about = "${ready.about} · ready in ${SystemClock.elapsedRealtime() - began} ms")
     }
 }

@@ -1,5 +1,8 @@
 package com.nousresearch.hermes.android
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
@@ -31,14 +34,28 @@ class GatewayScreenTest {
 
     private val calls = mutableListOf<String>()
 
+    /** The way to the jobs page; none until a test gives one (read while composing, so a change shows at once). */
+    private var onJobs: (() -> Unit)? by mutableStateOf(null)
+
     private fun show(state: GatewayUi, samsung: Boolean = false, telegram: TelegramState? = null) = compose.setContent {
         GatewayScreen(state, samsung, onOn = { calls += "on" }, onOff = { calls += "off" },
                       onStartAtBoot = { calls += "boot $it" }, onClose = { calls += "close" },
                       telegram = telegram, onTelegramSave = { token, user -> calls += "telegram ${token?.decodeToString()} $user" },
-                      onRestart = { calls += "restart" })
+                      onRestart = { calls += "restart" }, onJobs = onJobs)
     }
 
     private val stopped = GatewayUi(GatewayStatus.STOPPED, startAtBoot = false)
+
+    @Test
+    fun theScheduledJobsRowOpensTheJobsPage() {
+        show(stopped, telegram = TelegramState())
+        compose.onNodeWithTag("gateway-jobs").assertDoesNotExist()  // no way there given: no row
+
+        onJobs = { calls += "jobs" }
+        compose.onNodeWithTag("gateway-jobs").performScrollTo().performClick()
+
+        assertEquals(listOf("jobs"), calls)
+    }
 
     @Test
     fun aNewBotIsSavedWithItsTokenAndTheAllowedUser() {

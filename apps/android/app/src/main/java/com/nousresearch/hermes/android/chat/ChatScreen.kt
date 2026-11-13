@@ -90,7 +90,7 @@ import kotlin.random.Random
 
 /** The places the chat leads to (the drawer's links, the top bar's new chat, the composer's model pill); a null one has no way there. */
 class ChatPlaces(val setup: (() -> Unit)? = null, val terminal: (() -> Unit)? = null, val gateway: (() -> Unit)? = null,
-                 val settings: (() -> Unit)? = null, val newChat: (() -> Unit)? = null)
+                 val settings: (() -> Unit)? = null, val newChat: (() -> Unit)? = null, val jobs: (() -> Unit)? = null)
 
 /**
  * A chat in the desktop's shape: the transcript is the page, replies flat across it and the user's words in
@@ -121,6 +121,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
     val links = listOfNotNull(
         places?.newChat?.let { DrawerLink(HermesIcons.NewChat, stringResource(R.string.chat_new), "drawer-new-chat", leaveTo(it)) },
         places?.gateway?.let { DrawerLink(HermesIcons.Gateway, stringResource(R.string.chat_gateway), "open-gateway", leaveTo(it)) },
+        places?.jobs?.let { DrawerLink(HermesIcons.Jobs, stringResource(R.string.chat_jobs), "open-jobs", leaveTo(it)) },
         places?.terminal?.let { DrawerLink(HermesIcons.Terminal, stringResource(R.string.chat_terminal), "open-ssh", leaveTo(it)) },
         places?.settings?.let { DrawerLink(HermesIcons.Settings, stringResource(R.string.chat_settings), "open-settings", leaveTo(it)) },
     )

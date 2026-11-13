@@ -4,6 +4,9 @@ import com.nousresearch.hermes.android.chat.ContextUi
 import com.nousresearch.hermes.android.chat.FakeCoreGateway
 import com.nousresearch.hermes.android.chat.Notifier
 import com.nousresearch.hermes.android.chat.RuntimeSessionId
+import com.nousresearch.hermes.android.gateway.GatewaySeen
+import com.nousresearch.hermes.android.gateway.GatewayStatus
+import com.nousresearch.hermes.android.jobs.JobsWarning
 import com.nousresearch.hermes.android.turn.TurnHost
 import com.nousresearch.hermes.bridge.AppBridge
 import com.nousresearch.hermes.bridge.CoreGateway
@@ -43,6 +46,7 @@ class CoreCompositionTest {
             "session.most_recent" -> """{"session_id":${recent?.let { "\"$it\"" } ?: "null"}}"""
             "session.resume" -> resumeReply()
             "session.context_breakdown" -> EMPTY_BREAKDOWN
+            "cron.manage" -> """{"success":true,"count":1,"jobs":[{"job_id":"j1","name":"n","state":"scheduled"}]}"""
             else -> error("unexpected $method")
         }
     }
@@ -126,6 +130,20 @@ class CoreCompositionTest {
         // A fresh session has no meter yet: the core reported no window.
         assertEquals(ContextUi(null, Json.decodeFromString(SessionContextBreakdownResult.serializer(), EMPTY_BREAKDOWN)),
                      ready.context.state.value)
+    }
+
+    @Test
+    fun theJobsPageIsClosedUntilOpenedAndSeesTheGatewayItIsGiven() = runTest(UnconfinedTestDispatcher()) {
+        val ready = composeCore(runtime, paths, secrets, turns, Notifier.None, backgroundScope,
+                                seen = { GatewaySeen(GatewayStatus.FAILED, "x") })
+
+        assertNull(ready.jobs.state.value)
+        assertFalse(core.calls.any { it.first == "cron.manage" })  // composing lists nothing
+
+        ready.jobs.open()
+
+        // The bridge's "{}" is no ticker record: the warning is the gateway the composition was given.
+        assertEquals(JobsWarning.GatewayOff(GatewayStatus.FAILED), ready.jobs.state.value?.warning)
     }
 
     private companion object {
