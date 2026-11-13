@@ -39,7 +39,7 @@ fun installRuntime(context: Context): HermesPaths {
  * chat is in the core's most recent conversation on return (a new one when there is none, or the core's setting says
  * not to reopen), and setup is showing already when the core has no provider yet. [subnet] names the
  * phone's Wi-Fi network for the endpoint search; [seen] is the app's own observation of the always-on gateway,
- * which the jobs page judges its warning from.
+ * which the jobs page judges its warning from, and the bot's live state is judged against.
  */
 suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, secrets: SecretStore, turns: TurnHost,
                         notifier: Notifier, scope: CoroutineScope, keyNames: KeyNames = KeyNames.InMemory(),
@@ -60,7 +60,7 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, secrets: Secre
     if (setup.needed()) scope.launch(start = CoroutineStart.UNDISPATCHED) { setup.open() }
     val facts = bridge.ask(BridgeCalls.RUNTIME_FACTS)
     val fts = if (facts.fts5) "with FTS5" else "without FTS5"
-    return CoreState.Ready(gateway, chat, setup, SshSetup(secrets, bridge), TelegramSetup(secrets, bridge), history, context,
+    return CoreState.Ready(gateway, chat, setup, SshSetup(secrets, bridge), TelegramSetup(secrets, bridge, seen), history, context,
                            ApprovalSettings(gateway), JobsControl(gateway, bridge, seen, resume = chat::resume),
                            "Python ${facts.python} · SQLite ${facts.sqlite} $fts")
 }

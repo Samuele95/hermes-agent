@@ -1,22 +1,31 @@
 package com.nousresearch.hermes.android.gateway
 
+import com.nousresearch.hermes.android.chat.FakeCoreGateway
 import com.nousresearch.hermes.bridge.SecretStore
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** The phone's Telegram bot (D11, D24): token in the keystore, one allowed user, checked with Telegram. */
+@OptIn(ExperimentalCoroutinesApi::class)
 class TelegramSetupTest {
+    private var seenNow = GatewaySeen(GatewayStatus.STOPPED)
+    private val timeline = mutableListOf<String>()  // every bridge call and keystore delete, in order
     private val held = mutableMapOf<String, ByteArray>()
     private val handedOut = mutableListOf<ByteArray>()  // every plaintext the store gave out
     private val secrets = object : SecretStore {
         override fun put(name: String, value: ByteArray) { held[name] = value.copyOf() }
         override fun get(name: String) = held[name]?.copyOf()?.also { handedOut += it }  // a fresh copy, as the keystore's
-        override fun delete(name: String) { held.remove(name) }
+        override fun delete(name: String) { timeline += "delete $name"; held.remove(name) }
         override fun all(): Map<String, ByteArray> = held.toMap()
     }
     private var secretsChanged = 0
@@ -26,11 +35,14 @@ class TelegramSetupTest {
         "telegram_configure" to """{"allowed_user":"42"}""",
         "telegram_check" to """{"check":"ok","bot":"@phone_hermes_bot","message":null}""",
     )
-    private val telegram = TelegramSetup(secrets) { function, arg ->
+    private val telegram = TelegramSetup(secrets, seen = { seenNow }, bridge = { function, arg ->
+        timeline += function
         if (function == "secrets_changed") { secretsChanged++; return@TelegramSetup "{}" }
         calls += function to arg
+        if (function == "telegram_enable" && function !in answers) return@TelegramSetup arg  // {"enabled":<sent>}
         answers.getValue(function)
     }
+    )
 
     @Test
     fun openingShowsWhatIsSetUp() = runTest {
@@ -38,7 +50,7 @@ class TelegramSetupTest {
 
         telegram.open()
 
-        assertEquals(TelegramState(tokenHeld = true, allowedUser = "42"), telegram.state.value)
+        assertEquals(TelegramState(tokenHeld = true, allowedUser = "42", live = PlatformLive(PlatformState.GATEWAY_OFF)), telegram.state.value)
     }
 
     @Test
@@ -61,7 +73,8 @@ class TelegramSetupTest {
         assertTrue("the caller's copy is wiped", token.all { it == 0.toByte() })
         assertEquals(1, secretsChanged)
         assertEquals(listOf("telegram_status", "telegram_configure", "telegram_check"), calls.map { it.first })
-        assertEquals(TelegramState(tokenHeld = true, allowedUser = "42", bot = "@phone_hermes_bot"), telegram.state.value)
+        assertEquals(TelegramState(tokenHeld = true, allowedUser = "42", bot = "@phone_hermes_bot", live = PlatformLive(PlatformState.GATEWAY_OFF)),
+                     telegram.state.value)
     }
 
     @Test
@@ -133,7 +146,7 @@ class TelegramSetupTest {
     fun aKeystoreFailureIsShownByItsKindAndTheTokenStillWiped() = runTest {
         val failing = TelegramSetup(object : SecretStore by secrets {
             override fun put(name: String, value: ByteArray) = throw java.io.IOException("disk full")
-        }) { function, _ -> if (function == "secrets_changed") "" else answers.getValue(function) }
+        }, bridge = { function, _ -> if (function == "secrets_changed") "" else answers.getValue(function) }, seen = { seenNow })
         failing.open()
         val token = "123:abc".toByteArray()
 
@@ -146,7 +159,7 @@ class TelegramSetupTest {
 
     @Test
     fun aBridgeFailureWhileOpeningStillOpensTheScreenWithIt() = runTest {
-        val failing = TelegramSetup(secrets) { _, _ -> throw RuntimeException("Traceback ...") }
+        val failing = TelegramSetup(secrets, bridge = { _, _ -> throw RuntimeException("Traceback ...") }, seen = { seenNow })
 
         failing.open()
 
@@ -159,5 +172,251 @@ class TelegramSetupTest {
         telegram.close()
 
         assertNull(telegram.state.value)
+    }
+
+    private fun holdToken(enabled: Boolean = true, user: String? = "42") {
+        held["TELEGRAM_BOT_TOKEN"] = "123:abc".toByteArray()
+        answers["telegram_status"] =
+            """{"token":true,"allowed_user":${user?.let { "\"$it\"" } ?: "null"},"sdk":true,"enabled":$enabled,"live":null}"""
+    }
+
+    private fun sentEnable() = calls.filter { it.first == "telegram_enable" }.map { Json.parseToJsonElement(it.second) }
+
+    private fun enabled(on: Boolean) = Json.parseToJsonElement("""{"enabled":$on}""")
+
+    @Test
+    fun theSwitchCannotTurnOnWithoutAToken() = runTest {
+        telegram.open()
+
+        telegram.setEnabled(true)
+
+        assertEquals("no switch on without a token (D40)", emptyList<Any>(), sentEnable())
+        assertEquals(false, telegram.state.value?.busy)
+        assertEquals(true, telegram.state.value?.enabled)  // as the core read it: unchanged
+        assertEquals(false, telegram.state.value?.tokenHeld)
+    }
+
+    @Test
+    fun theSwitchTurnsTheBotOnWhileATokenIsHeldAndMarksTheNextStart() = runTest {
+        holdToken(enabled = false)
+        seenNow = GatewaySeen(GatewayStatus.RUNNING, pid = 42)
+        telegram.open()
+
+        telegram.setEnabled(true)
+
+        assertEquals(listOf(enabled(true)), sentEnable())
+        val state = telegram.state.value!!
+        assertEquals(true, state.enabled)
+        assertEquals(true, state.nextStart)
+        assertEquals(false, state.busy)
+        assertEquals(PlatformLive(PlatformState.PENDING_RESTART), state.live)  // no entry from pid 42
+    }
+
+    @Test
+    fun theSwitchTurnsTheBotOffWithOrWithoutAToken() = runTest {
+        telegram.open()
+
+        telegram.setEnabled(false)
+
+        assertEquals(listOf(enabled(false)), sentEnable())
+        val state = telegram.state.value!!
+        assertEquals(false, state.enabled)
+        assertEquals(PlatformLive(PlatformState.DISABLED), state.live)
+        assertEquals("no live gateway: nothing to mark", false, state.nextStart)
+    }
+
+    @Test
+    fun theMarkStaysWhileTheSameGatewayRunsAndGoesWithItsPid() = runTest {
+        holdToken(enabled = false)
+        seenNow = GatewaySeen(GatewayStatus.RUNNING, pid = 42)
+        telegram.open()
+        telegram.setEnabled(true)
+
+        telegram.refreshLive()
+        assertEquals(true, telegram.state.value?.nextStart)
+
+        seenNow = GatewaySeen(GatewayStatus.RUNNING, pid = 43)
+        telegram.refreshLive()
+        assertEquals(false, telegram.state.value?.nextStart)
+
+        seenNow = GatewaySeen(GatewayStatus.RUNNING, pid = 42)
+        telegram.refreshLive()
+        assertEquals("the mark is gone, not derived again", false, telegram.state.value?.nextStart)
+    }
+
+    @Test
+    fun aSwitchTheCoreRefusesKeepsWhatWasShownWithItsWords() = runTest {
+        holdToken(enabled = false)
+        seenNow = GatewaySeen(GatewayStatus.RUNNING, pid = 42)
+        answers["telegram_enable"] = """{"error":"config.yaml is locked"}"""
+        telegram.open()
+
+        telegram.setEnabled(true)
+
+        val state = telegram.state.value!!
+        assertEquals(listOf(enabled(true)), sentEnable())
+        assertEquals("config.yaml is locked", state.error)
+        assertEquals(false, state.enabled)
+        assertEquals(false, state.busy)
+        assertEquals(false, state.nextStart)
+    }
+
+    @Test
+    fun removeAsksFirstAndOnlyForAHeldToken() = runTest {
+        telegram.open()
+        telegram.askRemove(true)
+        assertEquals("no token: nothing to remove", false, telegram.state.value?.confirmRemove)
+
+        holdToken()
+        telegram.open()
+        telegram.confirmRemove()  // never asked
+        assertEquals(emptyList<Any>(), sentEnable())
+        assertNotNull(held["TELEGRAM_BOT_TOKEN"])
+        assertEquals(true, telegram.state.value?.tokenHeld)
+
+        telegram.askRemove(true)
+        assertEquals(true, telegram.state.value?.confirmRemove)
+        telegram.askRemove(false)
+        assertEquals(false, telegram.state.value?.confirmRemove)
+        assertEquals(emptyList<Any>(), sentEnable())
+    }
+
+    @Test
+    fun removingTheBotSwitchesItOffBeforeTheTokenGoesAndKeepsTheUser() = runTest {
+        holdToken(enabled = true, user = "42")
+        seenNow = GatewaySeen(GatewayStatus.RUNNING, pid = 42)
+        telegram.open()
+        timeline.clear()
+
+        telegram.askRemove(true)
+        telegram.confirmRemove()
+
+        assertEquals("Remove must switch the bot off before its token goes (D40)",
+                     listOf("telegram_enable", "delete TELEGRAM_BOT_TOKEN", "secrets_changed"), timeline)
+        assertEquals(listOf(enabled(false)), sentEnable())
+        assertNull(held["TELEGRAM_BOT_TOKEN"])
+        val state = telegram.state.value!!
+        assertEquals(false, state.tokenHeld)
+        assertEquals(false, state.enabled)
+        assertEquals("42", state.allowedUser)
+        assertNull(state.bot)
+        assertEquals(false, state.confirmRemove)
+        assertEquals(false, state.busy)
+        assertEquals(true, state.nextStart)
+        assertEquals(PlatformLive(PlatformState.DISABLED), state.live)
+        assertFalse(calls.any { it.first == "telegram_configure" })
+    }
+
+    @Test
+    fun aRemovalWhoseSwitchOffFailsDeletesNothing() = runTest {
+        holdToken()
+        answers["telegram_enable"] = """{"error":"x"}"""
+        telegram.open()
+
+        telegram.askRemove(true)
+        telegram.confirmRemove()
+
+        assertNotNull(held["TELEGRAM_BOT_TOKEN"])
+        assertFalse(timeline.any { it.startsWith("delete") })
+        assertEquals(0, secretsChanged)
+        assertEquals("x", telegram.state.value?.error)
+        assertEquals(true, telegram.state.value?.tokenHeld)
+        assertEquals(false, telegram.state.value?.busy)
+    }
+
+    @Test
+    fun aSecondConfirmRemovesOnce() = runTest {
+        holdToken()
+        telegram.open()
+
+        telegram.askRemove(true)
+        telegram.confirmRemove()
+        telegram.confirmRemove()
+
+        assertEquals(1, sentEnable().size)
+        assertEquals(1, timeline.count { it == "delete TELEGRAM_BOT_TOKEN" })
+    }
+
+    @Test
+    fun aRefusedTokenReplacingAHeldOneSwitchesTheBotOffBeforeItGoes() = runTest {
+        holdToken()
+        answers["telegram_check"] = """{"check":"refused","bot":null,"message":"Telegram refused the token (401)"}"""
+        telegram.open()
+
+        telegram.save("bad".toByteArray(), "42")
+
+        val switchOff = timeline.indexOf("telegram_enable")
+        assertTrue("a held token's replacement is switched off before it goes (D40): $timeline",
+                   switchOff >= 0 && switchOff < timeline.indexOf("delete TELEGRAM_BOT_TOKEN"))
+        assertEquals(listOf(enabled(false)), sentEnable())
+        assertNull(held["TELEGRAM_BOT_TOKEN"])
+        assertEquals(false, telegram.state.value?.tokenHeld)
+        assertEquals("Telegram refused the token (401)", telegram.state.value?.error)
+    }
+
+    @Test
+    fun aRefusedFirstTokenLeavesTheSwitchAlone() = runTest {
+        answers["telegram_check"] = """{"check":"refused","bot":null,"message":"Telegram refused the token (401)"}"""
+        telegram.open()
+
+        telegram.save("bad".toByteArray(), "42")
+
+        assertFalse(calls.any { it.first == "telegram_enable" })
+    }
+
+    @Test
+    fun openingJudgesTheCoresEntryAgainstTheGatewaySeen() = runTest {
+        answers["telegram_status"] = """{"token":true,"allowed_user":"42","sdk":true,"enabled":true,"live":$FATAL_42}"""
+        seenNow = GatewaySeen(GatewayStatus.RUNNING, pid = 42)
+
+        telegram.open()
+
+        assertEquals(PlatformLive(PlatformState.FATAL, "Conflict: terminated by other getUpdates request",
+                                  "2026-11-13T15:48:13.243611+00:00"), telegram.state.value?.live)
+
+        seenNow = GatewaySeen(GatewayStatus.RUNNING, pid = 43)
+        telegram.refreshLive()
+
+        assertEquals(PlatformLive(PlatformState.PENDING_RESTART), telegram.state.value?.live)
+    }
+
+    @Test
+    fun platformsChangedReadsTheBotAgainAndOtherSignalsDoNot() = runTest(UnconfinedTestDispatcher()) {
+        val core = FakeCoreGateway { _, _ -> "{}" }
+        answers["telegram_status"] = """{"token":true,"allowed_user":"42","sdk":true,"enabled":true,"live":null}"""
+        seenNow = GatewaySeen(GatewayStatus.RUNNING, pid = 42)
+        telegram.open()
+        backgroundScope.launch { telegram.follow(core.events) }
+        val before = telegram.state.value?.live
+        answers["telegram_status"] = """{"token":true,"allowed_user":"42","sdk":true,"enabled":true,"live":$CONNECTED_42}"""
+
+        core.emit("cron.changed", "")
+
+        assertEquals(1, calls.count { it.first == "telegram_status" })
+        assertEquals(before, telegram.state.value?.live)
+
+        core.emit("platforms.changed", "")
+
+        assertEquals(2, calls.count { it.first == "telegram_status" })
+        assertEquals(PlatformState.CONNECTED, telegram.state.value?.live?.state)
+    }
+
+    @Test
+    fun aClosedSetupReadsNothingOnRefresh() = runTest {
+        telegram.open()
+        telegram.close()
+        val before = timeline.size
+
+        telegram.refreshLive()
+
+        assertEquals(before, timeline.size)
+        assertNull(telegram.state.value)
+    }
+
+    private companion object {
+        const val FATAL_42 = """{"state":"fatal","error_message":"Conflict: terminated by other getUpdates request","writer_pid":42,
+            "updated_at":"2026-11-13T15:48:13.243611+00:00"}"""
+        const val CONNECTED_42 = """{"state":"connected","error_message":null,"writer_pid":42,
+            "updated_at":"2026-11-13T15:48:13.243611+00:00"}"""
     }
 }

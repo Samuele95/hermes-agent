@@ -7,6 +7,7 @@ import com.nousresearch.hermes.android.chat.RuntimeSessionId
 import com.nousresearch.hermes.android.chat.StoredSessionId
 import com.nousresearch.hermes.android.gateway.GatewaySeen
 import com.nousresearch.hermes.android.gateway.GatewayStatus
+import com.nousresearch.hermes.android.gateway.PlatformState
 import com.nousresearch.hermes.android.jobs.JobId
 import com.nousresearch.hermes.android.jobs.JobsWarning
 import com.nousresearch.hermes.android.turn.TurnHost
@@ -63,6 +64,8 @@ class CoreCompositionTest {
                 "runtime_facts" -> """{"python":"3.14.7","sqlite":"3.53.4","fts5":true,"executable":""}"""
                 "cron_runs" -> """{"runs":[{"session_id":"cron_j1_20261113_093000","started_at":1794562200,"ended_at":1794562260,
                                   "messages":4,"preview":"Say hello.","active":false}]}"""
+                "telegram_status" -> """{"token":true,"allowed_user":"42","sdk":true,"enabled":true,"live":{"state":"connected",
+                                        "error_message":null,"writer_pid":7,"updated_at":"2026-11-13T00:00:00+00:00"}}"""
                 else -> "{}"
             }
         }
@@ -179,6 +182,24 @@ class CoreCompositionTest {
         assertNotNull(ready.jobs.state.value)
         assertNotNull(ready.jobs.state.value!!.runs!!.error)
         assertEquals(RuntimeSessionId("s1"), ready.chat.sessionId)
+    }
+
+    @Test
+    fun theBotIsJudgedAgainstTheGatewayTheCompositionIsGiven() = runTest(UnconfinedTestDispatcher()) {
+        val ready = composeCore(runtime, paths, secrets, turns, Notifier.None, backgroundScope,
+                                seen = { GatewaySeen(GatewayStatus.RUNNING, pid = 7) })
+
+        ready.telegram.open()
+
+        assertEquals(PlatformState.CONNECTED, ready.telegram.state.value?.live?.state)
+
+        val other = composeCore(runtime, paths, secrets, turns, Notifier.None, backgroundScope,
+                                seen = { GatewaySeen(GatewayStatus.RUNNING, pid = 8) })
+
+        other.telegram.open()
+
+        assertEquals("the entry is pid 7's, the gateway given is pid 8", PlatformState.PENDING_RESTART,
+                     other.telegram.state.value?.live?.state)
     }
 
     private companion object {
