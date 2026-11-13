@@ -35,6 +35,8 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import com.nousresearch.hermes.android.SetupRefusal
+import com.nousresearch.hermes.android.gateway.GatewaySeen
+import com.nousresearch.hermes.android.gateway.GatewayStatus
 import org.junit.Test
 
 /** One chat: a core session, the prompts the user sends to it, and the turns it runs. */
@@ -111,8 +113,24 @@ class ChatSessionTest {
     private fun runtime(id: String) = RuntimeSessionId(id)
     private fun stored(id: String) = StoredSessionId(id)
 
+    /** The app's observation of the always-on gateway, and how often the chat took it. */
+    private var seen: () -> GatewaySeen = { GatewaySeen(GatewayStatus.RUNNING) }
+    private var observed = 0
+
     private fun TestScope.openChat() =
-        ChatSession(core, host, backgroundScope, keepSecret = { name, value -> keepSecret(name, value) }, notifier = notifier)
+        ChatSession(core, host, backgroundScope, keepSecret = { name, value -> keepSecret(name, value) }, notifier = notifier,
+                    gatewaySeen = { observed++; seen() })
+
+    /** The agent schedules a job in [session] ([action] of the job tool, answered `success`), the core's own warning included. */
+    private suspend fun scheduled(session: String, id: String, action: String = "create") {
+        core.emit("tool.start", session, """{"tool_id":"$id","name":"cronjob_manage"}""")
+        core.emit("tool.complete", session, """{"tool_id":"$id","name":"cronjob_manage","summary":"$SCHEDULED",
+            "args":{"action":"$action","schedule":"every 2m","prompt":"Say tick."},
+            "result":{"success":true,"job_id":"ab12","gateway_running":false,
+                      "warning":"The job will NOT fire until the gateway is started (hermes gateway install / hermes gateway start)."}}""")
+    }
+
+    private fun ChatSession.jobNotices() = state.value.entries.filterIsInstance<Entry.Notice>()
 
     @Test
     fun aChatOpensACoreSessionAsTheAndroidApp() = runTest(UnconfinedTestDispatcher()) {
@@ -1695,7 +1713,118 @@ class ChatSessionTest {
                      core.calls.filter { it.first == "session.resume" }.map { it.second.getValue("session_id").jsonPrimitive.content })
     }
 
+    @Test
+    fun aJobScheduledWhileTheGatewayIsOffIsSaidOnceInTheAppsWords() = runTest(UnconfinedTestDispatcher()) {
+        seen = { GatewaySeen(GatewayStatus.STOPPED) }
+        val chat = openChat().apply { open() }
+        core.emit("message.start", "s1")
+
+        scheduled("s1", "t1")
+
+        assertEquals(listOf(Entry.Tool("t1", "cronjob_manage", SCHEDULED, done = true),
+                            Entry.Notice(ChatSession.JOBS_NEED_GATEWAY, NoticeShortcut.GATEWAY)), chat.state.value.entries)
+
+        scheduled("s1", "t2")  // a second job in the same conversation is not said again
+        core.emit("message.complete", "s1", """{"text":"Done: two jobs."}""")
+
+        assertEquals(1, chat.jobNotices().size)
+        assertEquals(Entry.Reply("Done: two jobs.", TurnStatus.COMPLETE), chat.state.value.entries.last())
+        // The core's remedy (a CLI command) is never shown by the app.
+        assertFalse(chat.state.value.entries.toString(), chat.state.value.entries.any { e ->
+            listOfNotNull((e as? Entry.Notice)?.text, (e as? Entry.Tool)?.summary, (e as? Entry.Reply)?.text).any { "hermes gateway" in it }
+        })
+        assertEquals("finished:Done: two jobs.", notices.last())
+    }
+
+    @Test
+    fun aNewOrResumedSessionCanBeToldAgain() = runTest(UnconfinedTestDispatcher()) {
+        seen = { GatewaySeen(GatewayStatus.STOPPED) }
+        val chat = openChat().apply { open() }
+        scheduled("s1", "t1")
+        assertEquals(1, chat.jobNotices().size)
+
+        chat.open()  // s2
+        scheduled("s2", "t3")
+
+        assertEquals(listOf(Entry.Notice(ChatSession.JOBS_NEED_GATEWAY, NoticeShortcut.GATEWAY)), chat.jobNotices())
+        assertEquals(Entry.Tool("t3", "cronjob_manage", SCHEDULED, done = true), chat.state.value.entries.first())
+
+        chat.resume(stored("db-old"))  // s-resumed
+        scheduled("s-resumed", "t4")
+
+        assertEquals(listOf(Entry.Notice(ChatSession.JOBS_NEED_GATEWAY, NoticeShortcut.GATEWAY)), chat.jobNotices())
+    }
+
+    @Test
+    fun noNoticeWhileTheGatewayRunsOrIsOnItsWayUp() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        for ((i, status) in listOf(GatewayStatus.RUNNING, GatewayStatus.STARTING, GatewayStatus.RESTARTING).withIndex()) {
+            seen = { GatewaySeen(status) }
+            scheduled("s1", "t$i")
+            assertEquals(status.name, emptyList<Entry.Notice>(), chat.jobNotices())
+            assertEquals(status.name, i + 1, observed)
+        }
+
+        seen = { GatewaySeen(GatewayStatus.DIED, "killed", 41) }
+        scheduled("s1", "t-died")
+
+        assertEquals(1, chat.jobNotices().size)  // the gateway on its way up spent nothing (V2)
+        for ((n, status) in listOf(GatewayStatus.FAILED, GatewayStatus.STOPPING).withIndex()) {
+            seen = { GatewaySeen(status) }
+            chat.open()
+            scheduled("s${n + 2}", "t-$status")
+            assertEquals(status.name, 1, chat.jobNotices().size)
+        }
+    }
+
+    @Test
+    fun onlyASchedulingCompletionIsObserved() = runTest(UnconfinedTestDispatcher()) {
+        seen = { GatewaySeen(GatewayStatus.STOPPED) }
+        val chat = openChat().apply { open() }
+        core.emit("message.start", "s1")
+
+        scheduled("s1", "t1", action = "list")
+        scheduled("s1", "t2", action = "remove")
+        core.emit("tool.complete", "s1", """{"tool_id":"t3","name":"terminal","args":{"action":"create"},"result":{"success":true}}""")
+        core.emit("todo.updated", "s1", """{"todos":[{"id":"1","content":"Boil","status":"pending"}],"revision":1}""")
+        core.emit("message.delta", "s1", """{"text":"Listed."}""")
+
+        assertEquals(emptyList<Entry.Notice>(), chat.jobNotices())
+        assertEquals(0, observed)
+    }
+
+    @Test
+    fun anotherSessionsJobIsNotThisChats() = runTest(UnconfinedTestDispatcher()) {
+        seen = { GatewaySeen(GatewayStatus.STOPPED) }
+        val chat = openChat().apply { open() }
+
+        scheduled("s9", "t1")
+
+        assertEquals(emptyList<Entry>(), chat.state.value.entries)
+        assertEquals(0, observed)
+    }
+
+    @Test
+    fun anObservationThatFailsSaysNothing() = runTest(UnconfinedTestDispatcher()) {
+        seen = { error("binder died") }
+        val chat = openChat().apply { open() }
+        core.emit("message.start", "s1")
+
+        scheduled("s1", "t1")
+        core.emit("message.complete", "s1", """{"text":"Scheduled."}""")
+
+        assertEquals(emptyList<Entry.Notice>(), chat.jobNotices())
+        assertEquals(Entry.Reply("Scheduled.", TurnStatus.COMPLETE), chat.state.value.entries.last())  // the chat still reduces
+
+        seen = { GatewaySeen(GatewayStatus.STOPPED) }  // "cannot tell" spent nothing
+        scheduled("s1", "t2")
+
+        assertEquals(1, chat.jobNotices().size)
+    }
+
     private companion object {
+        /** The core's summary of a job-tool row. */
+        const val SCHEDULED = "Scheduled the job"
         const val BREAKDOWN = """{"categories":[{"color":"var(--context-usage-system)","id":"system_prompt","label":"System prompt","tokens":4000}],
             "context_max":32000,"context_used":4000,"context_percent":13,"estimated_total":4000,"context_estimated":false,
             "context_source":"provider_usage","model":"m"}"""

@@ -393,4 +393,16 @@ class ChatTest {
         // The rule is the turn, not the kind.
         assertEquals("Thinking…", idle.after(event("message.start"), event("status.update", """{"kind":"thinking","text":"Thinking…"}""")).activity)
     }
+
+    @Test
+    fun theReducerLeavesTheJobNoticeToTheSession() {
+        val scheduled = Chat().after(event("message.start"), event("tool.start", """{"tool_id":"t1","name":"cronjob_manage"}"""),
+                                     event("tool.complete", """{"tool_id":"t1","name":"cronjob_manage","summary":"created",
+                                         "args":{"action":"create","schedule":"every 2m","prompt":"Say tick."},
+                                         "result":{"success":true,"job_id":"ab12","gateway_running":false}}"""))
+
+        // The reducer is a function of (Chat, event): the gateway's notice is ChatSession's to add (FP, D39 F11).
+        assertEquals(listOf(Entry.Tool("t1", "cronjob_manage", summary = "created", done = true)), scheduled.entries)
+        assertEquals(Chat(listOf(Entry.Notice("x", null))), Chat().notice("x"))
+    }
 }

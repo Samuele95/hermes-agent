@@ -39,7 +39,8 @@ fun installRuntime(context: Context): HermesPaths {
  * chat is in the core's most recent conversation on return (a new one when there is none, or the core's setting says
  * not to reopen), and setup is showing already when the core has no provider yet. [subnet] names the
  * phone's Wi-Fi network for the endpoint search; [seen] is the app's own observation of the always-on gateway,
- * which the jobs page judges its warning from, and the bot's live state is judged against.
+ * which the jobs page judges its warning from, and the bot's live state is judged against, and the chat says once
+ * when the agent schedules a job it will not fire.
  */
 suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, secrets: SecretStore, turns: TurnHost,
                         notifier: Notifier, scope: CoroutineScope, keyNames: KeyNames = KeyNames.InMemory(),
@@ -51,7 +52,7 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, secrets: Secre
         secrets.put(name, value)
         bridge.secretsChanged()
     }
-    val chat = ChatSession(gateway, turns, scope, keepSecret, notifier).apply { start() }
+    val chat = ChatSession(gateway, turns, scope, keepSecret, notifier, gatewaySeen = seen).apply { start() }
     val setup = ProviderSetup(gateway, secrets, bridge, session = { chat.sessionId.value }, reopenChat = chat::open, keyNames = keyNames,
                               subnet = subnet)
     val history = SessionHistory(list = chat::pastSessions, resume = chat::resume, rename = chat::rename, delete = chat::delete)

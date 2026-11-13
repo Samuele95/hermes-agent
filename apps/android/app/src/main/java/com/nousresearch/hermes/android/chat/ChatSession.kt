@@ -2,6 +2,8 @@ package com.nousresearch.hermes.android.chat
 
 import com.nousresearch.hermes.android.SetupRefusal
 import com.nousresearch.hermes.android.forUser
+import com.nousresearch.hermes.android.gateway.GatewaySeen
+import com.nousresearch.hermes.android.gateway.GatewayStatus
 import com.nousresearch.hermes.android.turn.TurnHost
 import com.nousresearch.hermes.bridge.CoreError
 import com.nousresearch.hermes.bridge.CoreEvent
@@ -51,10 +53,12 @@ import java.util.concurrent.atomic.AtomicLong
  * One chat: a core session, the prompts sent to it, its turns, which [turns] keeps alive, and the questions
  * a turn asks, which [notifier] hears of along with finished turns. A secret the agent asks for goes to
  * [keepSecret] (the keystore), never back to the core: the core would write an answered value to `.env`.
+ * [gatewaySeen] is the app's observation of the always-on gateway: a job the agent schedules while it will not fire is said once (D39 F11).
  */
 class ChatSession(private val core: CoreGateway, private val turns: TurnHost, private val scope: CoroutineScope,
                   private val keepSecret: suspend (name: String, value: ByteArray) -> Unit,
-                  private val notifier: Notifier = Notifier.None) {
+                  private val notifier: Notifier = Notifier.None,
+                  private val gatewaySeen: () -> GatewaySeen = { GatewaySeen(GatewayStatus.RUNNING) }) {
     companion object {
         /** The session's source, which is also the agent's platform; "android" keeps the CLI toolsets. */
         const val SOURCE = "android"
@@ -68,14 +72,18 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         const val STILL_COMPRESSING = "Hermes is compressing this conversation; try again when it has finished."
         /** Said when Compress is asked for before the chat has a session (improve #6). */
         const val NOTHING_TO_COMPRESS = "Nothing to compress yet."
+        /** Said once per session when the agent schedules a job the gateway will not fire yet (D39 F11). */
+        const val JOBS_NEED_GATEWAY = "Scheduled jobs run only while the gateway is on — drawer → Gateway."
     }
 
     /**
      * Everything the chat changes together: the core session it follows, its transcript, and the core's requests
      * behind the transcript's question cards. Events, questions and session switches arrive on different threads;
      * each change is one [change] of this one value, so none of them can see or leave a half-made state.
+     * [jobsNoticed]: the chat has said [JOBS_NEED_GATEWAY] in this session.
      */
-    private data class Live(val ref: SessionRef? = null, val chat: Chat = Chat(), val waiting: Map<String, InTurnPrompt> = emptyMap()) {
+    private data class Live(val ref: SessionRef? = null, val chat: Chat = Chat(), val waiting: Map<String, InTurnPrompt> = emptyMap(),
+                            val jobsNoticed: Boolean = false) {
         /** The requests the core withdrew (their cards are gone from the transcript) let go too. */
         fun withdrawn(): Live = copy(waiting = waiting.filterKeys { id -> chat.prompts.any { it.id == id } })
     }
@@ -101,6 +109,22 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
 
     private fun say(notice: String) {
         change { it.copy(chat = it.chat.notice(notice)) }
+    }
+
+    /**
+     * The agent scheduled a job in [session] (F11): when the gateway will not fire it, the chat says so once per
+     * session, with the way to the Gateway page. The observation is read outside [lock] and only here (V4); one that
+     * fails says nothing, since "cannot tell" is not "off". Decided in one change: never twice, never on a session
+     * the chat has left meanwhile.
+     */
+    private fun noticeJobs(session: RuntimeSessionId) {
+        if (synchronized(lock) { live.jobsNoticed }) return  // said already: no observation needed
+        val seen = runCatching { gatewaySeen() }.getOrNull() ?: return
+        if (firesJobs(seen)) return
+        change { now ->
+            if (now.ref?.runtime != session || now.jobsNoticed) now
+            else now.copy(chat = now.chat.notice(JOBS_NEED_GATEWAY, NoticeShortcut.GATEWAY), jobsNoticed = true)
+        }
     }
 
     /** The runtime id of the core session this chat sends to (the id its frames carry, never a drawer row's key); the chat must be open. */
@@ -548,5 +572,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         if (before.chat.running && !after.chat.running) notifier.turnFinished(after.chat.entries.lastOrNull() as? Entry.Reply)
         // Withdrawn by the core: the turn no longer waits for them.
         if (after.waiting.size < before.waiting.size && after.chat.prompts.isEmpty()) notifier.promptsSettled()
+        // After the reducer, never in it (FP): the reducer stays a function of (Chat, event).
+        if (schedulesAJob(event)) noticeJobs(session)
     }
 }

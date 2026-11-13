@@ -21,8 +21,12 @@ sealed interface Entry {
 
     data class Tool(val id: String, val name: String, val summary: String? = null, val done: Boolean = false) : Entry
 
-    data class Notice(val text: String) : Entry
+    /** Something the chat tells the user; [opens] is a place it offers to go (none: words only). */
+    data class Notice(val text: String, val opens: NoticeShortcut? = null) : Entry
 }
+
+/** A place a notice offers to open: the always-on gateway's page. */
+enum class NoticeShortcut { GATEWAY }
 
 /** The last prompt, to run again: its place in the transcript, its words, and the core's row id when known. */
 data class Retry(val index: Int, val text: String, val rowId: Long?)
@@ -50,7 +54,7 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
     /** The prompt did not go out (refused, or never reached the core): the chat is idle again. */
     fun unsent(): Chat = copy(submitted = false)
 
-    fun notice(text: String): Chat = copy(entries = entries + Entry.Notice(text))
+    fun notice(text: String, opens: NoticeShortcut? = null): Chat = copy(entries = entries + Entry.Notice(text, opens))
 
     fun asked(prompt: Prompt): Chat = copy(prompts = prompts + prompt)
 
