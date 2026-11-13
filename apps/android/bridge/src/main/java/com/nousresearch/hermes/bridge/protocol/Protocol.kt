@@ -29,6 +29,7 @@ object Methods {
     val CLIENT_CAPABILITIES = Method("client.capabilities", ClientCapabilitiesParams.serializer(), ClientCapabilitiesResult.serializer())
     val CONFIG_GET = Method("config.get", ConfigGetParams.serializer(), ConfigGetResult.serializer())
     val CONFIG_SET = Method("config.set", ConfigSetParams.serializer(), ConfigSetResult.serializer())
+    val CRON_MANAGE = Method("cron.manage", CronManageParams.serializer(), CronManageResult.serializer())
     val GATEWAY_CAPABILITIES = Method("gateway.capabilities", PingParams.serializer(), GatewayCapabilitiesResult.serializer())
     val MODEL_DISCONNECT = Method("model.disconnect", ModelDisconnectParams.serializer(), ModelDisconnectResult.serializer())
     val MODEL_OPTIONS = Method("model.options", ModelOptionsParams.serializer(), ModelOptionsResult.serializer())
@@ -62,11 +63,13 @@ object Requests {
 
 object Events {
     val APPROVAL_CANCELLED = Event("approval.cancelled", ApprovalCancelledPayload.serializer())
+    val CRON_CHANGED = Event("cron.changed", ChangeSignalPayload.serializer())
     val ERROR = Event("error", ErrorPayload.serializer())
     val MESSAGE_COMPLETE = Event("message.complete", MessageCompletePayload.serializer())
     val MESSAGE_DELTA = Event("message.delta", StreamDeltaPayload.serializer())
     val MESSAGE_INTERIM = Event("message.interim", MessageInterimPayload.serializer())
     val MESSAGE_START = Event("message.start", JsonObject.serializer())
+    val PLATFORMS_CHANGED = Event("platforms.changed", ChangeSignalPayload.serializer())
     val REASONING_AVAILABLE = Event("reasoning.available", StreamDeltaPayload.serializer())
     val REASONING_DELTA = Event("reasoning.delta", StreamDeltaPayload.serializer())
     val SESSION_INFO = Event("session.info", SessionLiveInfo.serializer())
@@ -182,6 +185,10 @@ enum class CatalogTier {
     @SerialName("official") OFFICIAL,
     @SerialName("community") COMMUNITY,
 }
+
+/** ``change_watcher._CHANGE_WATCHES`` payload fn — ``{}`` for every watch except pet.changed. */
+@Serializable
+data object ChangeSignalPayload
 
 @Serializable
 enum class ClarifyLockStatus {
@@ -411,6 +418,97 @@ data class ContextFileSource(
     @SerialName("est_tokens") val estTokens: Long,
     @SerialName("loaded") val loaded: Boolean,
     @SerialName("status") val status: String,
+)
+
+@Serializable
+enum class CronAction {
+    @SerialName("list") LIST,
+    @SerialName("add") ADD,
+    @SerialName("remove") REMOVE,
+    @SerialName("pause") PAUSE,
+    @SerialName("resume") RESUME,
+}
+
+/** ``tools/cronjob_job_args.py::_format_job``. */
+@Serializable
+data class CronJobRow(
+    @SerialName("job_id") val jobId: String,
+    @SerialName("name") val name: String = "",
+    @SerialName("skill") val skill: String? = null,
+    @SerialName("skills") val skills: List<String>? = null,
+    @SerialName("prompt_preview") val promptPreview: String = "",
+    @SerialName("model") val model: String? = null,
+    @SerialName("provider") val provider: String? = null,
+    @SerialName("base_url") val baseUrl: String? = null,
+    @SerialName("schedule") val schedule: String = "?",
+    @SerialName("repeat") val repeat: JsonElement? = null,
+    @SerialName("deliver") val deliver: String? = null,
+    @SerialName("next_run_at") val nextRunAt: String? = null,
+    @SerialName("last_run_at") val lastRunAt: String? = null,
+    @SerialName("last_status") val lastStatus: String? = null,
+    @SerialName("last_delivery_error") val lastDeliveryError: String? = null,
+    @SerialName("last_delivery_unverified") val lastDeliveryUnverified: List<String>? = null,
+    @SerialName("last_fire_error") val lastFireError: String? = null,
+    @SerialName("last_error") val lastError: String? = null,
+    @SerialName("enabled") val enabled: Boolean = true,
+    @SerialName("state") val state: String? = null,
+    @SerialName("paused_at") val pausedAt: String? = null,
+    @SerialName("paused_reason") val pausedReason: String? = null,
+    @SerialName("workdir") val workdir: String? = null,
+    @SerialName("script") val script: String? = null,
+    @SerialName("reasoning_effort") val reasoningEffort: String? = null,
+    @SerialName("monitor_script") val monitorScript: String? = null,
+    @SerialName("monitor_url") val monitorUrl: String? = null,
+    @SerialName("monitor_state") val monitorState: JsonElement? = null,
+    @SerialName("no_agent") val noAgent: Boolean? = null,
+    @SerialName("enabled_toolsets") val enabledToolsets: List<String>? = null,
+    @SerialName("continuity") val continuity: Boolean? = null,
+    @SerialName("context_from") val contextFrom: List<String>? = null,
+    @SerialName("attach_to_session") val attachToSession: Boolean? = null,
+)
+
+@Serializable
+data class CronManageParams(
+    @SerialName("action") val action: CronAction = CronAction.LIST,
+    @SerialName("name") val name: String? = null,
+    @SerialName("include_disabled") val includeDisabled: JsonElement? = null,
+    @SerialName("schedule") val schedule: String? = null,
+    @SerialName("prompt") val prompt: String? = null,
+    @SerialName("repeat") val repeat: JsonElement? = null,
+    @SerialName("continuity") val continuity: JsonElement? = null,
+    @SerialName("deliver") val deliver: String? = null,
+    @SerialName("profile") val profile: String? = null,
+)
+
+/** Pass-through of ``tools/cronjob_tools.py::cronjob`` JSON: ``list`` → ``jobs``/``count`` */
+@Serializable
+data class CronManageResult(
+    @SerialName("success") val success: Boolean? = null,
+    @SerialName("error") val error: String? = null,
+    @SerialName("count") val count: Long? = null,
+    @SerialName("jobs") val jobs: List<CronJobRow>? = null,
+    @SerialName("scoped") val scoped: String? = null,
+    @SerialName("gateway_running") val gatewayRunning: Boolean? = null,
+    @SerialName("warning") val warning: String? = null,
+    @SerialName("job_id") val jobId: String? = null,
+    @SerialName("name") val name: String? = null,
+    @SerialName("skill") val skill: String? = null,
+    @SerialName("skills") val skills: List<String>? = null,
+    @SerialName("schedule") val schedule: String? = null,
+    @SerialName("repeat") val repeat: JsonElement? = null,
+    @SerialName("deliver") val deliver: String? = null,
+    @SerialName("next_run_at") val nextRunAt: String? = null,
+    @SerialName("job") val job: CronJobRow? = null,
+    @SerialName("message") val message: String? = null,
+    @SerialName("guidance") val guidance: JsonElement? = null,
+    @SerialName("removed_job") val removedJob: CronRemovedJob? = null,
+)
+
+@Serializable
+data class CronRemovedJob(
+    @SerialName("id") val id: String,
+    @SerialName("name") val name: String = "",
+    @SerialName("schedule") val schedule: String? = null,
 )
 
 /** Every ``_emit("error", …)`` site sets exactly ``message``. */

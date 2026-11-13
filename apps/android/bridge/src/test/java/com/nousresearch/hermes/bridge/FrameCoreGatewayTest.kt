@@ -2,6 +2,7 @@ package com.nousresearch.hermes.bridge
 
 import com.nousresearch.hermes.bridge.protocol.ApprovalChoice
 import com.nousresearch.hermes.bridge.protocol.ApprovalResult
+import com.nousresearch.hermes.bridge.protocol.ChangeSignalPayload
 import com.nousresearch.hermes.bridge.protocol.Events
 import com.nousresearch.hermes.bridge.protocol.Methods
 import com.nousresearch.hermes.bridge.protocol.PingParams
@@ -11,6 +12,8 @@ import com.nousresearch.hermes.bridge.protocol.StreamDeltaPayload
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -72,6 +75,21 @@ class FrameCoreGatewayTest {
         assertEquals("message.delta" to "s1", event.await().type to event.await().sessionId)
         assertEquals(StreamDeltaPayload(text = "Hel"), event.await().decode(Events.MESSAGE_DELTA))
         assertEquals(null, event.await().decode(Events.MESSAGE_COMPLETE))
+    }
+
+    @Test
+    fun aGlobalChangeSignalHasNoSessionAndDecodesOnlyAsItsOwnEvent() = runTest(UnconfinedTestDispatcher()) {
+        val signals = async { gateway.events.take(2).toList() }
+
+        gateway.onFrame("""{"jsonrpc":"2.0","method":"event","params":{"type":"cron.changed","session_id":"","payload":{}}}""")
+        gateway.onFrame("""{"jsonrpc":"2.0","method":"event","params":{"type":"platforms.changed","session_id":"","payload":{}}}""")
+
+        val (cron, platforms) = signals.await()
+        assertEquals("" to "", cron.sessionId to platforms.sessionId)
+        assertEquals(ChangeSignalPayload, cron.decode(Events.CRON_CHANGED))
+        assertEquals(null, cron.decode(Events.PLATFORMS_CHANGED))
+        assertEquals(ChangeSignalPayload, platforms.decode(Events.PLATFORMS_CHANGED))
+        assertEquals(null, platforms.decode(Events.CRON_CHANGED))
     }
 
     @Test

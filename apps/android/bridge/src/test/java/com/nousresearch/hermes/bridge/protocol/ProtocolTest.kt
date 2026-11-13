@@ -122,4 +122,84 @@ class ProtocolTest {
         assertEquals(3L, snapshot.revision)
         assertEquals("in_progress", snapshot.todos.single().jsonObject["status"]!!.jsonPrimitive.content)
     }
+
+    // The core reads a job's reference from `name` and adds fields to a row over time.
+
+    @Test
+    fun aJobCommandNamesItsJobByIdAndAListAsksForPausedJobs() {
+        assertEquals(
+            """{"include_disabled":true}""",
+            wire.encodeToString(Methods.CRON_MANAGE.params, CronManageParams(includeDisabled = JsonPrimitive(true))),
+        )
+        assertEquals(
+            """{"action":"pause","name":"a1b2c3d4e5f6"}""",
+            wire.encodeToString(Methods.CRON_MANAGE.params, CronManageParams(action = CronAction.PAUSE, name = "a1b2c3d4e5f6")),
+        )
+        assertEquals(
+            """{"action":"add","name":"Morning brief","schedule":"every 30m","prompt":"Summarise the news","repeat":3,"deliver":"local"}""",
+            wire.encodeToString(
+                Methods.CRON_MANAGE.params,
+                CronManageParams(
+                    action = CronAction.ADD, name = "Morning brief", schedule = "every 30m", prompt = "Summarise the news",
+                    repeat = JsonPrimitive(3), deliver = "local",
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun aJobRowDecodesTheCoresOwnShape() {
+        // `pinned` is the core's key the contract does not list (cronjob_job_args.py:492).
+        val listed = wire.decodeFromString(
+            Methods.CRON_MANAGE.result,
+            """{"success":true,"count":1,"jobs":[{"job_id":"a1b2c3d4e5f6","name":"Morning brief","skill":null,"skills":[],""" +
+                """"prompt_preview":"Summarise the news","model":null,"provider":null,"pinned":false,"base_url":null,""" +
+                """"schedule":"every 30m","repeat":"forever","deliver":"local","next_run_at":"2026-11-13T09:30:00+01:00",""" +
+                """"last_run_at":"2026-11-13T09:00:00+01:00","last_status":"delivery_failed",""" +
+                """"last_delivery_error":"telegram: chat not found","last_delivery_unverified":null,"last_fire_error":null,""" +
+                """"last_error":null,"enabled":false,"state":"paused","paused_at":"2026-11-13T09:05:00+01:00",""" +
+                """"paused_reason":null}],"gateway_running":false,"warning":"The Hermes gateway is not running"}""",
+        )
+
+        assertEquals(1L, listed.count)
+        val row = listed.jobs!!.single()
+        assertEquals("a1b2c3d4e5f6", row.jobId)
+        assertEquals("paused", row.state)
+        assertEquals(false, row.enabled)
+        assertEquals(JsonPrimitive("forever"), row.repeat)
+        assertEquals("delivery_failed", row.lastStatus)
+        assertEquals("telegram: chat not found", row.lastDeliveryError)
+    }
+
+    @Test
+    fun aRefusedJobCommandIsAnAnswerNotAnError() {
+        val refused = wire.decodeFromString(Methods.CRON_MANAGE.result, """{"success":false,"error":"schedule is required for create"}""")
+
+        assertEquals(false, refused.success)
+        assertEquals("schedule is required for create", refused.error)
+        assertNull(refused.jobs)
+        assertNull(refused.job)
+    }
+
+    @Test
+    fun aPauseAndARemovalAnswerTheJob() {
+        val paused = wire.decodeFromString(
+            Methods.CRON_MANAGE.result,
+            """{"success":true,"job":{"job_id":"a1b2c3d4e5f6","state":"paused","enabled":false}}""",
+        )
+        val removed = wire.decodeFromString(
+            Methods.CRON_MANAGE.result,
+            """{"success":true,"message":"Cron job 'Morning brief' removed.",""" +
+                """"removed_job":{"id":"a1b2c3d4e5f6","name":"Morning brief","schedule":"every 30m"}}""",
+        )
+
+        assertEquals("paused", paused.job!!.state)
+        assertEquals("a1b2c3d4e5f6", removed.removedJob!!.id)
+    }
+
+    @Test
+    fun aChangeSignalHasNoFieldsAndToleratesNewOnes() {
+        assertEquals(ChangeSignalPayload, wire.decodeFromString(Events.CRON_CHANGED.payload, "{}"))
+        assertEquals(ChangeSignalPayload, wire.decodeFromString(Events.PLATFORMS_CHANGED.payload, """{"since":1}"""))
+    }
 }

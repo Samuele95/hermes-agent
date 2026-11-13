@@ -3,9 +3,13 @@ package com.nousresearch.hermes.android
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.nousresearch.hermes.bridge.CoreError
+import com.nousresearch.hermes.bridge.CoreEvent
 import com.nousresearch.hermes.bridge.CoreGateway
 import com.nousresearch.hermes.bridge.EmbeddedPython
 import com.nousresearch.hermes.bridge.protocol.ClientCapabilitiesParams
+import com.nousresearch.hermes.bridge.protocol.CronAction
+import com.nousresearch.hermes.bridge.protocol.CronManageParams
+import com.nousresearch.hermes.bridge.protocol.Events
 import com.nousresearch.hermes.bridge.protocol.Method
 import com.nousresearch.hermes.bridge.protocol.Methods
 import com.nousresearch.hermes.bridge.protocol.PingParams
@@ -25,6 +29,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.JsonPrimitive
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -126,6 +131,52 @@ class EmbeddedPythonTest {
             // A failed run leaves no session or row behind on the shared phone.
             runCatching { core.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = created.sessionId)) }
             runCatching { core.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = stored)) }
+        }
+    }
+
+    @Test
+    fun aJobIsAddedPausedResumedAndRemovedByItsId() = runBlocking {
+        // Frames nobody collects are not replayed: the watcher runs before the first write.
+        val signals = Channel<CoreEvent>(Channel.UNLIMITED)
+        val watcher = launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
+            core.events.collect { if (it.decode(Events.CRON_CHANGED) != null) signals.trySend(it) }
+        }
+        // A weekly interval: its first run is a week away, so the debug app's :gateway ticker never fires it here.
+        val added = core.call(
+            Methods.CRON_MANAGE,
+            CronManageParams(
+                action = CronAction.ADD, name = "j1 probe ${System.nanoTime()}", schedule = "every 10080m",
+                prompt = "Say hello.", deliver = "local",
+            ),
+        )
+        val id = checkNotNull(added.jobId) { "add answered ${added.error}" }
+        try {
+            assertEquals(added.error, true, added.success)
+            assertEquals("scheduled", added.job!!.state)
+            // The signal reaches the chat process's gateway; a tick of the debug :gateway would produce the same fact.
+            assertEquals("", withTimeout(15_000) { signals.receive() }.sessionId)
+
+            // The reference the app sends is the core's job_id, in `name`.
+            val paused = core.call(Methods.CRON_MANAGE, CronManageParams(action = CronAction.PAUSE, name = id)).job!!
+            assertEquals("paused", paused.state)
+            assertEquals(false, paused.enabled)
+
+            val listed = core.call(Methods.CRON_MANAGE, CronManageParams()).jobs.orEmpty()
+            assertTrue("a paused job is listed without include_disabled", listed.none { it.jobId == id })
+            val all = core.call(Methods.CRON_MANAGE, CronManageParams(includeDisabled = JsonPrimitive(true))).jobs.orEmpty()
+            assertEquals("paused", all.single { it.jobId == id }.state)
+
+            val resumed = core.call(Methods.CRON_MANAGE, CronManageParams(action = CronAction.RESUME, name = id))
+            assertEquals("scheduled", resumed.job!!.state)
+
+            val removed = core.call(Methods.CRON_MANAGE, CronManageParams(action = CronAction.REMOVE, name = id))
+            assertEquals(id, removed.removedJob!!.id)
+            val after = core.call(Methods.CRON_MANAGE, CronManageParams(includeDisabled = JsonPrimitive(true))).jobs.orEmpty()
+            assertTrue("$id is still listed after its removal", after.none { it.jobId == id })
+        } finally {
+            watcher.cancel()
+            // A failed run leaves no job behind on the shared phone.
+            runCatching { core.call(Methods.CRON_MANAGE, CronManageParams(action = CronAction.REMOVE, name = id)) }
         }
     }
 
