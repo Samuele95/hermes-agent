@@ -35,6 +35,6 @@ class FakeCoreGateway(private val reply: (method: String, params: JsonObject) ->
 
     suspend fun ask(id: String, method: String, params: String) = promptFlow.emit(InTurnPrompt(id, method, json.parseToJsonElement(params) as JsonObject))
 
-    suspend fun emit(type: String, session: String, payload: String? = null) =
+    suspend fun emit(type: String, session: String?, payload: String? = null) =
         eventFlow.emit(CoreEvent(type, session, payload?.let { json.parseToJsonElement(it) }))
 }

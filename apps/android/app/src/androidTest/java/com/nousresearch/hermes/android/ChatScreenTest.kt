@@ -473,6 +473,23 @@ class ChatScreenTest {
     }
 
     @Test
+    fun anOwnedRunCanBeReadButNotWritten() {
+        val words = InstrumentationRegistry.getInstrumentation().targetContext.getString(R.string.chat_run_owned)
+        var chat by mutableStateOf(answered.copy(runOwned = true))
+        compose.setContent { ChatScreen(chat, onSend = {}, onRetry = {}) }
+
+        compose.onNodeWithTag("run-owned").assertExists().assertTextEquals(words)
+        compose.onNodeWithTag("draft").performTextInput("next")
+        compose.onNodeWithTag("send").assertExists().assertIsNotEnabled()  // the draft stays; Send waits (V5)
+        compose.onNodeWithTag("retry").assertDoesNotExist()
+
+        chat = chat.copy(runOwned = false)
+        compose.onNodeWithTag("run-owned").assertDoesNotExist()
+        compose.onNodeWithTag("send").assertIsEnabled()
+        compose.onNodeWithTag("retry").assertExists()
+    }
+
+    @Test
     fun theSheetClosesOnBackButNotWhileCompressing() {
         var chat by mutableStateOf(answered.copy(compressing = true))
         var context: ContextUi? by mutableStateOf(ContextUi(meter, breakdown))

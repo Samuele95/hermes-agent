@@ -355,6 +355,14 @@ class ChatTest {
     }
 
     @Test
+    fun anOwnedRunHoldsRetry() {
+        val owned = Chat(listOf(Entry.User("a", 1), Entry.Reply("b", TurnStatus.COMPLETE)), runOwned = true)
+
+        assertEquals(null, owned.retryTarget())  // a retry is a prompt.submit into the same session (V5)
+        assertEquals(Retry(0, "a", 1), owned.copy(runOwned = false).retryTarget())
+    }
+
+    @Test
     fun rewindingKeepsWhatCameBeforeThePrompt() {
         val reply = Entry.Reply("r", TurnStatus.COMPLETE)
         val chat = Chat(listOf(Entry.User("a", 1), reply, Entry.User("b", 2), Entry.Notice("x")), model = "kimi-k2")

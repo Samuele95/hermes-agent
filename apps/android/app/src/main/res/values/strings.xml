@@ -3,6 +3,7 @@
     <string name="app_name">Hermes</string>
     <string name="chat_hint">Message Hermes</string>
     <string name="chat_send">Send</string>
+    <string name="chat_run_owned">This job is still running in the background. You can read it here; write once it has finished.</string>
     <string name="chat_model">Model</string>
     <string name="chat_terminal">Terminal</string>
     <string name="chat_gateway">Gateway</string>

@@ -117,9 +117,13 @@ class ChatSessionTest {
     private var seen: () -> GatewaySeen = { GatewaySeen(GatewayStatus.RUNNING) }
     private var observed = 0
 
+    /** Whether the gateway's scheduler still owns a run, as the app's `cron_run_owned` answers; and the ids asked. */
+    private var owned: suspend (StoredSessionId) -> Boolean? = { null }
+    private val ownedAsked = mutableListOf<String>()
+
     private fun TestScope.openChat() =
         ChatSession(core, host, backgroundScope, keepSecret = { name, value -> keepSecret(name, value) }, notifier = notifier,
-                    gatewaySeen = { observed++; seen() })
+                    gatewaySeen = { observed++; seen() }, runOwned = { ownedAsked += it.value; owned(it) })
 
     /** The agent schedules a job in [session] ([action] of the job tool, answered `success`), the core's own warning included. */
     private suspend fun scheduled(session: String, id: String, action: String = "create") {
@@ -1822,7 +1826,169 @@ class ChatSessionTest {
         assertEquals(1, chat.jobNotices().size)
     }
 
+    /** The core's `session.resume` of the job run [stored] as runtime [session]: a prompt and its answer. */
+    private fun runResume(session: String = "s-run", stored: String = RUN) = {
+        """{"session_id":"$session","message_count":2,
+            "messages":[{"role":"user","text":"Summarise the news"},{"role":"assistant","text":"Three stories."}],
+            "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT},"model":"kimi-k2","stored_session_id":"$stored"}}"""
+    }
+
+    private fun submits() = core.calls.filter { it.first == "prompt.submit" }
+
+    @Test
+    fun aJobsRunTheSchedulerStillOwnsIsReadNotWritten() = runTest(UnconfinedTestDispatcher()) {
+        owned = { true }
+        resume = runResume()
+        val chat = openChat()
+
+        chat.resume(stored(RUN))
+
+        assertTrue(chat.state.value.runOwned)
+        assertEquals(listOf(RUN), ownedAsked)
+        assertEquals(listOf(Entry.User("Summarise the news"), Entry.Reply("Three stories.", TurnStatus.COMPLETE)),
+                     chat.state.value.entries)  // viewing stays allowed
+
+        chat.send("hello")
+
+        assertEquals(emptyList<Any>(), submits())
+        assertEquals(Entry.Notice(ChatSession.RUN_STILL_OWNED), chat.state.value.entries.last())
+        assertFalse(chat.state.value.entries.contains(Entry.User("hello")))
+        assertFalse(chat.state.value.busy)
+        assertFalse(turns.toString(), "begin:s-run" in turns)
+        assertEquals(listOf(RUN), ownedAsked)  // one read at open: the send asks nothing (V4)
+    }
+
+    @Test
+    fun aRunTheSchedulerNoLongerOwnsTakesPromptsAsBefore() = runTest(UnconfinedTestDispatcher()) {
+        owned = { false }
+        resume = runResume()
+        val chat = openChat()
+        chat.resume(stored(RUN))
+
+        chat.send("hello")
+
+        assertFalse(chat.state.value.runOwned)
+        assertEquals(listOf("s-run"), submits().map { it.second.getValue("session_id").jsonPrimitive.content })
+    }
+
+    @Test
+    fun aCoreThatCannotSayKeepsTodaysRule() = runTest(UnconfinedTestDispatcher()) {
+        resume = runResume()
+        for (answer in listOf<suspend (StoredSessionId) -> Boolean?>({ null }, { throw java.io.IOException("x") })) {
+            owned = answer
+            core.calls.clear()
+            val chat = openChat()
+            chat.resume(stored(RUN))
+
+            chat.send("hello")
+
+            assertFalse(chat.state.value.runOwned)
+            assertEquals(1, submits().size)  // an older core, or a failed read (V6): today's behaviour
+        }
+    }
+
+    @Test
+    fun anOrdinaryChatAsksNothing() = runTest(UnconfinedTestDispatcher()) {
+        owned = { true }
+        val chat = openChat()
+        chat.open()
+        chat.resume(stored("db-old"))
+
+        chat.send("and tomorrow?")
+
+        assertEquals(emptyList<String>(), ownedAsked)  // V3: no bridge call, no fastapi import
+        assertEquals(1, submits().size)
+    }
+
+    @Test
+    fun aRunThatEndsTakesPromptsAfterTheNextCronChange() = runTest(UnconfinedTestDispatcher()) {
+        owned = { true }
+        resume = runResume()
+        val chat = openChat()
+        chat.resume(stored(RUN))
+
+        core.emit("cron.changed", null, "{}")  // global: no session id
+
+        assertEquals(2, ownedAsked.size)
+        assertTrue(chat.state.value.runOwned)
+        chat.send("hello")
+        assertEquals(emptyList<Any>(), submits())
+
+        owned = { false }  // the run ended: its job's last_run_at moved
+        core.emit("cron.changed", null, "{}")
+
+        assertEquals(listOf(RUN, RUN, RUN), ownedAsked)
+        assertFalse(chat.state.value.runOwned)
+        chat.send("hello")
+        assertEquals(listOf("s-run"), submits().map { it.second.getValue("session_id").jsonPrimitive.content })
+
+        core.emit("cron.changed", null, "{}")  // the chat may write: nothing is asked again
+        assertEquals(3, ownedAsked.size)
+    }
+
+    @Test
+    fun cronChangedAsksNothingWhileTheChatMayWrite() = runTest(UnconfinedTestDispatcher()) {
+        owned = { true }
+        val chat = openChat()
+        chat.open()
+
+        repeat(3) { core.emit("cron.changed", null, "{}") }
+
+        assertEquals(emptyList<String>(), ownedAsked)
+        assertFalse(chat.state.value.runOwned)
+    }
+
+    @Test
+    fun leavingAnOwnedRunLetsTheNextChatWrite() = runTest(UnconfinedTestDispatcher()) {
+        owned = { true }
+        resume = runResume()
+        val chat = openChat()
+        chat.resume(stored(RUN))
+        val late = kotlinx.coroutines.CompletableDeferred<Boolean?>()
+        owned = { late.await() }
+        core.emit("cron.changed", null, "{}")  // asked on the run; its answer comes after the chat left
+
+        chat.open()
+
+        assertFalse(chat.state.value.runOwned)
+        chat.send("hello")
+        assertEquals(listOf("s1"), submits().map { it.second.getValue("session_id").jsonPrimitive.content })
+        val onS1 = chat.state.value
+        late.complete(false)
+        assertEquals(onS1, chat.state.value)  // the change guard: only the session it was asked for
+
+        // A late "no longer owned" for one run never opens another run the scheduler still owns.
+        owned = { true }
+        chat.resume(stored(RUN))
+        val later = kotlinx.coroutines.CompletableDeferred<Boolean?>()
+        owned = { later.await() }
+        core.emit("cron.changed", null, "{}")
+        owned = { true }
+        resume = runResume(session = "s-run2", stored = RUN2)
+        chat.resume(stored(RUN2))
+        later.complete(false)
+
+        assertTrue(chat.state.value.runOwned)
+        assertEquals(listOf(RUN, RUN, RUN, RUN, RUN2), ownedAsked)
+    }
+
+    @Test
+    fun noRetryInAnOwnedRun() = runTest(UnconfinedTestDispatcher()) {
+        owned = { true }
+        resume = runResume()
+        val chat = openChat()
+        chat.resume(stored(RUN))
+
+        chat.retry()
+
+        assertEquals(emptyList<Any>(), submits())
+        assertEquals(emptyList<Any>(), core.calls.filter { it.first == "session.history" })
+    }
+
     private companion object {
+        /** A job's run, named as the core's scheduler names it. */
+        const val RUN = "cron_ab12cd34ef56_20261113_100000"
+        const val RUN2 = "cron_ab12cd34ef56_20261113_110000"
         /** The core's summary of a job-tool row. */
         const val SCHEDULED = "Scheduled the job"
         const val BREAKDOWN = """{"categories":[{"color":"var(--context-usage-system)","id":"system_prompt","label":"System prompt","tokens":4000}],

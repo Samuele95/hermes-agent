@@ -54,11 +54,14 @@ import java.util.concurrent.atomic.AtomicLong
  * a turn asks, which [notifier] hears of along with finished turns. A secret the agent asks for goes to
  * [keepSecret] (the keystore), never back to the core: the core would write an answered value to `.env`.
  * [gatewaySeen] is the app's observation of the always-on gateway: a job the agent schedules while it will not fire is said once (D39 F11).
+ * [runOwned] asks whether the gateway's scheduler still owns a job's run (the app's `cron_run_owned`); while it does,
+ * the chat shows the run and sends nothing into it.
  */
 class ChatSession(private val core: CoreGateway, private val turns: TurnHost, private val scope: CoroutineScope,
                   private val keepSecret: suspend (name: String, value: ByteArray) -> Unit,
                   private val notifier: Notifier = Notifier.None,
-                  private val gatewaySeen: () -> GatewaySeen = { GatewaySeen(GatewayStatus.RUNNING) }) {
+                  private val gatewaySeen: () -> GatewaySeen = { GatewaySeen(GatewayStatus.RUNNING) },
+                  private val runOwned: suspend (StoredSessionId) -> Boolean? = { null }) {
     companion object {
         /** The session's source, which is also the agent's platform; "android" keeps the CLI toolsets. */
         const val SOURCE = "android"
@@ -74,6 +77,8 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         const val NOTHING_TO_COMPRESS = "Nothing to compress yet."
         /** Said once per session when the agent schedules a job the gateway will not fire yet (D39 F11). */
         const val JOBS_NEED_GATEWAY = "Scheduled jobs run only while the gateway is on — drawer → Gateway."
+        /** Said when a send is refused because the gateway's scheduler still owns the job's run (/architect #4). */
+        const val RUN_STILL_OWNED = "This job is still running in the background. You can read it here; write once it has finished."
     }
 
     /**
@@ -124,6 +129,20 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         change { now ->
             if (now.ref?.runtime != session || now.jobsNoticed) now
             else now.copy(chat = now.chat.notice(JOBS_NEED_GATEWAY, NoticeShortcut.GATEWAY), jobsNoticed = true)
+        }
+    }
+
+    /**
+     * The cron store moved (`cron.changed`: a run that ends writes its job's `last_run_at`): a run the chat shows as
+     * still owned is asked again, so the verdict never latches (V4). Only a refusing verdict is re-read; an answer
+     * that no longer confirms it (false, null, a failed read) lets the chat write. Decided in one change, only on the
+     * session it was asked for.
+     */
+    private fun recheckRun() {
+        val ref = synchronized(lock) { live.ref?.takeIf { live.chat.runOwned } } ?: return
+        scope.launch {
+            if (refusesSend(orElse(null) { runOwned(ref.stored) })) return@launch
+            change { now -> if (now.ref?.runtime != ref.runtime || !now.chat.runOwned) now else now.copy(chat = now.chat.copy(runOwned = false)) }
         }
     }
 
@@ -288,7 +307,11 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         val open = resumed.openRequests.orEmpty().map { InTurnPrompt(it.id, it.method, it.params) }
         // The live info's key first (the core's own); the reply's session_key next; the caller's id as the last resort.
         val key = (resumed.info.storedSessionId.ifBlank { null } ?: resumed.sessionKey ?: resumed.storedSessionId)?.let(::StoredSessionId) ?: stored
-        return switchTo(SessionRef(RuntimeSessionId(resumed.sessionId), key), chat, resumed.info.desktopContract, open)
+        // A job's run is asked once, as it opens, whether the gateway's scheduler still owns it (V2, V3); a failed read
+        // cannot tell, which keeps today's rule (V6).
+        val owned = if (isCronRun(key)) orElse(null) { runOwned(key) } else null
+        return switchTo(SessionRef(RuntimeSessionId(resumed.sessionId), key), chat.copy(runOwned = refusesSend(owned)),
+                        resumed.info.desktopContract, open)
     }
 
     /** Invariant 6: no switch while the core compresses the chat's session; [switching] is held, so none is admitted meanwhile. */
@@ -387,7 +410,11 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         change { now ->  // the session and the bubble decided in one change (EJ-78)
             val ref = checkNotNull(now.ref) { "open() the chat first" }
             if (now.chat.compressing) throw SetupRefusal(STILL_COMPRESSING)  // invariant 6 (V4)
-            if (now.chat.busy) now else { session = ref.runtime; now.copy(chat = now.chat.sent(text)) }
+            when {
+                now.chat.runOwned -> now.copy(chat = now.chat.notice(RUN_STILL_OWNED))  // viewing only: nothing goes out (V5)
+                now.chat.busy -> now
+                else -> { session = ref.runtime; now.copy(chat = now.chat.sent(text)) }
+            }
         }
         val to = session ?: return  // V5: a second tap before the turn started
         try {
@@ -562,6 +589,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
      * turn alive exactly while the transcript says it runs: the reducer decides when a turn ends.
      */
     private fun on(event: CoreEvent) {
+        if (event.type == Events.CRON_CHANGED.name) return recheckRun()  // global: no session id (V4)
         val session = RuntimeSessionId(event.sessionId ?: return)
         if (event.type == Events.SESSION_INFO.name || event.type == Events.ERROR.name) leftSessions.settled(session)
         val (before, after) = change { now ->

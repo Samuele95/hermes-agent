@@ -384,7 +384,7 @@ private fun Problem(text: String, modifier: Modifier = Modifier) {
 
 /**
  * The desktop's composer: a rounded field, the model it will ask beneath, and Send — or Stop while a turn runs or is
- * about to; Send waits while the session compresses.
+ * about to; Send waits while the session compresses, or while it is a job's run the gateway still runs.
  */
 @Composable
 private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, onSetup: (() -> Unit)?, onContext: (() -> Unit)?) {
@@ -392,6 +392,10 @@ private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, o
     val shape = RoundedCornerShape(22.dp)
     Column(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 10.dp)
                .background(MaterialTheme.colorScheme.surfaceContainer, shape).border(1.dp, Hermes.colors.stroke, shape)) {
+        // A job's run the gateway still runs is read here, not written (/architect #4): the draft stays, Send waits.
+        if (chat.runOwned) Text(stringResource(R.string.chat_run_owned),
+                                Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 10.dp).testTag("run-owned"),
+                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         TextField(draft, { draft = it }, Modifier.fillMaxWidth().testTag("draft"), maxLines = 6,
                   textStyle = MaterialTheme.typography.bodyLarge, placeholder = { Text(stringResource(R.string.chat_hint)) },
                   colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent,
@@ -417,7 +421,7 @@ private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, o
                     Icon(HermesIcons.Stop, stringResource(R.string.chat_stop), Modifier.size(14.dp))
                 }
             } else {
-                FilledIconButton({ onSend(draft.trim()); draft = "" }, Modifier.size(36.dp).testTag("send"), enabled = draft.isNotBlank() && !chat.compressing) {
+                FilledIconButton({ onSend(draft.trim()); draft = "" }, Modifier.size(36.dp).testTag("send"), enabled = draft.isNotBlank() && !chat.compressing && !chat.runOwned) {
                     Icon(HermesIcons.Send, stringResource(R.string.chat_send), Modifier.size(18.dp))
                 }
             }
