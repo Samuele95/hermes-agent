@@ -50,8 +50,9 @@ class JobFormActions(val save: (JobForm) -> Unit, val cancel: () -> Unit)
  * The job form as a bottom sheet over the Scheduled jobs page (automation-02, -06, -08): name, prompt, when (a
  * preset in the core's grammar, or the job's own schedule kept), how many times, and where the result goes. The
  * typed draft lives here, keyed on the job edited, and is dropped on close; Save is enabled only when the draft can
- * be saved ([canSave]); a count (minutes, times to run) is typed in full, and one the form cannot take is red, with
- * Save off. Nothing can be tapped, and the sheet cannot be dismissed, while a save is on its way.
+ * be saved ([canSave]), never while the picked preset makes no schedule (on an edit too); a count (minutes, times
+ * to run) is typed in full, and one the form cannot take is red, with Save off. Nothing can be tapped, and the sheet
+ * cannot be dismissed, while a save is on its way.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -168,7 +169,7 @@ fun JobFormSheet(ui: JobsUi, form: JobForm, actions: JobFormActions) {
             Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 PrimaryButton(stringResource(if (form.id == null) R.string.job_form_create else R.string.job_form_save),
                               { actions.save(draft) }, Modifier.testTag("job-form-save"),
-                              enabled = enabled && draft.canSave(job) && (oneShot || repeatFits(repeat)))
+                              enabled = enabled && draft.canSave(job, chosen) && (oneShot || repeatFits(repeat)))
                 SecondaryButton(stringResource(R.string.job_form_cancel), actions.cancel, Modifier.testTag("job-form-cancel"), enabled = enabled)
             }
         }

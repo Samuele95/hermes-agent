@@ -227,13 +227,55 @@ class JobFormTest {
     fun canSaveFollowsTheRules() {
         val blank = JobForm.blank()
         assertEquals(JobForm(null, "", "", Schedule.Daily(9, 0), Delivery.Local, null), blank)
-        assertFalse(blank.canSave(null))
-        assertTrue(blank.copy(prompt = "Say hello.").canSave(null))
-        assertFalse(blank.copy(prompt = "Say hello.", schedule = null).canSave(null))
+        assertFalse(blank.canSave(null, SchedulePreset.DAILY))
+        assertTrue(blank.copy(prompt = "Say hello.").canSave(null, SchedulePreset.DAILY))
+        assertFalse(blank.copy(prompt = "Say hello.", schedule = null).canSave(null, SchedulePreset.DAILY))
 
         val j = job()
-        assertFalse(JobForm.of(j).canSave(j))
-        assertTrue(JobForm.of(j).copy(prompt = "new").canSave(j))
-        assertFalse(JobForm.of(j).copy(prompt = "new").canSave(null))
+        assertFalse(JobForm.of(j).canSave(j, null))
+        assertTrue(JobForm.of(j).copy(prompt = "new").canSave(j, null))
+        assertFalse(JobForm.of(j).copy(prompt = "new").canSave(null, null))
+    }
+
+    @Test
+    fun aPickedPresetThatMakesNoScheduleBlocksAnEdit() {
+        val j = job()  // every 30m
+        val edit = JobForm.of(j).copy(prompt = "new")  // something else changed: under keep, it saves
+        for (preset in listOf(SchedulePreset.EVERY, SchedulePreset.ONCE)) {
+            for (typed in listOf("", "0", "2147483648")) {  // blank, 0, past Int: the field is red (K9)
+                val none = ScheduleDraft(preset, minutes = typed).schedule
+                assertNull(none)
+                // Not "keep": the job's every 30m would stay beside the red field (K9 FOUND 1).
+                assertFalse("$preset '$typed'", edit.copy(schedule = none).canSave(j, preset))
+            }
+        }
+        // Every preset's own fields, not only the minutes (V5).
+        assertFalse(edit.copy(schedule = ScheduleDraft(SchedulePreset.DAILY, hour = "24").schedule).canSave(j, SchedulePreset.DAILY))
+        assertFalse(edit.copy(schedule = ScheduleDraft(SchedulePreset.CUSTOM, text = " ").schedule).canSave(j, SchedulePreset.CUSTOM))
+
+        val fifteen = ScheduleDraft(SchedulePreset.EVERY, minutes = "15").schedule
+        assertTrue(edit.copy(schedule = fifteen).canSave(j, SchedulePreset.EVERY))
+        assertTrue(JobForm.of(j).copy(schedule = fifteen).canSave(j, SchedulePreset.EVERY))  // the schedule alone is a change
+    }
+
+    @Test
+    fun aPickedPresetThatMakesNoScheduleBlocksANewJob() {
+        val new = JobForm.blank().copy(prompt = "Say hello.")
+        for (preset in listOf(SchedulePreset.EVERY, SchedulePreset.ONCE)) {
+            for (typed in listOf("", "0", "2147483648")) {
+                assertFalse("$preset '$typed'", new.copy(schedule = ScheduleDraft(preset, minutes = typed).schedule).canSave(null, preset))
+            }
+            assertTrue(new.copy(schedule = ScheduleDraft(preset, minutes = "10080").schedule).canSave(null, preset))
+        }
+    }
+
+    @Test
+    fun anEditThatKeepsItsScheduleStillSaves() {
+        val j = job()
+        val keep = JobForm.of(j).copy(prompt = "new")
+        assertNull(keep.schedule)
+        assertTrue(keep.canSave(j, null))  // the keep row: the job's own schedule, as before
+        assertNull(keep.changesFrom(j)!!.schedule)  // and it is not resent (DC-J8)
+        assertFalse(JobForm.of(j).canSave(j, null))  // nothing changed: nothing to save, as before
     }
 }

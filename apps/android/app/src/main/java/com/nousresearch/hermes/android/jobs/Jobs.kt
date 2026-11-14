@@ -329,7 +329,8 @@ fun deliveryTargets(reply: CronDeliveryTargetsReply?): List<DeliveryTarget> =
 
 /**
  * The job being made ([id] null) or edited: the form's parameter object (§3.3). [schedule] null on an edit keeps the
- * job's own; [repeat] null is no limit. The draft is UI state, never saved.
+ * job's own (only while no preset is picked: [canSave]); [repeat] null is no limit. The draft is UI state, never
+ * saved.
  */
 data class JobForm(val id: JobId?, val name: String, val prompt: String, val schedule: Schedule?,
                    val delivery: Delivery, val repeat: Int?) {
@@ -367,8 +368,14 @@ fun JobForm.changesFrom(job: Job): CronUpdateParams? {
     return CronUpdateParams(jobId = job.id.value, name = name, schedule = schedule, prompt = prompt, deliver = deliver, repeat = repeat)
 }
 
-/** Whether the form can be saved: a new one with a prompt and a schedule; an edit of the listed [job] that changes something. */
-fun JobForm.canSave(job: Job?): Boolean = if (id == null) addParams() != null else job != null && changesFrom(job) != null
+/**
+ * Whether the form can be saved: a new one with a prompt and a schedule; an edit of the listed [job] that changes
+ * something. [picked] is the preset the form shows chosen, null for an edit's keep row (the job's own schedule).
+ * While a picked preset makes no schedule, nothing is saved, new or edit: its null [JobForm.schedule] would read as
+ * "keep", and the job's old schedule would stay beside a red field (K9 FOUND 1).
+ */
+fun JobForm.canSave(job: Job?, picked: SchedulePreset?): Boolean =
+    (picked == null || schedule != null) && (if (id == null) addParams() != null else job != null && changesFrom(job) != null)
 
 /** The runs a job may make: a one-shot runs once (as the core sets it); otherwise the typed limit, blank or 0 being none. */
 fun repeatOf(schedule: Schedule?, typed: String): Int? =

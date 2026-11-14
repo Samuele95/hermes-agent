@@ -206,6 +206,33 @@ class JobFormScreenTest {
     }
 
     @Test
+    fun anEditWithARedScheduleFieldCannotBeSaved() {
+        val red = SemanticsMatcher.keyIsDefined(SemanticsProperties.Error)
+        val j = job()  // every 120m
+        show(JobForm.of(j), listOf(j))
+        tag("job-form-prompt").performTextReplacement("Say goodbye.")
+        tag("job-form-save").assertIsEnabled()  // the schedule kept, the prompt changed
+
+        tag("job-schedule-every").performClick()
+        for (typed in listOf("", "0", "2147483648")) {
+            tag("job-form-minutes").performTextReplacement(typed)
+            tag("job-form-minutes").assert(red)
+            tag("job-form-save").assertIsNotEnabled()  // every 120m is not kept in silence (K9 FOUND 1)
+        }
+        tag("job-form-minutes").performTextReplacement("15")
+        assertEquals(Schedule.Every(15), save().schedule)
+
+        tag("job-form-minutes").performTextReplacement("0")
+        tag("job-form-save").assertIsNotEnabled()
+        tag("job-schedule-keep").performClick()  // back to the job's own: Save is on again, the schedule untouched
+        save().let {
+            assertNull(it.schedule)
+            assertEquals("Say goodbye.", it.prompt)
+            assertEquals(JobId("a1b2"), it.id)
+        }
+    }
+
+    @Test
     fun anAgentsDeliveryIsOfferedAsKept() {
         val agents = job(delivery = Delivery.Other("origin"))
         show(JobForm.of(agents), listOf(agents))
