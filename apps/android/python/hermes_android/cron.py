@@ -1,12 +1,12 @@
 """The app's jobs calls over the core's own cron functions (D39, blueprint §3.2).
 
 The core's JSON-RPC ``cron.manage`` stops at list / add / remove / pause / resume. Editing a job, making it
-due now, its past runs, the platforms it can deliver to and the ticker's record are declared bridge calls
-instead, each a thin adapter over the one core function the Dashboard's route wraps, so the core keeps
-judging schedules and prompts. Run now only makes the job due: the gateway's ticker fires it, never this
-(the chat) process. The cron store is written under the core's own ``_jobs_lock``, so no app lock is taken.
-The core is importable only after ``prepare()``, so its imports sit inside the functions. Each function
-takes and returns JSON; an ``{"error"}`` answer is for the user.
+due now, its past runs, whether the scheduler still owns one of them, the platforms it can deliver to and the
+ticker's record are declared bridge calls instead, each a thin adapter over the one core function the
+Dashboard's route wraps, so the core keeps judging schedules and prompts. Run now only makes the job due: the
+gateway's ticker fires it, never this (the chat) process. The cron store is written under the core's own
+``_jobs_lock``, so no app lock is taken. The core is importable only after ``prepare()``, so its imports sit
+inside the functions. Each function takes and returns JSON; an ``{"error"}`` answer is for the user.
 """
 
 from __future__ import annotations
@@ -86,3 +86,22 @@ def scheduler(_arg: str) -> str:
         "success_age_s": None if success is None else int(success),
         "last_error": None if error is None else redact_sensitive_text(error, force=True, redact_url_credentials=True),
         "stale_after_s": TICKER_INTERVAL_SECONDS * 3 + 20})
+
+
+def run_owned(arg: str) -> str:
+    """Whether the gateway's scheduler still owns ``{"session_id"}``'s run: the core's own
+    ``cron_run_scheduler_owned`` (the Dashboard's ``scheduler_owned``), never the 300 s window, which a run inside
+    a long tool call fails. True while a live process holds its execution; false once none does or the run ended;
+    null when the core cannot say: not a run, no such session, or a core without the function (V8: exact ids)."""
+    try:
+        from hermes_cli.web_routers.cron import cron_run_scheduler_owned
+    except ImportError:  # an older core: the app keeps today's rule, as Desktop falls back
+        return json.dumps({"owned": None})
+    import hermes_state_registry
+
+    db = hermes_state_registry.acquire()
+    try:
+        session = db.get_session(json.loads(arg)["session_id"])
+    finally:
+        hermes_state_registry.release_or_close(db)
+    return json.dumps({"owned": None if session is None else cron_run_scheduler_owned(session)})

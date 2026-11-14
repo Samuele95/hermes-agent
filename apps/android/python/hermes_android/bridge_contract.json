@@ -321,6 +321,15 @@
         "last_error": "string?",
         "stale_after_s": "integer"
       }
+    },
+    "cron_run_owned": {
+      "summary": "Whether the gateway's scheduler still owns a job's run session (the core's cron_run_scheduler_owned, the Dashboard's scheduler_owned): true while a live process holds its execution, false once none does or the run ended, null when the core cannot say (not a run, no such session, an older core).",
+      "params": {
+        "session_id": "string"
+      },
+      "reply": {
+        "owned": "boolean?"
+      }
     }
   },
   "events": {

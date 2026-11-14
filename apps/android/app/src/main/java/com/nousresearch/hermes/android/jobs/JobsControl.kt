@@ -8,6 +8,7 @@ import com.nousresearch.hermes.bridge.AppBridge
 import com.nousresearch.hermes.bridge.CoreGateway
 import com.nousresearch.hermes.bridge.ask
 import com.nousresearch.hermes.bridge.contract.BridgeCalls
+import com.nousresearch.hermes.bridge.contract.CronRunOwnedParams
 import com.nousresearch.hermes.bridge.contract.CronRunsParams
 import com.nousresearch.hermes.bridge.contract.CronTriggerParams
 import com.nousresearch.hermes.bridge.protocol.CronAction
@@ -72,6 +73,10 @@ private fun JobsUi.triggering(id: JobId): JobsUi? {
     val job = jobs.find { it.id == id } ?: return null
     return if (busy || form != null || !offersRunNow(job)) null else copy(busy = true, error = null)
 }
+
+/** Asks the app's `cron_run_owned` whether the gateway's scheduler still owns [run]: a value read each time, never kept here. */
+suspend fun AppBridge.runOwnership(run: StoredSessionId): RunOwnership =
+    RunOwnership.of(ask(BridgeCalls.CRON_RUN_OWNED, CronRunOwnedParams(run.value)))
 
 /**
  * Lists the core's jobs through `cron.manage` (paused ones too) and judges the warning from the app's own gateway

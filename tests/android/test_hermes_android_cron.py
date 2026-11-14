@@ -1,12 +1,12 @@
 """The app's jobs calls over the core's own cron functions (D39, blueprint §3.2).
 
 The core's JSON-RPC ``cron.manage`` stops at list / add / remove / pause / resume. Editing a job, making it
-due now, its past runs, the platforms it can deliver to and the ticker's record are declared bridge calls
-instead (``cron_update``, ``cron_trigger``, ``cron_runs``, ``cron_delivery_targets``, ``cron_scheduler``),
-each a thin adapter over the core function the Dashboard's route wraps. Every test goes through
-``hermes_android.call``, so the contract's declaration judges each reply, and runs against the real core
-store of the hermetic conftest's per-test home. Run now only makes the job due: the gateway's ticker fires
-it, never the chat process.
+due now, its past runs, whether the scheduler still owns one of them, the platforms it can deliver to and the
+ticker's record are declared bridge calls instead (``cron_update``, ``cron_trigger``, ``cron_runs``,
+``cron_run_owned``, ``cron_delivery_targets``, ``cron_scheduler``), each a thin adapter over the core function
+the Dashboard's route wraps. Every test goes through ``hermes_android.call``, so the contract's declaration
+judges each reply, and runs against the real core store of the hermetic conftest's per-test home. Run now
+only makes the job due: the gateway's ticker fires it, never the chat process.
 """
 
 from __future__ import annotations
@@ -159,6 +159,105 @@ def test_an_open_run_idle_for_five_minutes_is_not_active(home, monkeypatch):
         (run,) = ask("cron_runs", {"job_id": a, "limit": 20})["runs"]
 
     assert run["ended_at"] is None and run["active"] is False
+
+
+def _claim(job_id: str) -> dict:
+    """A ledger attempt for ``job_id`` claimed and running under THIS (live) process, in the per-test home (the
+    core's own ``_claim`` in tests/hermes_cli/test_cron_run_scheduler_ownership.py, with no profile override)."""
+    from cron.executions import create_execution, mark_execution_running
+
+    record = create_execution(job_id, source="test")
+    return mark_execution_running(record["id"]) or record
+
+
+def test_a_run_the_scheduler_holds_is_owned_even_idle_past_the_window(home, monkeypatch):
+    import time
+
+    import hermes_state_registry
+
+    a = "a1b2c3d4e5f6"
+    run = f"cron_{a}_20261113_100000"
+    _claim(a)
+    db = hermes_state_registry.acquire()
+    try:
+        db.create_session(run, source="cron")  # it starts after the claim, as the scheduler writes it
+        handles = hermes_state_registry.stats()["total_refcounts"]
+        later = time.time() + 301
+        with monkeypatch.context() as clock:  # a run inside a long tool call: no heartbeat for over 300 s
+            clock.setattr(time, "time", lambda: later)
+            owned = ask("cron_run_owned", {"session_id": run})
+            (idle,) = ask("cron_runs", {"job_id": a, "limit": 20})["runs"]
+
+        assert hermes_state_registry.stats()["total_refcounts"] == handles, "a state.db handle leaked"
+    finally:
+        hermes_state_registry.release_or_close(db)
+
+    assert owned == {"owned": True}
+    assert idle["session_id"] == run and idle["active"] is False  # the window alone would call it quiet
+    (now,) = ask("cron_runs", {"job_id": a, "limit": 20})["runs"]
+    assert now["session_id"] == run and now["active"] is True
+
+
+def test_a_run_that_ended_is_not_owned(home):
+    import hermes_state_registry
+
+    a = "a1b2c3d4e5f6"
+    run = f"cron_{a}_20261113_100000"
+    _claim(a)
+    db = hermes_state_registry.acquire()
+    try:
+        db.create_session(run, source="cron")
+        db.end_session(run, "cron_complete")
+    finally:
+        hermes_state_registry.release_or_close(db)
+
+    assert ask("cron_run_owned", {"session_id": run}) == {"owned": False}
+
+
+def test_a_never_closed_run_with_no_live_owner_is_not_owned(home):
+    import hermes_state_registry
+
+    a = "a1b2c3d4e5f6"
+    run = f"cron_{a}_20261113_100000"
+    db = hermes_state_registry.acquire()
+    try:
+        db.create_session(run, source="cron")  # a zombie: never closed, and nothing claims its job
+    finally:
+        hermes_state_registry.release_or_close(db)
+
+    assert ask("cron_run_owned", {"session_id": run}) == {"owned": False}
+
+
+def test_what_is_not_a_run_cannot_be_told(home):
+    import hermes_state_registry
+
+    a = "a1b2c3d4e5f6"
+    _claim(a)
+    db = hermes_state_registry.acquire()
+    try:
+        db.create_session(f"cron_{a}_20261113_110000", source="cli")  # a run's name, not a run
+        db.create_session("db-x", source="android")
+    finally:
+        hermes_state_registry.release_or_close(db)
+
+    for session_id in (f"cron_{a}_20261113_110000", "db-x", "cron_000000000000_20261113_100000"):
+        assert ask("cron_run_owned", {"session_id": session_id}) == {"owned": None}, session_id
+
+
+def test_a_core_without_the_ownership_function_cannot_tell(home, monkeypatch):
+    import hermes_state_registry
+
+    monkeypatch.delattr(importlib.import_module("hermes_cli.web_routers.cron"), "cron_run_scheduler_owned")
+    a = "a1b2c3d4e5f6"
+    run = f"cron_{a}_20261113_100000"
+    _claim(a)
+    db = hermes_state_registry.acquire()
+    try:
+        db.create_session(run, source="cron")
+    finally:
+        hermes_state_registry.release_or_close(db)
+
+    assert ask("cron_run_owned", {"session_id": run}) == {"owned": None}
 
 
 def test_delivery_targets_are_the_phones_platforms_with_their_home_flag(home, monkeypatch):

@@ -335,6 +335,16 @@ data class CronSchedulerReply(
     @SerialName("stale_after_s") val staleAfterS: Int,
 )
 
+@Serializable
+data class CronRunOwnedParams(
+    @SerialName("session_id") val sessionId: String,
+)
+
+@Serializable
+data class CronRunOwnedReply(
+    val owned: Boolean?,
+)
+
 /** Every call the app may make into its Python half. */
 object BridgeCalls {
     /** The interpreter facts the app shows. */
@@ -391,6 +401,8 @@ object BridgeCalls {
     val CRON_DELIVERY_TARGETS = BridgeCall("cron_delivery_targets", NoParams.serializer(), CronDeliveryTargetsReply.serializer())
     /** The cron ticker's own record: seconds since its last heartbeat and last good tick (null when there is no stamp), its last error redacted, and the core's staleness threshold. */
     val CRON_SCHEDULER = BridgeCall("cron_scheduler", NoParams.serializer(), CronSchedulerReply.serializer())
+    /** Whether the gateway's scheduler still owns a job's run session (the core's cron_run_scheduler_owned, the Dashboard's scheduler_owned): true while a live process holds its execution, false once none does or the run ended, null when the core cannot say (not a run, no such session, an older core). */
+    val CRON_RUN_OWNED = BridgeCall("cron_run_owned", CronRunOwnedParams.serializer(), CronRunOwnedReply.serializer())
 
     /** The calls that may wait on the network (`blocking` in the contract): EmbeddedPython runs them on their own thread. */
     val BLOCKING: Set<String> = setOf("probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check")

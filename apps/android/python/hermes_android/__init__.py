@@ -363,3 +363,9 @@ def cron_scheduler(arg: str) -> str:
     from hermes_android import cron
 
     return cron.scheduler(arg)
+
+
+def cron_run_owned(arg: str) -> str:
+    from hermes_android import cron
+
+    return cron.run_owned(arg)

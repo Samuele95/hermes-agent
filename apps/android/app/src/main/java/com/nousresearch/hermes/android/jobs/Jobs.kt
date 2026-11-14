@@ -5,6 +5,7 @@ import com.nousresearch.hermes.android.gateway.GatewaySeen
 import com.nousresearch.hermes.android.gateway.GatewayStatus
 import com.nousresearch.hermes.bridge.contract.CronDeliveryTargetsReply
 import com.nousresearch.hermes.bridge.contract.CronRun
+import com.nousresearch.hermes.bridge.contract.CronRunOwnedReply
 import com.nousresearch.hermes.bridge.contract.CronSchedulerReply
 import com.nousresearch.hermes.bridge.contract.CronUpdateParams
 import com.nousresearch.hermes.bridge.protocol.CronAction
@@ -181,6 +182,18 @@ val JobRun.phase: RunPhase get() = when {
     endedAt != null -> RunPhase.ENDED
     active -> RunPhase.RUNNING
     else -> RunPhase.UNFINISHED
+}
+
+/**
+ * Whether the gateway's scheduler still owns a job's run (the core's `cron_run_scheduler_owned`, which the
+ * Dashboard stamps as `scheduler_owned`): true while a live process holds the run's execution, false once none does
+ * or the run ended, null when the core cannot say (not a run, no such session, an older core). Stronger than
+ * [JobRun.active]'s 300 s window, which a run inside a long tool call fails (/architect 20261113T220113Z #4).
+ */
+data class RunOwnership(val owned: Boolean?) {
+    companion object {
+        fun of(reply: CronRunOwnedReply): RunOwnership = RunOwnership(reply.owned)
+    }
 }
 
 /** A run's start (epoch s) as the phone's wall time to the minute (`2026-11-13 09:30`), as [wallTime] writes the core's. */

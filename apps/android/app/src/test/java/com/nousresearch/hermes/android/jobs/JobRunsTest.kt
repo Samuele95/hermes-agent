@@ -32,6 +32,7 @@ class JobRunsTest {
         listed
     }
     private var runsReply = TWO
+    private var ownedReply = """{"owned":true}"""
     private var onRuns: () -> Unit = {}
     private var runsFails: Exception? = null
     private val bridgeCalls = mutableListOf<Pair<String, String>>()
@@ -45,6 +46,7 @@ class JobRunsTest {
                 runsFails?.let { throw it }
                 runsReply
             }
+            "cron_run_owned" -> ownedReply
             else -> error("unexpected $function")
         }
     }
@@ -308,6 +310,24 @@ class JobRunsTest {
 
         assertNull(ui.runs)
         assertEquals(1, runsCalls.size)
+    }
+
+    @Test
+    fun aRunsOwnershipIsTheCoresAnswerByItsSessionId() = runTest {
+        assertEquals(RunOwnership(true), bridge.runOwnership(StoredSessionId(NEW_ID)))
+        assertEquals(listOf("cron_run_owned" to """{"session_id":"$NEW_ID"}"""), bridgeCalls)
+
+        ownedReply = """{"owned":false}"""
+        assertEquals(RunOwnership(false), bridge.runOwnership(StoredSessionId(NEW_ID)))
+        ownedReply = """{"owned":null}"""
+        assertEquals(RunOwnership(null), bridge.runOwnership(StoredSessionId(NEW_ID)))
+
+        control.open()
+        control.showRuns(j1)
+        control.openRun(StoredSessionId(NEW_ID))
+
+        assertEquals(listOf(StoredSessionId(NEW_ID)), resumed)
+        assertEquals(3, bridgeCalls.count { it.first == "cron_run_owned" })  // openRun asks nothing of its own (V2)
     }
 
     private companion object {
