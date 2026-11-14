@@ -100,9 +100,9 @@ fun GatewayScreen(state: GatewayUi, samsung: Boolean, onOn: () -> Unit, onOff: (
 
 /**
  * The phone's own bot (D11, D24): what it is doing (the core's own entry only from the running gateway, D39 F3), its
- * switch (on only while a token is held, D40, else a way to the token field), a change waiting for the gateway's next
- * start with Restart, its token (masked, kept only until saved), the one user allowed to talk to it, and Remove the
- * bot after a confirmation.
+ * switch (as config.yaml has it: on only while a token is held, D40, off always, Dv54), a way to the token field while
+ * none is held, a change waiting for the gateway's next start with Restart, its token (masked, kept only until saved),
+ * the one user allowed to talk to it, and Remove the bot after a confirmation.
  */
 @Composable
 private fun TelegramSection(state: TelegramState, onSave: (ByteArray?, String) -> Unit, onTelegram: TelegramActions?,
@@ -116,8 +116,9 @@ private fun TelegramSection(state: TelegramState, onSave: (ByteArray?, String) -
         state.live?.let { LiveLine(it) }
         val tokenFocus = remember { FocusRequester() }
         if (onTelegram != null) {
-            Setting(stringResource(R.string.telegram_switch), checked = state.enabled && state.tokenHeld, tag = "telegram-switch",
-                    enabled = state.tokenHeld && !state.busy) { onTelegram.setEnabled(it) }
+            // On only while a token is held (D40); off always, so a bot left on without one can be switched off (Dv54).
+            Setting(stringResource(R.string.telegram_switch), checked = state.enabled, tag = "telegram-switch",
+                    enabled = !state.busy && (state.tokenHeld || state.enabled)) { onTelegram.setEnabled(it) }
             if (!state.tokenHeld) {
                 Hint(stringResource(R.string.telegram_needs_token), Modifier.testTag("telegram-needs-token"))
                 TextButton(onClick = { tokenFocus.requestFocus() }, Modifier.testTag("telegram-add-token")) {

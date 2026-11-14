@@ -157,8 +157,9 @@ class TelegramSetup(
 
     /**
      * Switches the bot on or off in config.yaml through `telegram_enable`, for the gateway's next start. On only while
-     * the keystore holds a token, read at the tap (D40: on without a token stops the whole gateway); without one
-     * nothing is sent. A double tap sends once.
+     * the keystore holds a token, read at the tap (D40: on without a token stops the whole gateway); without one an on
+     * sends nothing. Off is always sent, a token held or not (Dv54: it is the way out of a bot left on without one). A
+     * double tap sends once.
      */
     suspend fun setEnabled(on: Boolean) {
         if (on && !secrets.contains(TOKEN)) {

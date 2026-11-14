@@ -26,7 +26,10 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** The Gateway page's Telegram section: the bot's live line, its switch (on only with a token, D40) and Remove the bot. */
+/**
+ * The Gateway page's Telegram section: the bot's live line, its switch (on only with a token, D40; off always, Dv54) and
+ * Remove the bot.
+ */
 @RunWith(AndroidJUnit4::class)
 class TelegramBotScreenTest {
     @get:Rule
@@ -50,7 +53,7 @@ class TelegramBotScreenTest {
 
     @Test
     fun withoutATokenTheSwitchIsOffCannotBeTurnedOnAndSaysToAddATokenFirst() {
-        show(TelegramState(tokenHeld = false, enabled = true))
+        show(TelegramState(tokenHeld = false, enabled = false))
 
         compose.onNodeWithTag("telegram-switch").performScrollTo().assertIsOff().assertIsNotEnabled()
         compose.onNodeWithTag("telegram-switch").performClick()
@@ -58,6 +61,24 @@ class TelegramBotScreenTest {
         compose.onNodeWithTag("telegram-needs-token").assertExists()
         compose.onNodeWithTag("telegram-add-token").performScrollTo().performClick()
         compose.onNodeWithTag("telegram-token").assertIsFocused()
+    }
+
+    @Test
+    fun withoutATokenABotLeftOnShowsOnAndCanOnlyBeSwitchedOff() {
+        show(TelegramState(tokenHeld = false, enabled = true, live = PlatformLive(PlatformState.NOT_CONFIGURED)))
+
+        compose.onNodeWithTag("telegram-live-not_configured").performScrollTo().assertExists()
+        compose.onNodeWithTag("telegram-switch").performScrollTo().assertIsOn().assertIsEnabled().performClick()
+        assertEquals("a bot left on without a token can be switched off (Dv54)", listOf("enabled false"), calls)
+        compose.onNodeWithTag("telegram-needs-token").assertExists()
+        compose.onNodeWithTag("telegram-add-token").assertExists()
+
+        bot = TelegramState(tokenHeld = false, enabled = true, busy = true)
+        compose.onNodeWithTag("telegram-switch").performScrollTo().assertIsNotEnabled()
+
+        bot = TelegramState(tokenHeld = false, enabled = false, live = PlatformLive(PlatformState.DISABLED))
+        compose.onNodeWithTag("telegram-switch").performScrollTo().assertIsOff().assertIsNotEnabled().performClick()
+        assertEquals("once off, no token: not back on (D40)", listOf("enabled false"), calls)
     }
 
     @Test

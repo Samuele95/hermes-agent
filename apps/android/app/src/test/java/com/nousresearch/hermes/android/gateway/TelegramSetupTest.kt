@@ -448,6 +448,34 @@ class TelegramSetupTest {
     }
 
     @Test
+    fun aBotLeftOnWithoutATokenCanStillBeSwitchedOffAndNotBackOn() = runTest {
+        holdToken(enabled = true)
+        seenNow = GatewaySeen(GatewayStatus.RUNNING, pid = 42)
+        answers["telegram_check"] = """{"check":"refused","bot":null,"message":"$REFUSED_WORDS"}"""
+        enableFails = java.io.IOException("binder died")
+        telegram.open()
+        telegram.save("bad".toByteArray(), "42")
+        assertEquals("K2's stuck state: still on", true, telegram.state.value?.enabled)
+        assertEquals("K2's stuck state: no token", false, telegram.state.value?.tokenHeld)
+
+        enableFails = null
+        telegram.setEnabled(false)
+
+        assertEquals("the failed switch-off, then this one", listOf(enabled(false), enabled(false)), sentEnable())
+        val state = telegram.state.value!!
+        assertEquals(false, state.enabled)
+        assertEquals(PlatformLive(PlatformState.DISABLED), state.live)
+        assertEquals(true, state.nextStart)
+        assertNull(state.error)
+        assertEquals(false, state.busy)
+
+        telegram.setEnabled(true)
+
+        assertEquals("no switch on without a token (D40)", 2, sentEnable().size)
+        assertEquals(false, telegram.state.value?.enabled)
+    }
+
+    @Test
     fun aRefusedFirstTokenLeavesTheSwitchAlone() = runTest {
         answers["telegram_check"] = """{"check":"refused","bot":null,"message":"Telegram refused the token (401)"}"""
         telegram.open()
