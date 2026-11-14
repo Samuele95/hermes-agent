@@ -196,6 +196,31 @@ data class RunOwnership(val owned: Boolean?) {
     }
 }
 
+/**
+ * What the Scheduled jobs page is doing, one thing at a time (/architect 20261113T220113Z #1, §2 JobActivity):
+ * nothing ([Idle]), the first list ([Listing]), a save ([Saving]), a pause or resume of one job ([Acting]), a delete
+ * ([Deleting]), the first read of a job's runs ([Showing]), opening one run in the chat ([Opening]), or a Run now
+ * ([Triggering]). Each is admitted only while the page is [Idle] and ended only by the step that began it, so a re-list
+ * on `cron.changed` ends none but its own [Listing].
+ */
+sealed interface JobActivity {
+    data object Idle : JobActivity
+
+    data object Listing : JobActivity
+
+    data object Saving : JobActivity
+
+    data class Acting(val id: JobId) : JobActivity
+
+    data class Deleting(val id: JobId) : JobActivity
+
+    data class Showing(val id: JobId) : JobActivity
+
+    data class Opening(val run: StoredSessionId) : JobActivity
+
+    data class Triggering(val id: JobId) : JobActivity
+}
+
 /** A run's start (epoch s) as the phone's wall time to the minute (`2026-11-13 09:30`), as [wallTime] writes the core's. */
 fun runTime(epochS: Long, zone: TimeZone = TimeZone.getDefault()): String =
     SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.ROOT).apply { timeZone = zone }.format(Date(epochS * 1000))

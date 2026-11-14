@@ -16,6 +16,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.nousresearch.hermes.android.chat.StoredSessionId
 import com.nousresearch.hermes.android.jobs.Job
 import com.nousresearch.hermes.android.jobs.JobActions
+import com.nousresearch.hermes.android.jobs.JobActivity
 import com.nousresearch.hermes.android.jobs.JobFormActions
 import com.nousresearch.hermes.android.jobs.JobId
 import com.nousresearch.hermes.android.jobs.JobRowActions
@@ -160,7 +161,8 @@ class JobRunsScreenTest {
 
     @Test
     fun whileARunOpensNothingCanBeTapped() {
-        show(JobsUi(listOf(news), busy = true, runs = RunsView(news.id, three, loaded = true)))
+        show(JobsUi(listOf(news), activity = JobActivity.Opening(StoredSessionId(ENDED)),
+                    runs = RunsView(news.id, three, loaded = true)))
 
         compose.onNodeWithTag("job-run-$ENDED").assertIsNotEnabled()
         compose.onNodeWithTag("job-runs-close").assertIsNotEnabled()

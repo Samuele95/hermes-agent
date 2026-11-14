@@ -125,7 +125,7 @@ class JobActionsDeviceTest {
         gatewayOff()
         val jobs = ready.jobs
         val ui: () -> JobsUi = { checkNotNull(jobs.state.value) }
-        // As the page runs it while it shows; the timeline says whether a cron.changed ended busy before the re-list.
+        // As the page runs it while it shows; the timeline records whether a cron.changed re-list left the action's activity alone.
         val start = SystemClock.elapsedRealtime()
         val timeline = Collections.synchronizedList(mutableListOf<String>())
         val watcher = GlobalScope.launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
@@ -134,7 +134,7 @@ class JobActionsDeviceTest {
             }
         }
         val busy = GlobalScope.launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
-            jobs.state.collect { timeline += "${SystemClock.elapsedRealtime() - start} busy=${it?.busy}" }
+            jobs.state.collect { timeline += "${SystemClock.elapsedRealtime() - start} activity=${it?.activity}" }
         }
         val follower = GlobalScope.launch(Dispatchers.IO) { jobs.follow() }
         try {

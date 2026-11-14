@@ -149,6 +149,23 @@ class JobActionsTest {
     }
 
     @Test
+    fun aReListWhileAnActionRunsAdmitsNoSecond() = runTest {
+        control.open()
+        onAct = {
+            onAct = {}
+            runBlocking {
+                control.refresh()  // the re-list follow() makes on cron.changed, while the pause is on its way
+                control.pause(j1)  // the same tap again
+            }
+        }
+
+        control.pause(j1)
+
+        assertEquals(1, acts("pause").size)
+        assertFalse(ui.busy)
+    }
+
+    @Test
     fun deleteRunsOnlyAfterAConfirmationOfTheSameJob() = runTest {
         control.open()
 

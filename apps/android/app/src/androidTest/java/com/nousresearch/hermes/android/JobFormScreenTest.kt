@@ -19,6 +19,7 @@ import com.nousresearch.hermes.android.jobs.Delivery
 import com.nousresearch.hermes.android.jobs.DeliveryTarget
 import com.nousresearch.hermes.android.jobs.Job
 import com.nousresearch.hermes.android.jobs.JobActions
+import com.nousresearch.hermes.android.jobs.JobActivity
 import com.nousresearch.hermes.android.jobs.JobForm
 import com.nousresearch.hermes.android.jobs.JobFormActions
 import com.nousresearch.hermes.android.jobs.JobId
@@ -50,7 +51,8 @@ class JobFormScreenTest {
             delivery = delivery)
 
     private fun show(form: JobForm, jobs: List<Job> = emptyList(), busy: Boolean = false, error: String? = null) = compose.setContent {
-        JobsScreen(JobsUi(jobs, busy = busy, error = error, form = form, targets = listOf(local, telegramNoHome)),
+        JobsScreen(JobsUi(jobs, activity = if (busy) JobActivity.Saving else JobActivity.Idle, error = error, form = form,
+                          targets = listOf(local, telegramNoHome)),
                    onOpenGateway = {}, onClose = { calls += "close" },
                    actions = JobActions(newJob = { calls += "new" }, edit = { calls += "edit:${it.value}" },
                                         form = JobFormActions(save = { saved = it }, cancel = { calls += "cancel" })))

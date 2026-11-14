@@ -14,6 +14,7 @@ import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.nousresearch.hermes.android.jobs.Job
 import com.nousresearch.hermes.android.jobs.JobActions
+import com.nousresearch.hermes.android.jobs.JobActivity
 import com.nousresearch.hermes.android.jobs.JobFormActions
 import com.nousresearch.hermes.android.jobs.JobId
 import com.nousresearch.hermes.android.jobs.JobRowActions
@@ -151,7 +152,7 @@ class JobActionsScreenTest {
 
     @Test
     fun whileBusyNoMenuOpens() {
-        show(JobsUi(listOf(news), busy = true, gatewayRunning = true))
+        show(JobsUi(listOf(news), activity = JobActivity.Acting(news.id), gatewayRunning = true))
 
         compose.onNodeWithTag("job-menu-a1b2").assertIsNotEnabled()
     }

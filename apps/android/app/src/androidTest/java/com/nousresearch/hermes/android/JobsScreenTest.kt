@@ -13,6 +13,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.nousresearch.hermes.android.gateway.GatewayStatus
 import com.nousresearch.hermes.android.jobs.Job
 import com.nousresearch.hermes.android.jobs.JobActions
+import com.nousresearch.hermes.android.jobs.JobActivity
 import com.nousresearch.hermes.android.jobs.JobFormActions
 import com.nousresearch.hermes.android.jobs.JobId
 import com.nousresearch.hermes.android.jobs.JobState
@@ -94,7 +95,7 @@ class JobsScreenTest {
 
     @Test
     fun noJobsSaysHowToGetOneAndWarnsOfNothing() {
-        var state by mutableStateOf(JobsUi(busy = true))
+        var state by mutableStateOf(JobsUi(activity = JobActivity.Listing))
         compose.setContent { JobsScreen(state, onOpenGateway = {}, onClose = {}) }
 
         compose.onNodeWithTag("jobs-empty").assertDoesNotExist()  // the list is on its way

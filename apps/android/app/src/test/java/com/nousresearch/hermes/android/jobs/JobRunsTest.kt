@@ -8,7 +8,10 @@ import com.nousresearch.hermes.bridge.AppBridge
 import com.nousresearch.hermes.bridge.CoreError
 import com.nousresearch.hermes.bridge.contract.CronRun
 import java.util.TimeZone
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
@@ -24,6 +27,7 @@ import org.junit.Test
  * read again on a refresh, and gone with the job; a run opens only through the chat's own resume, and the page closes
  * only once the chat took it.
  */
+@OptIn(ExperimentalCoroutinesApi::class) // UnconfinedTestDispatcher: a launched collector runs until it suspends
 class JobRunsTest {
     private var listed = ALL
     private val core = FakeCoreGateway { method, params ->
@@ -51,10 +55,12 @@ class JobRunsTest {
         }
     }
     private val resumed = mutableListOf<StoredSessionId>()
+    private var duringResume: suspend () -> Unit = {}
     private var onResume: () -> Unit = {}
     private var resumeFails: Exception? = null
     private val seen = GatewaySeen(GatewayStatus.RUNNING, pid = 42)
     private val control = JobsControl(core, bridge, seen = { seen }, resume = { stored ->
+        duringResume()
         onResume()
         resumeFails?.let { throw it }
         resumed += stored
@@ -118,7 +124,7 @@ class JobRunsTest {
         var checked = false
         onRuns = {
             assertEquals(RunsView(j1), control.state.value!!.runs)
-            assertFalse(control.state.value!!.busy)
+            assertEquals(JobActivity.Showing(j1), control.state.value!!.activity)
             checked = true
         }
 
@@ -262,6 +268,27 @@ class JobRunsTest {
         control.openRun(StoredSessionId(NEW_ID))
 
         assertEquals(listOf(StoredSessionId(NEW_ID)), resumed)
+    }
+
+    @Test
+    fun aReListWhileARunOpensAdmitsNoSecondOpen() = runTest(UnconfinedTestDispatcher()) {
+        control.open()
+        backgroundScope.launch { control.follow() }
+        control.showRuns(j1)
+        val lists = listCalls.size
+        var relisted = false
+        duringResume = {
+            duringResume = {}
+            core.emit("cron.changed", "")             // the core's change signal, before the chat took the run
+            relisted = listCalls.size == lists + 1    // the re-list ran inside the open (guard: not vacuous)
+            control.openRun(StoredSessionId(NEW_ID))  // the same row, tapped again
+        }
+
+        control.openRun(StoredSessionId(NEW_ID))
+
+        assertTrue(relisted)
+        assertEquals(listOf(StoredSessionId(NEW_ID)), resumed)
+        assertNull(control.state.value)
     }
 
     @Test
