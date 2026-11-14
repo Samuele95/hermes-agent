@@ -17,6 +17,7 @@ import com.nousresearch.hermes.android.jobs.JobId
 import com.nousresearch.hermes.android.jobs.JobState
 import com.nousresearch.hermes.android.jobs.JobsControl
 import com.nousresearch.hermes.android.jobs.JobsUi
+import com.nousresearch.hermes.android.jobs.offersRunNow
 import com.nousresearch.hermes.bridge.AppBridge
 import com.nousresearch.hermes.bridge.EmbeddedBridge
 import com.nousresearch.hermes.bridge.protocol.CronAction
@@ -46,8 +47,8 @@ import org.junit.runner.RunWith
 /**
  * A job row's actions over the real embedded core (no model, no network, no token): pause, resume and delete change
  * the core's own job; Run now is not offered while the gateway is off, and with the gateway's record stubbed it only
- * makes the job due (D39 F1, V8). The `:gateway` stays off in every test, so no ticker ever meets a due job, and every
- * `j7 probe` job a test adds is removed again.
+ * makes the job due (D39 F1, V8), and a job paused after the page listed it is not run, nor resumed. The `:gateway`
+ * stays off in every test, so no ticker ever meets a due job, and every `j7 probe` job a test adds is removed again.
  */
 @RunWith(AndroidJUnit4::class)
 class JobActionsDeviceTest {
@@ -238,6 +239,46 @@ class JobActionsDeviceTest {
             assertEquals("scheduled", row.state)
             assertNull(row.lastRunAt)
             assertTrue(coreList().none { it.jobId == id.value })
+        } finally {
+            removeProbes()
+            control.close()
+        }
+    }
+
+    @SdkSuppress(minSdkVersion = 26)  // java.time; the phone is API 36
+    @Test
+    fun aJobPausedSinceTheListIsNotRunNorResumed() {
+        gatewayOff()
+        var triggers = 0
+        val counted = AppBridge { function, arg ->
+            if (function == "cron_trigger") triggers++
+            EmbeddedBridge.call(function, arg)
+        }
+        // The page's controller over the same core, with only the gateway's record stubbed: no ticker runs here.
+        val control = JobsControl(ready.gateway, counted, seen = { GatewaySeen(GatewayStatus.RUNNING, pid = -1) }, resume = {})
+        try {
+            val id = addProbe("paused")
+            runBlocking { control.open() }
+            val listed = checkNotNull(control.state.value)
+            assertTrue(listed.offersRunNow(listed.jobs.single { it.id == id }))
+            check(gatewayPid() == null) { "a :gateway is alive: a due job must never meet its ticker" }
+            // Paused elsewhere, through the core directly: the page has not listed since.
+            runBlocking { ready.gateway.call(Methods.CRON_MANAGE, CronManageParams(action = CronAction.PAUSE, name = id.value)) }
+
+            // Refused after the fresh read alone: this is the time that list adds to every Run now (K7).
+            val t0 = SystemClock.elapsedRealtime()
+            runBlocking { control.runNow(id) }
+            val freshMs = SystemClock.elapsedRealtime() - t0
+
+            val row = coreList().single { it.jobId == id.value }
+            val ui = checkNotNull(control.state.value)
+            Log.i(TAG, "paused since the list: core '${row.state}', next ${row.nextRunAt}; cron_trigger calls $triggers; " +
+                       "page '${ui.error}', row ${ui.jobs.single { it.id == id }.state}; runNow (the fresh list) $freshMs ms")
+            assertEquals(0, triggers)
+            assertEquals("paused", row.state)                       // not resumed by trigger_job
+            assertEquals(JobState.PAUSED, ui.jobs.single { it.id == id }.state)
+            assertEquals("The job is no longer scheduled, so it was not run.", ui.error)
+            assertTrue(ui.queued.isEmpty())
         } finally {
             removeProbes()
             control.close()

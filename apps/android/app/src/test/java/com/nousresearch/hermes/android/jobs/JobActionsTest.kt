@@ -23,11 +23,12 @@ class JobActionsTest {
     private var listed = ALL
     private var answers: Map<String, String> = mapOf("pause" to OK, "resume" to OK, "remove" to OK)
     private var onAct: () -> Unit = {}
+    private var onList: () -> Unit = {}
     private var actFails: CoreError? = null
     private val core = FakeCoreGateway { method, params ->
         check(method == "cron.manage") { "unexpected $method" }
         when (val action = (params["action"] as? JsonPrimitive)?.content) {
-            null -> listed
+            null -> { onList(); listed }
             "pause", "resume", "remove" -> {
                 onAct()
                 actFails?.let { throw it }
@@ -259,7 +260,7 @@ class JobActionsTest {
 
         assertEquals("""{"job_id":"j1"}""", triggers.single().second)
         assertTrue(actCalls.isEmpty())
-        assertEquals(2, listCalls.size)
+        assertEquals(3, listCalls.size)  // the open's, the fresh read, the re-list after (K7)
         assertEquals(mapOf(j1 to RunMark("2026-11-13T09:30:00+01:00", 1_000)), ui.queued)
         assertFalse(ui.offersRunNow(shown(j1)))
         assertFalse(ui.busy)
@@ -365,7 +366,7 @@ class JobActionsTest {
 
         assertEquals(words, ui.error)
         assertTrue(ui.queued.isEmpty())
-        assertEquals(1, listCalls.size)
+        assertEquals(2, listCalls.size)  // the open's, then the tap's fresh read; none after the core's refusal (V7)
         assertFalse(ui.busy)
 
         triggerFails = true
@@ -373,7 +374,81 @@ class JobActionsTest {
 
         assertEquals("Something went wrong (IllegalStateException).", ui.error)
         assertTrue(ui.queued.isEmpty())
-        assertEquals(1, listCalls.size)
+        assertEquals(3, listCalls.size)  // one fresh read per tap (K7)
+        assertFalse(ui.busy)
+    }
+
+    @Test
+    fun aJobPausedSinceTheLastListIsRefusedAndNotTriggered() = runTest {
+        control.open()
+        assertTrue(ui.offersRunNow(shown(j1)))
+        listed = list(SCHEDULED_PAUSED, PAUSED, COMPLETED)  // paused elsewhere: the page has not listed since
+
+        control.runNow(j1)
+
+        assertTrue(triggers.isEmpty())                       // not resumed and fired by trigger_job
+        assertEquals("The job is no longer scheduled, so it was not run.", ui.error)
+        assertEquals(JobState.PAUSED, shown(j1).state)       // the fresh list is shown
+        assertFalse(ui.offersRunNow(shown(j1)))
+        assertTrue(ui.queued.isEmpty())
+        assertEquals(2, listCalls.size)                      // the open's, then the fresh read; none after a refusal
+        assertTrue(actCalls.isEmpty())
+        assertFalse(ui.busy)
+    }
+
+    @Test
+    fun aJobDeletedSinceTheLastListIsRefusedInTheAppsWords() = runTest {
+        control.open()
+        listed = list(PAUSED, COMPLETED)  // deleted elsewhere: the page has not listed since
+
+        control.runNow(j1)
+
+        assertTrue(triggers.isEmpty())
+        assertEquals("That job no longer exists.", ui.error)
+        assertTrue(ui.jobs.none { it.id == j1 })
+        assertEquals(2, listCalls.size)
+        assertFalse(ui.busy)
+    }
+
+    @Test
+    fun aFreshListThatFailsSendsNothing() = runTest {
+        control.open()
+        listed = """{"success":false,"error":"cron store unreadable"}"""
+
+        control.runNow(j1)
+
+        assertTrue(triggers.isEmpty())
+        assertEquals("cron store unreadable", ui.error)      // the list's words, told by `telling`
+        assertEquals(JobState.SCHEDULED, shown(j1).state)    // the jobs as last listed
+        assertTrue(ui.queued.isEmpty())
+        assertEquals(2, listCalls.size)
+        assertFalse(ui.busy)
+    }
+
+    @Test
+    fun aGatewaySeenStoppedByTheFreshListSendsNothingAndSaysNothing() = runTest {
+        control.open()
+        onList = { onList = {}; seen = GatewaySeen(GatewayStatus.STOPPED) }  // stopped while the fresh read is on its way
+
+        control.runNow(j1)
+
+        assertTrue(triggers.isEmpty())
+        assertNull(ui.error)                                 // V10: the offer drops without words
+        assertFalse(ui.gatewayRunning)
+        assertFalse(ui.offersRunNow(shown(j1)))
+        assertEquals(2, listCalls.size)
+        assertFalse(ui.busy)
+    }
+
+    @Test
+    fun theQueuedMarkIsTakenFromTheFreshList() = runTest {
+        control.open()
+        listed = list(RAN, PAUSED, COMPLETED)                // the gateway ran j1 since the last list
+
+        control.runNow(j1)
+
+        assertEquals("""{"job_id":"j1"}""", triggers.single().second)
+        assertEquals(mapOf(j1 to RunMark("2026-11-13T10:00:30+01:00", 1_000)), ui.queued)  // still queued after the re-list
         assertFalse(ui.busy)
     }
 
