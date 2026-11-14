@@ -53,6 +53,43 @@ class JobFormTest {
     }
 
     @Test
+    fun aWeekOfMinutesTypedInTheEveryFieldIsEveryTenThousandEighty() {
+        val typed = DigitField.COUNT.keep("10080")
+        assertEquals("10080", typed)  // never cut to four digits (/improve 20261113T221531Z #1)
+        val week = ScheduleDraft(SchedulePreset.EVERY, minutes = typed).schedule
+        assertEquals(Schedule.Every(10080), week)
+        assertEquals("every 10080m", week!!.wire())  // the core's own display of a weekly job (J5)
+        assertEquals(Schedule.Once(10080), ScheduleDraft(SchedulePreset.ONCE, minutes = typed).schedule)
+        assertEquals("every 10080m", JobForm.blank().copy(prompt = "Say hello.", schedule = week).addParams()!!.schedule)
+    }
+
+    @Test
+    fun aCountIsBoundOnlyByItsInt() {
+        // The core's grammar bounds no count (cron/jobs.py parse_duration's \d*; every/in 2147483647m parse): Int is the only bound.
+        val every = ScheduleDraft(SchedulePreset.EVERY)
+        assertEquals(Schedule.Every(Int.MAX_VALUE), every.copy(minutes = "2147483647").schedule)
+        assertNull(every.copy(minutes = "2147483648").schedule)
+        assertNull(every.copy(minutes = DigitField.COUNT.keep("99999999999")).schedule)
+        assertNull(ScheduleDraft(SchedulePreset.ONCE, minutes = "2147483648").schedule)
+
+        assertTrue(repeatFits(""))
+        assertTrue(repeatFits(" "))
+        assertTrue(repeatFits("0"))  // none, as blank
+        assertTrue(repeatFits(DigitField.COUNT.keep("10000")))
+        assertEquals(10000, repeatOf(Schedule.Every(5), "10000"))
+        assertTrue(repeatFits("2147483647"))
+        assertFalse(repeatFits("2147483648"))
+        assertNull(repeatOf(Schedule.Every(5), "2147483648"))  // read as no limit: why the form must not send it
+    }
+
+    @Test
+    fun aClockKeepsTwoDigitsAndACountAllOfThem() {
+        assertEquals("12", DigitField.CLOCK.keep("123"))
+        assertEquals("9", DigitField.CLOCK.keep("9h"))
+        assertEquals("123456", DigitField.COUNT.keep("12a 3,456"))
+    }
+
+    @Test
     fun deliveryReadsTheCoresWords() {
         for (local in listOf(null, "", "local", " local ")) assertEquals(Delivery.Local, Delivery.parse(local))
         assertEquals(Delivery.Platform("telegram"), Delivery.parse("telegram"))

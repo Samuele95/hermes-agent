@@ -254,8 +254,8 @@ enum class SchedulePreset { EVERY, DAILY, WEEKDAYS, ONCE, CUSTOM }
 
 /**
  * The schedule fields as typed (V2); [schedule] is what they make, null while they make none. Only the input is
- * shaped here (whole minutes from 1, a clock's hour and minute); the grammar, and all of [SchedulePreset.CUSTOM], is
- * the core's to judge.
+ * shaped here (whole minutes from 1, a clock's hour and minute); a count's only upper bound is its `Int`, as the
+ * core's grammar has none; the grammar, and all of [SchedulePreset.CUSTOM], is the core's to judge.
  */
 data class ScheduleDraft(val preset: SchedulePreset = SchedulePreset.DAILY, val minutes: String = "30",
                          val hour: String = "9", val minute: String = "0", val text: String = "") {
@@ -271,6 +271,18 @@ data class ScheduleDraft(val preset: SchedulePreset = SchedulePreset.DAILY, val 
             SchedulePreset.CUSTOM -> text.trim().takeIf { it.isNotEmpty() }?.let { Schedule.Custom(it) }
         }
     }
+}
+
+/**
+ * What one of the form's digit fields keeps of the text typed: its digits, and for a [CLOCK] (an hour, a minute) two
+ * at most, which is input shaping (J6 V2). A [COUNT] (minutes, times to run) keeps every digit: the core's grammar
+ * bounds no count (`parse_duration`'s `\d*`), so one is never cut to a length; a count the form cannot take shows
+ * red instead (/improve 20261113T221531Z #1).
+ */
+enum class DigitField {
+    COUNT, CLOCK;
+
+    fun keep(typed: String): String = typed.filter(Char::isDigit).let { if (this == CLOCK) it.take(2) else it }
 }
 
 /** Where a job's result goes (F10): saved only, a platform's home chat, or the core's own words, kept as they are. */
@@ -361,3 +373,10 @@ fun JobForm.canSave(job: Job?): Boolean = if (id == null) addParams() != null el
 /** The runs a job may make: a one-shot runs once (as the core sets it); otherwise the typed limit, blank or 0 being none. */
 fun repeatOf(schedule: Schedule?, typed: String): Int? =
     if (schedule is Schedule.Once) 1 else typed.trim().toIntOrNull()?.takeIf { it > 0 }
+
+/**
+ * Whether the typed limit is one the form can send: blank or 0 (none), or a whole count within `Int`. A count past
+ * it would read as none in [repeatOf], so it is shown red and not saved (/improve 20261113T221531Z #1); the core's
+ * normalize_repeat_value bounds none.
+ */
+fun repeatFits(typed: String): Boolean = typed.isBlank() || typed.trim().toIntOrNull() != null

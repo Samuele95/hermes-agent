@@ -38,9 +38,9 @@ import org.junit.runner.RunWith
 
 /**
  * The job form's create and edit over the real embedded core (no model, no network, no token): each preset is a
- * schedule the core accepts, an edit of a one-shot keeps a schedule whose display does not parse back, and a
- * refusal comes back in the core's words. The gateway stays off, so no job is ever fired; every `j6 probe` job a
- * test adds is removed again.
+ * schedule the core accepts, an edit of a one-shot keeps a schedule whose display does not parse back, a
+ * refusal comes back in the core's words, and a week of minutes and a five-digit repeat count are kept as typed.
+ * The gateway stays off, so no job is ever fired; every `j6 probe` job a test adds is removed again.
  */
 @RunWith(AndroidJUnit4::class)
 class JobFormDeviceTest {
@@ -177,6 +177,29 @@ class JobFormDeviceTest {
             assertTrue(error, "Invalid duration" in error)
             assertNotNull(ui.form)
             assertTrue(ui.jobs.none { it.name == name })  // this job only: a probe left by another run is not this one
+        } finally {
+            removeProbes()
+            jobs.close()
+        }
+    }
+
+    @Test
+    fun aWeekOfMinutesAndTenThousandRunsAreWhatTheCoreLists() {
+        gatewayOff()
+        val name = probe("week")
+        val week = Schedule.Every(10080)
+        try {
+            runBlocking {
+                jobs.open()
+                jobs.newJob()
+                jobs.save(JobForm(null, name, "Say hello.", week, Delivery.Local, repeatOf(week, "10000")))
+            }
+            assertNull(ui.error)
+            val job = ui.jobs.single { it.name == name }
+            Log.i(TAG, "a week: '${job.schedule}', repeat '${job.repeat}' (times ${job.times})")
+            assertEquals("every 10080m", job.schedule)
+            assertEquals("10000 times", job.repeat)
+            assertEquals(10000, JobForm.of(job).repeat)  // an edit starts from the same count
         } finally {
             removeProbes()
             jobs.close()

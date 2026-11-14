@@ -50,7 +50,8 @@ class JobFormActions(val save: (JobForm) -> Unit, val cancel: () -> Unit)
  * The job form as a bottom sheet over the Scheduled jobs page (automation-02, -06, -08): name, prompt, when (a
  * preset in the core's grammar, or the job's own schedule kept), how many times, and where the result goes. The
  * typed draft lives here, keyed on the job edited, and is dropped on close; Save is enabled only when the draft can
- * be saved ([canSave]). Nothing can be tapped, and the sheet cannot be dismissed, while a save is on its way.
+ * be saved ([canSave]); a count (minutes, times to run) is typed in full, and one the form cannot take is red, with
+ * Save off. Nothing can be tapped, and the sheet cannot be dismissed, while a save is on its way.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -118,12 +119,12 @@ fun JobFormSheet(ui: JobsUi, form: JobForm, actions: JobFormActions) {
                 // Each field is judged alone by the draft's own rule (V2): only a value that makes no schedule is red.
                 when (option) {
                     SchedulePreset.EVERY, SchedulePreset.ONCE ->
-                        Digits(minutes, { minutes = it.take(4) }, R.string.job_form_minutes, "job-form-minutes", enabled,
+                        Digits(minutes, DigitField.COUNT, { minutes = it }, R.string.job_form_minutes, "job-form-minutes", enabled,
                                ScheduleDraft(option, minutes = minutes).schedule == null)
                     SchedulePreset.DAILY, SchedulePreset.WEEKDAYS -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Digits(hour, { hour = it.take(2) }, R.string.job_form_hour, "job-form-hour", enabled,
+                        Digits(hour, DigitField.CLOCK, { hour = it }, R.string.job_form_hour, "job-form-hour", enabled,
                                ScheduleDraft(option, hour = hour).schedule == null, Modifier.weight(1f))
-                        Digits(minute, { minute = it.take(2) }, R.string.job_form_minute, "job-form-minute", enabled,
+                        Digits(minute, DigitField.CLOCK, { minute = it }, R.string.job_form_minute, "job-form-minute", enabled,
                                ScheduleDraft(option, minute = minute).schedule == null, Modifier.weight(1f))
                     }
                     SchedulePreset.CUSTOM -> {
@@ -139,7 +140,8 @@ fun JobFormSheet(ui: JobsUi, form: JobForm, actions: JobFormActions) {
             // A one-shot runs once, as the core sets it: the chosen preset's, or under keep the job's own.
             val oneShot = if (chosen != null) chosen == SchedulePreset.ONCE else job?.schedule?.startsWith("once") == true
             if (!oneShot) {
-                Digits(repeat, { repeat = it.take(4) }, R.string.job_form_repeat, "job-form-repeat", enabled, error = false)
+                Digits(repeat, DigitField.COUNT, { repeat = it }, R.string.job_form_repeat, "job-form-repeat", enabled,
+                       error = !repeatFits(repeat))
             }
 
             SectionCaption(stringResource(R.string.job_form_deliver))
@@ -165,7 +167,8 @@ fun JobFormSheet(ui: JobsUi, form: JobForm, actions: JobFormActions) {
             ui.error?.let { Hint(it, Modifier.testTag("job-form-error"), color = MaterialTheme.colorScheme.error) }
             Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 PrimaryButton(stringResource(if (form.id == null) R.string.job_form_create else R.string.job_form_save),
-                              { actions.save(draft) }, Modifier.testTag("job-form-save"), enabled = enabled && draft.canSave(job))
+                              { actions.save(draft) }, Modifier.testTag("job-form-save"),
+                              enabled = enabled && draft.canSave(job) && (oneShot || repeatFits(repeat)))
                 SecondaryButton(stringResource(R.string.job_form_cancel), actions.cancel, Modifier.testTag("job-form-cancel"), enabled = enabled)
             }
         }
@@ -186,11 +189,11 @@ private fun Choice(selected: Boolean, tag: String, enabled: Boolean, onSelect: (
     }
 }
 
-/** A field that takes digits only (the length is the caller's), red when [error]. */
+/** A field that takes digits only, kept by [field]'s rule (a count is never cut), red when [error]. */
 @Composable
-private fun Digits(value: String, onValue: (String) -> Unit, label: Int, tag: String, enabled: Boolean, error: Boolean,
-                   modifier: Modifier = Modifier.fillMaxWidth()) {
-    OutlinedTextField(value, { onValue(it.filter(Char::isDigit)) }, modifier.testTag(tag), enabled = enabled, singleLine = true,
+private fun Digits(value: String, field: DigitField, onValue: (String) -> Unit, label: Int, tag: String, enabled: Boolean,
+                   error: Boolean, modifier: Modifier = Modifier.fillMaxWidth()) {
+    OutlinedTextField(value, { onValue(field.keep(it)) }, modifier.testTag(tag), enabled = enabled, singleLine = true,
                       isError = error, label = { Text(stringResource(label)) },
                       keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
 }

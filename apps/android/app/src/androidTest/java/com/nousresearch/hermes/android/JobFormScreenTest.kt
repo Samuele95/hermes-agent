@@ -122,6 +122,59 @@ class JobFormScreenTest {
     }
 
     @Test
+    fun aWeekOfMinutesIsTypedInFull() {
+        show(JobForm.blank())
+        tag("job-form-prompt").performTextInput("Say hello.")
+
+        tag("job-schedule-every").performClick()
+        tag("job-form-minutes").performTextReplacement("10080")
+        tag("job-form-minutes").assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("10080")))
+        tag("job-form-repeat").performTextReplacement("10000")
+        save().let {
+            assertEquals(Schedule.Every(10080), it.schedule)  // not every 1008m (/improve 20261113T221531Z #1)
+            assertEquals(10000, it.repeat)
+        }
+
+        tag("job-schedule-once").performClick()
+        tag("job-form-minutes").performTextReplacement("10080")
+        assertEquals(Schedule.Once(10080), save().schedule)
+    }
+
+    @Test
+    fun aCountPastItsIntIsRedInFullAndCannotBeSaved() {
+        val red = SemanticsMatcher.keyIsDefined(SemanticsProperties.Error)
+        val plain = SemanticsMatcher.keyNotDefined(SemanticsProperties.Error)
+        show(JobForm.blank())
+        tag("job-form-prompt").performTextInput("Say hello.")
+        tag("job-schedule-every").performClick()
+
+        tag("job-form-minutes").performTextReplacement("2147483648")
+        tag("job-form-minutes").assert(red)
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("2147483648")))  // never cut
+        tag("job-form-save").assertIsNotEnabled()
+        tag("job-form-minutes").performTextReplacement("2147483647")
+        tag("job-form-minutes").assert(plain)
+        tag("job-form-save").assertIsEnabled()
+
+        tag("job-form-repeat").assert(plain).performTextReplacement("2147483648")
+        tag("job-form-repeat").assert(red)
+        tag("job-form-save").assertIsNotEnabled()  // it would be saved as no limit
+
+        tag("job-schedule-once").performClick()  // a one-shot runs once: the hidden field blocks nothing
+        compose.onNodeWithTag("job-form-repeat").assertDoesNotExist()
+        save().let {
+            assertEquals(Schedule.Once(Int.MAX_VALUE), it.schedule)
+            assertEquals(1, it.repeat)
+        }
+
+        tag("job-schedule-every").performClick()
+        tag("job-form-save").assertIsNotEnabled()  // the red count is still there
+        tag("job-form-repeat").performTextReplacement("")
+        tag("job-form-repeat").assert(plain)
+        assertEquals(Schedule.Every(Int.MAX_VALUE), save().schedule)
+    }
+
+    @Test
     fun aPlatformWithoutAHomeChatIsFlaggedAndStillChosen() {
         show(JobForm.blank())
         tag("job-form-prompt").performTextInput("Say hello.")
