@@ -57,6 +57,7 @@ class CoreCompositionTest {
         }
     }
     private val bridgeCalls = mutableListOf<String>()
+    private var coreCallsAtWarm: List<String>? = null
     private val runtime = object : CoreRuntime {
         val connected = mutableListOf<HermesPaths>()
         override suspend fun connect(paths: HermesPaths, secrets: SecretStore): CoreGateway = core.also { connected += paths }
@@ -69,6 +70,7 @@ class CoreCompositionTest {
                                   "messages":4,"preview":"Say hello.","active":false}]}"""
                 "telegram_status" -> """{"token":true,"allowed_user":"42","sdk":true,"enabled":true,"live":{"state":"connected",
                                         "error_message":null,"writer_pid":7,"updated_at":"2026-11-13T00:00:00+00:00"}}"""
+                "cron_warm_delivery_targets" -> { coreCallsAtWarm = core.calls.map { it.first }; "{}" }
                 else -> "{}"
             }
         }
@@ -95,6 +97,26 @@ class CoreCompositionTest {
         assertEquals("android", core.calls.first { it.first == "session.create" }.second.getValue("source").jsonPrimitive.content)
         assertEquals(RuntimeSessionId("s1"), ready.chat.sessionId)
         assertEquals("Python 3.14.7 · SQLite 3.53.4 with FTS5", ready.about)
+    }
+
+    @Test
+    fun theWarmIsTheCompositionsLastAskOnceTheChatIsOpen() = runTest(UnconfinedTestDispatcher()) {
+        composeCore(runtime, paths, deps, backgroundScope)
+
+        assertEquals(listOf("runtime_facts", "cron_warm_delivery_targets"), bridgeCalls)  // once, last
+        assertEquals("no core call the composition makes comes after the warm", core.calls.map { it.first }, coreCallsAtWarm)
+        assertTrue(coreCallsAtWarm.toString(),
+                   coreCallsAtWarm!!.containsAll(listOf("config.get", "session.most_recent", "session.create", "setup.status")))
+    }
+
+    @Test
+    fun theWarmWaitsForTheResumedConversation() = runTest(UnconfinedTestDispatcher()) {
+        recent = "db-last"
+
+        composeCore(runtime, paths, deps, backgroundScope)
+
+        assertTrue(coreCallsAtWarm.toString(), coreCallsAtWarm.orEmpty().contains("session.resume"))
+        assertEquals(core.calls.map { it.first }, coreCallsAtWarm)
     }
 
     @Test

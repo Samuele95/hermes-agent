@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue
 import site
 import sys
 import threading
@@ -41,6 +42,7 @@ class Native(Protocol):
 _transport: EmbeddedTransport | None = None
 _gateway: GatewayHost | None = None
 _warm: threading.Thread | None = None
+_warm_go: queue.SimpleQueue[bool] | None = None  # True: the app's startup calls are done; False: stop()
 
 
 def prepare(paths: dict[str, str]) -> None:
@@ -66,7 +68,7 @@ def prepare(paths: dict[str, str]) -> None:
 
 
 def start(paths: dict[str, str], native: Native) -> None:
-    global _transport, _gateway, _warm
+    global _transport, _gateway, _warm, _warm_go
     prepare(paths)
     # Registered before the core's first env load (tui_gateway.server's import), which applies it.
     from hermes_android import secrets
@@ -81,20 +83,28 @@ def start(paths: dict[str, str], native: Native) -> None:
 
     seed_bundled_skills()  # the CLI does it at its startup, which the app's host never runs
     _transport = EmbeddedTransport.connect(native.emit)
-    _warm = _warm_delivery_targets()
+    _warm_go = queue.SimpleQueue()
+    _warm = _warm_delivery_targets(_warm_go)
 
 
-def _warm_delivery_targets() -> threading.Thread:
+def _warm_delivery_targets(go: queue.SimpleQueue[bool]) -> threading.Thread:
     """The job form's first ``cron_delivery_targets`` loads every plugin and platform adapter (about 2.8 s on the
-    phone) on ``hermes-python``, the thread that carries the chat's frames: load them now, beside it. This runs after
-    the keystore source and the core's env load, so never from :func:`prepare`. A form opened meanwhile waits on the
-    core's own locks."""
+    phone) on ``hermes-python``, the thread that carries the chat's frames: load them here, beside it. The thread
+    waits until the app says its startup calls are done (:func:`cron_warm_delivery_targets`): started earlier, its
+    loads slowed those calls through the GIL (about +650 ms to ready on the phone). This runs after the keystore
+    source and the core's env load, so never from :func:`prepare`. A form opened meanwhile waits on the core's own
+    locks."""
     import cron.scheduler_delivery  # in sys.modules when start() returns
     from agent.memory_provider import spawn_context_thread
 
-    thread = spawn_context_thread(_load_delivery_targets, name="hermes-prewarm")
+    thread = spawn_context_thread(_warm_when_told, args=(go,), name="hermes-prewarm")
     thread.start()
     return thread
+
+
+def _warm_when_told(go: queue.SimpleQueue[bool]) -> None:
+    if go.get():
+        _load_delivery_targets()
 
 
 def _load_delivery_targets() -> None:
@@ -106,16 +116,27 @@ def _load_delivery_targets() -> None:
         logging.getLogger(__name__).debug("warming the delivery targets failed", exc_info=True)
 
 
+def cron_warm_delivery_targets(_arg: str) -> str:
+    """The app's startup calls are done: the waiting warm loads the job form's delivery targets now (once; a later
+    call is left unread)."""
+    if _warm_go is not None:
+        _warm_go.put(True)
+    return "{}"
+
+
 def submit(frame: str) -> None:
     if _transport is not None:
         _transport.submit(frame)
 
 
 def stop() -> None:
-    global _transport, _gateway, _warm
+    global _transport, _gateway, _warm, _warm_go
     if _warm is not None:
+        if _warm_go is not None:
+            _warm_go.put(False)  # releases a warm the app never told to go
         _warm.join(timeout=60)
         _warm = None
+        _warm_go = None
     if _transport is not None:
         _transport.close()
         _transport = None

@@ -51,8 +51,9 @@ data class CoreDeps(val secrets: SecretStore, val turns: TurnHost, val notifier:
 /**
  * The chat process's composition root: starts [runtime]'s core and builds what the screens drive over it. The
  * chat is in the core's most recent conversation on return (a new one when there is none, or the core's setting says
- * not to reopen), and setup is showing already when the core has no provider yet. [deps] are the platform's
- * collaborators; its [CoreDeps.seen] reaches every reader of the gateway's state.
+ * not to reopen), and setup is showing already when the core has no provider yet; the job form's delivery targets
+ * start loading once these startup calls are done. [deps] are the platform's collaborators; its [CoreDeps.seen]
+ * reaches every reader of the gateway's state.
  */
 suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps, scope: CoroutineScope): CoreState.Ready {
     val gateway = runtime.connect(paths, deps.secrets)
@@ -70,6 +71,8 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps
     // Undispatched: setup is showing before the core is Ready, so the chat never flashes first.
     if (setup.needed()) scope.launch(start = CoroutineStart.UNDISPATCHED) { setup.open() }
     val facts = bridge.ask(BridgeCalls.RUNTIME_FACTS)
+    // Last: the warm's plugin loads share the GIL with every call above (+650 ms to ready, K1); the chat is open now.
+    bridge.ask(BridgeCalls.CRON_WARM_DELIVERY_TARGETS)
     val fts = if (facts.fts5) "with FTS5" else "without FTS5"
     return CoreState.Ready(gateway, chat, setup, SshSetup(deps.secrets, bridge),
                            TelegramSetup(deps.secrets, bridge, deps.seen), history, context,

@@ -230,6 +230,7 @@ deadline = time.monotonic() + 30
 while not any(f.get("id") == 1 for f in frames) and time.monotonic() < deadline:
     time.sleep(0.01)
 pong = {"jsonrpc": "2.0", "id": 1, "result": {"pong": True}} in frames
+hermes_android.call("cron_warm_delivery_targets", "")  # what composeCore asks after its startup calls
 hermes_android.stop()
 report({"before": before, "imported": imported, "held": held, "pong": pong,
         "thread": [warm.name, warm.daemon] if warm is not None else None,
@@ -244,6 +245,68 @@ report({"before": before, "imported": imported, "held": held, "pong": pong,
     assert seen["pong"] is True, "the chat did not answer while the warm ran"
     assert seen["alive"] is False, "the warm outlived stop()"
     assert seen["adapters"] is True, "the warm did not load what the first cron_delivery_targets used to pay for"
+
+
+# Records the warm's load instead of running it: these tests measure the gate, not the 2 s load.
+_RECORDED_WARM = """
+import threading, time
+hermes_android.prepare = lambda paths: None  # host probe: keep this interpreter's paths
+calls = []
+done = threading.Event()
+def load():
+    calls.append(1)
+    done.set()
+hermes_android._load_delivery_targets = load
+"""
+
+
+def test_the_warm_waits_until_the_apps_startup_calls_are_done(tmp_path):
+    # Started at once, the warm's plugin loads slowed composeCore's startup calls through the GIL (K1: +655 ms to
+    # ready on the phone): it waits for the signal composeCore sends after them.
+    body = _RECORDED_WARM + """
+hermes_android.start({"role": "chat"}, Native())
+hermes_android.submit(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}))
+deadline = time.monotonic() + 30
+while not any(f.get("id") == 1 for f in frames) and time.monotonic() < deadline:
+    time.sleep(0.01)
+warm = hermes_android._warm
+time.sleep(0.5)
+waiting = list(calls)
+alive = warm.is_alive()
+reply = hermes_android.call("cron_warm_delivery_targets", "")
+done.wait(10)
+told = list(calls)
+hermes_android.stop()
+report({"waiting": waiting, "alive": alive, "reply": reply, "told": told, "joined": not warm.is_alive()})
+"""
+    seen = _probe(tmp_path, body)
+
+    assert seen["waiting"] == [], "the warm ran before the app's startup calls were done"
+    assert seen["alive"] is True
+    assert seen["reply"] == "{}"
+    assert seen["told"] == [1], "the signal did not start the warm"
+    assert seen["joined"] is True
+
+
+def test_a_stop_before_the_signal_warms_nothing_and_returns(tmp_path):
+    body = _RECORDED_WARM + """
+hermes_android.start({"role": "chat"}, Native())
+warm = hermes_android._warm
+began = time.monotonic()
+hermes_android.stop()
+report({"calls": calls, "alive": warm.is_alive(), "elapsed": time.monotonic() - began})
+"""
+    seen = _probe(tmp_path, body)
+
+    assert seen["calls"] == [], "stop() ran the warm the app never asked for"
+    assert seen["alive"] is False
+    assert seen["elapsed"] < 5, "stop() waited out its join bound"
+
+
+def test_the_signal_is_a_no_op_without_a_waiting_warm():
+    # The :gateway role starts no warm, and a signal after stop() finds none.
+    assert hermes_android._warm_go is None
+    assert hermes_android.cron_warm_delivery_targets("") == "{}"
 
 
 def test_the_gateway_process_warms_nothing(tmp_path):

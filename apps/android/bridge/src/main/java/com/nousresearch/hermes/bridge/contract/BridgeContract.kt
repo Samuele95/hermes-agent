@@ -403,6 +403,8 @@ object BridgeCalls {
     val CRON_SCHEDULER = BridgeCall("cron_scheduler", NoParams.serializer(), CronSchedulerReply.serializer())
     /** Whether the gateway's scheduler still owns a job's run session (the core's cron_run_scheduler_owned, the Dashboard's scheduler_owned): true while a live process holds its execution, false once none does or the run ended, null when the core cannot say (not a run, no such session, an older core). */
     val CRON_RUN_OWNED = BridgeCall("cron_run_owned", CronRunOwnedParams.serializer(), CronRunOwnedReply.serializer())
+    /** The app's startup calls are done: the job form's delivery targets (every plugin and platform adapter) start loading in this process's waiting background thread, once; answers at once. Asked earlier, the load slows those calls through the GIL. */
+    val CRON_WARM_DELIVERY_TARGETS = BridgeCall("cron_warm_delivery_targets", NoParams.serializer(), NoReply.serializer())
 
     /** The calls that may wait on the network (`blocking` in the contract): EmbeddedPython runs them on their own thread. */
     val BLOCKING: Set<String> = setOf("probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check")

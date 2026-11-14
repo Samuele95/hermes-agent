@@ -330,6 +330,11 @@
       "reply": {
         "owned": "boolean?"
       }
+    },
+    "cron_warm_delivery_targets": {
+      "summary": "The app's startup calls are done: the job form's delivery targets (every plugin and platform adapter) start loading in this process's waiting background thread, once; answers at once. Asked earlier, the load slows those calls through the GIL.",
+      "params": {},
+      "reply": {}
     }
   },
   "events": {
