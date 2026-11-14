@@ -47,10 +47,10 @@ private fun TelegramState.removing(): TelegramState? =
 /**
  * The phone's own Telegram bot for the always-on gateway (D11, D24). The token goes to the keystore as
  * `TELEGRAM_BOT_TOKEN` (the core reads it through its secret source, re-read through [bridge]); one numeric user id may
- * talk to the bot. The id is set first, so a wrong one stores nothing, and a token Telegram refuses is deleted
- * again at once, before the bot is switched off (a refused token stops the gateway as a missing one does). [bridge]
- * calls the app's Python side (the `telegram_*` calls of the bridge contract). [state] is null while closed. A running
- * gateway reads the keystore when it starts, so a change applies at its next start.
+ * talk to the bot. The id is set first, so a wrong one stores nothing, and a token Telegram refuses, a new one or the
+ * one held, is deleted at once, before the bot is switched off (a refused token stops the gateway as a missing one
+ * does). [bridge] calls the app's Python side (the `telegram_*` calls of the bridge contract). [state] is null while
+ * closed. A running gateway reads the keystore when it starts, so a change applies at its next start.
  *
  * The bot's live state is the core's `gateway_state.json` entry judged by [telegramLive] against [seen] (the app's
  * own record of the gateway), read again on each `platforms.changed` ([follow]) and by [refreshLive] (D39 F3). The
@@ -109,13 +109,13 @@ class TelegramSetup(
                 // Only a token Telegram itself refused is taken back; one it could not be asked about may be good.
                 TelegramCheck.REFUSED -> {
                     // A refused token is useless, and the core stops the gateway over it as over a missing one: it goes first,
-                    // whatever follows (/architect 20261113T220113Z #3).
-                    if (token != null) secrets.delete(TOKEN)
-                    // A held token's replacement may have the bot on: it is switched off too, and that call's own failure is
-                    // shown without undoing the delete (V6, D40).
-                    val off = token != null && held
+                    // whatever follows, a new one or the one held checked again (/architect 20261113T220113Z #3, K2b).
+                    secrets.delete(TOKEN)
+                    // A token held before this save, replaced or checked again, may have the bot on: it is switched off too, and
+                    // that call's own failure is shown without undoing the delete (V6, D40).
+                    val off = token == null || held
                     val stillOn = if (off) switchOff() else null
-                    if (token != null) bridge.secretsChanged()
+                    bridge.secretsChanged()
                     val stillHeld = secrets.contains(TOKEN)
                     show { it.copy(tokenHeld = stillHeld, allowedUser = allowed, bot = null, enabled = it.enabled && (!off || stillOn != null)) }
                     fail(listOf(checked.message.orEmpty(), stillOn.orEmpty()).filter { it.isNotEmpty() }.joinToString(" "))
@@ -206,7 +206,7 @@ class TelegramSetup(
 
     /**
      * Remove's rule for deleting a working token (D40): switch the bot off first (a failure stops here and is thrown),
-     * then delete the token and tell the core. A refused replacement goes the other way round ([save]). No environment
+     * then delete the token and tell the core. A refused token goes the other way round ([save]). No environment
      * file, no other config write.
      */
     private suspend fun takeBack() {

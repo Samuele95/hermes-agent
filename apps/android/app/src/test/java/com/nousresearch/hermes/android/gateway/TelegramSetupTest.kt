@@ -404,6 +404,50 @@ class TelegramSetupTest {
     }
 
     @Test
+    fun aHeldTokenRefusedOnARecheckGoesFirstAndTheBotIsSwitchedOff() = runTest {
+        holdToken(enabled = true)
+        answers["telegram_check"] = """{"check":"refused","bot":null,"message":"$REFUSED_WORDS"}"""
+        telegram.open()
+
+        telegram.save(null, "42")
+
+        assertEquals("a held token refused on a re-check goes first, then the switch-off, then the core is told: $timeline",
+                     listOf("delete TELEGRAM_BOT_TOKEN", "telegram_enable", "secrets_changed"), afterCheck())
+        assertEquals(listOf(enabled(false)), sentEnable())
+        assertNull(held["TELEGRAM_BOT_TOKEN"])
+        assertEquals(1, secretsChanged)  // no new token to try, one refused to forget
+        val state = telegram.state.value!!
+        assertEquals(false, state.tokenHeld)
+        assertEquals(false, state.enabled)
+        assertEquals(false, state.busy)
+        assertEquals("Telegram's words alone: the switch-off worked", REFUSED_WORDS, state.error)
+        assertEquals(PlatformLive(PlatformState.DISABLED), state.live)
+        assertTrue("no plaintext copy left behind", handedOut.all { copy -> copy.all { it == 0.toByte() } })
+    }
+
+    @Test
+    fun aHeldTokenRefusedOnARecheckWhoseSwitchOffThrowsStillGoes() = runTest {
+        holdToken(enabled = true)
+        answers["telegram_check"] = """{"check":"refused","bot":null,"message":"$REFUSED_WORDS"}"""
+        enableFails = java.io.IOException("binder died")
+        telegram.open()
+
+        telegram.save(null, "42")
+
+        assertFalse("a held token Telegram refused stays when its switch-off throws (K2 FOUND)", secrets.contains("TELEGRAM_BOT_TOKEN"))
+        assertEquals("the switch-off was attempted and the core still told: $timeline",
+                     listOf("delete TELEGRAM_BOT_TOKEN", "telegram_enable", "secrets_changed"), afterCheck())
+        assertEquals(1, secretsChanged)
+        val state = telegram.state.value!!
+        assertEquals(false, state.tokenHeld)
+        assertEquals(false, state.busy)
+        assertEquals("still on, as the core last read it: the switch-off failed", true, state.enabled)
+        assertEquals(PlatformLive(PlatformState.NOT_CONFIGURED), state.live)
+        assertEquals("$REFUSED_WORDS The bot could not be switched off and is still on without a token: " +
+                     "Something went wrong (IOException).", state.error)
+    }
+
+    @Test
     fun aRefusedFirstTokenLeavesTheSwitchAlone() = runTest {
         answers["telegram_check"] = """{"check":"refused","bot":null,"message":"Telegram refused the token (401)"}"""
         telegram.open()
