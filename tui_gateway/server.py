@@ -1208,12 +1208,12 @@ def _start_agent_build(sid: str, session: dict) -> None:
         except Exception as e:
             from agent.auxiliary_unavailable import ProviderNotConfiguredError
             current["agent_error"] = str(e)
-            # A client can route "no provider is set up" to its setup flow instead of a dead-end
-            # error toast — but only if it can tell. The sentence is for the reader, the code is
-            # for the client; older clients keep matching the text.
-            _emit("error", sid, {
-                "message": agent_init_failed_message(e),
-                **({"code": "provider_not_configured"} if isinstance(e, ProviderNotConfiguredError) else {})})
+            # A client can route "no provider is set up" to its setup flow, but only if it can tell: the sentence is
+            # for the reader, the code for the client. A record closed or replaced while it built tells no one: its
+            # frame would fall through write_json to stdout, a log sink outside the stdio TUI (logcat, desktop.log).
+            if _sessions.get(sid) is current:
+                _emit("error", sid, {"message": agent_init_failed_message(e), **(
+                    {"code": "provider_not_configured"} if isinstance(e, ProviderNotConfiguredError) else {})})
         finally:
             _finish_agent_build(
                 sid, key, current, notify_registered=notify_registered, scopes=scopes, session_db=session_db)

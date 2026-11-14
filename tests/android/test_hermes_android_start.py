@@ -183,9 +183,9 @@ def report(value):  # tui_gateway.server points sys.stdout at stderr when it is 
 """
 
 
-def _probe(tmp_path, body: str):
+def _probe_run(tmp_path, body: str):
     """Runs ``body`` after :data:`_PROBE_START` in a fresh interpreter (pytest's own already holds the core's
-    modules) against a home under ``tmp_path``; ``body`` reports one JSON line."""
+    modules) against a home under ``tmp_path``, and returns the finished process with its raw stdout."""
     import subprocess
 
     from tests.android.conftest import ANDROID_PYTHON
@@ -194,7 +194,12 @@ def _probe(tmp_path, body: str):
                          capture_output=True, text=True, encoding="utf-8", timeout=300, check=False,
                          env={**os.environ, "HERMES_HOME": str(tmp_path / ".hermes"), "HOME": str(tmp_path)})
     assert run.returncode == 0, run.stderr[-3000:]
-    return json.loads(run.stdout.strip().splitlines()[-1])
+    return run
+
+
+def _probe(tmp_path, body: str):
+    """:func:`_probe_run`, for a ``body`` that reports one JSON line: returns that report."""
+    return json.loads(_probe_run(tmp_path, body).stdout.strip().splitlines()[-1])
 
 
 def test_prepare_imports_no_core_module(tmp_path):
@@ -319,6 +324,53 @@ finally:
     hermes_android.stop()
 """
     assert _probe(tmp_path, body) == [True, False, False]
+
+
+def test_a_session_closed_while_its_agent_builds_prints_no_frame(tmp_path):
+    # The phone's path end to end: a chat closes a session whose deferred agent build is still running, and the
+    # build then fails for lack of a provider. The record is gone, so write_json would fall the error frame through
+    # to the core's stdout, which on the phone is logcat python.stdout.
+    body = """
+import threading, time
+hermes_android.prepare = lambda paths: None  # host probe: keep this interpreter's paths
+hermes_android.start({"role": "chat"}, Native())
+from agent.auxiliary_unavailable import ProviderNotConfiguredError
+from tui_gateway import server
+from tui_gateway.contracts import registry
+registry.STRICT = False  # the phone's mode: the child inherits the suite's marker, and a strict ErrorPayload check
+# would raise on the error's provider_not_configured code before write_json routed it
+building, closed = threading.Event(), threading.Event()
+def fails_once_closed(*_a, **_kw):  # the phone's no-provider build, held until the session is closed
+    building.set()
+    closed.wait(30)
+    raise ProviderNotConfiguredError("Hermes is not connected to any AI provider yet.")
+server._make_agent = fails_once_closed
+def ask(rid, method, params):
+    hermes_android.submit(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}))
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        if (reply := next((f for f in frames if f.get("id") == rid), None)) is not None:
+            return reply
+        time.sleep(0.01)
+    raise TimeoutError(method)
+sid = ask(1, "session.create", {})["result"]["session_id"]
+assert building.wait(30), "the deferred build never started"
+build = server._sessions[sid]["_agent_build_thread"]
+closed_reply = ask(2, "session.close", {"session_id": sid})
+closed.set()
+build.join(30)
+hermes_android.stop()  # it releases the warm that was never told to go, so it loads nothing
+report({"closed": closed_reply.get("result", {}).get("closed"), "joined": not build.is_alive(),
+        "host_errors": [f for f in frames if f.get("method") == "event" and f["params"].get("type") == "error"]})
+"""
+    run = _probe_run(tmp_path, body)
+    lines = run.stdout.strip().splitlines()
+
+    assert len(lines) == 1, f"the closed session's error frame was printed to the core's stdout: {lines[:-1]}"
+    seen = json.loads(lines[-1])
+    assert seen["closed"] is True
+    assert seen["joined"] is True
+    assert seen["host_errors"] == []
 
 
 def test_stop_detaches_the_host_from_the_gateway(paths, isolated_home, monkeypatch):
