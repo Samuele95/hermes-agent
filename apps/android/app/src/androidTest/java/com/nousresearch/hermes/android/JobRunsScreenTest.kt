@@ -37,7 +37,8 @@ import org.junit.runner.RunWith
 /**
  * A job's Past runs (automation-07): offered in every job's ⋮ menu, a sheet listing the runs in the core's order with
  * each start, whether it still runs, its messages and its first prompt; reading, empty and failed told apart; a tap
- * opens a run, and nothing can be tapped while one opens.
+ * opens a run, and nothing can be tapped while one opens; the ⋮ item (`job-runs`) and the sheet it opens
+ * (`job-runs-sheet`) are told apart by their tags.
  */
 @RunWith(AndroidJUnit4::class)
 class JobRunsScreenTest {
@@ -104,10 +105,37 @@ class JobRunsScreenTest {
     }
 
     @Test
+    fun pastRunsClosesTheMenuAndOpensTheSheetEachUnderItsOwnTag() {
+        // The live flow J8 could not test (J8 report): show opens the sheet, as JobsControl.showRuns does.
+        val opening = JobRunsActions(show = { id ->
+                                         calls += "runs:${id?.value}"
+                                         state = state.copy(runs = id?.let { RunsView(it, three, loaded = true) })
+                                     }, open = { calls += "open:${it.value}" })
+        state = JobsUi(listOf(news), gatewayRunning = true)
+        compose.setContent {
+            JobsScreen(state, {}, {}, actions = JobActions({ calls += "new" }, { calls += "edit:${it.value}" },
+                                                           JobFormActions({}, {}), row = row, runs = opening))
+        }
+
+        menuOf("a1b2")
+        item("job-runs").assertExists()
+        item("job-runs-sheet").assertDoesNotExist()  // the item is not the sheet
+        item("job-runs").performClick()
+        compose.waitForIdle()
+
+        assertEquals(listOf("runs:a1b2"), calls)
+        item("job-runs").assertDoesNotExist()  // the menu has closed, and the sheet does not answer to the item's tag
+        item("job-runs-sheet").assertExists()
+        compose.onNodeWithText("Past runs of “Morning news”").assertExists()
+        compose.onNodeWithTag("job-run-$ENDED").assertExists()
+    }
+
+    @Test
     fun theSheetListsTheRunsInTheCoresOrder() {
         show(JobsUi(listOf(news), runs = RunsView(news.id, three, loaded = true)))
 
-        compose.onNodeWithTag("job-runs").assertExists()
+        compose.onNodeWithTag("job-runs-sheet").assertExists()
+        item("job-runs").assertDoesNotExist()  // the sheet is not tagged as the item that opens it (/improve 20261113T221531Z #3)
         compose.onNodeWithText("Past runs of “Morning news”").assertExists()
         compose.onNode(hasTestTag("job-run-$RUNNING") and hasText(runTime(1794562200), substring = true)).assertExists()
         compose.onNode(hasTestTag("job-run-$RUNNING") and hasText("3 messages", substring = true)).assertExists()

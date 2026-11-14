@@ -184,8 +184,8 @@ private fun JobRow(job: Job, state: JobsUi, onEdit: (() -> Unit)?, menu: (@Compo
 
 /**
  * A row's ⋮ button and its menu, as the drawer's row menu and Desktop's sidebar: Run now while offered (F1), Pause for
- * a job that could still fire, Resume for a paused one (V5), Past runs for every job with [onRuns] (V8), Delete always.
- * The controller checks each again.
+ * a job that could still fire, Resume for a paused one (V5), Past runs for every job with [onRuns] (V8) (tagged
+ * `job-runs`; the sheet it opens is `job-runs-sheet`), Delete always. The controller checks each again.
  */
 @Composable
 private fun JobMenu(job: Job, state: JobsUi, open: Boolean, onOpen: () -> Unit, onDismiss: () -> Unit, actions: JobRowActions,

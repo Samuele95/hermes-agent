@@ -33,7 +33,8 @@ import com.nousresearch.hermes.android.ui.SecondaryButton
 /**
  * A job's past runs as a bottom sheet over the Scheduled jobs page (automation-07): newest first, as the core lists
  * them; each run's start, whether it still runs, how many messages it holds and its first prompt. A tap continues
- * the run in the chat. Nothing can be tapped, and the sheet cannot be dismissed, while a run is being opened.
+ * the run in the chat. Nothing can be tapped, and the sheet cannot be dismissed, while a run is being opened. It is
+ * tagged `job-runs-sheet`, apart from the ⋮ item `job-runs` that opens it (/improve 20261113T221531Z #3).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -42,7 +43,7 @@ fun JobRunsSheet(ui: JobsUi, view: RunsView, actions: JobRunsActions) {
     val enabled = !ui.busy
     val busy by rememberUpdatedState(ui.busy)
     val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true, confirmValueChange = { it != SheetValue.Hidden || !busy })
-    ModalBottomSheet(onDismissRequest = { if (!busy) actions.show(null) }, modifier = Modifier.testTag("job-runs"), sheetState = sheet,
+    ModalBottomSheet(onDismissRequest = { if (!busy) actions.show(null) }, modifier = Modifier.testTag("job-runs-sheet"), sheetState = sheet,
                      containerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 24.dp),
                verticalArrangement = Arrangement.spacedBy(8.dp)) {
