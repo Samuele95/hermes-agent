@@ -7,6 +7,8 @@ import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
@@ -15,6 +17,7 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.text.AnnotatedString
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import com.nousresearch.hermes.android.jobs.Delivery
 import com.nousresearch.hermes.android.jobs.DeliveryTarget
 import com.nousresearch.hermes.android.jobs.Job
@@ -29,6 +32,7 @@ import com.nousresearch.hermes.android.jobs.JobsUi
 import com.nousresearch.hermes.android.jobs.Schedule
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -63,6 +67,31 @@ class JobFormScreenTest {
     private fun save(): JobForm {
         tag("job-form-save").assertIsEnabled().performClick()
         return checkNotNull(saved).also { saved = null }
+    }
+
+    /** The preset rows in the order the sheet shows them, each with its own label and the tag of the field it opens. */
+    private val presets = listOf(
+        Triple("job-schedule-every", R.string.job_schedule_every, "job-form-minutes"),
+        Triple("job-schedule-daily", R.string.job_schedule_daily, "job-form-hour"),
+        Triple("job-schedule-weekdays", R.string.job_schedule_weekdays, "job-form-hour"),
+        Triple("job-schedule-once", R.string.job_schedule_once, "job-form-minutes"),
+        Triple("job-schedule-custom", R.string.job_schedule_custom, "job-form-custom"))
+
+    private fun words(id: Int, vararg args: Any) = InstrumentationRegistry.getInstrumentation().targetContext.getString(id, *args)
+
+    /** Every preset row reads its own label (K9b FOUND 2); the [open] row's field lies under it, above the next row. */
+    private fun eachRowReadsItsOwnLabel(open: String?) {
+        presets.forEach { (row, label, _) -> compose.onNodeWithTag(row).assertTextEquals(words(label)) }
+        val at = presets.indexOfFirst { it.first == open }
+        if (at < 0) {
+            listOf("job-form-minutes", "job-form-hour", "job-form-custom").forEach { compose.onNodeWithTag(it).assertDoesNotExist() }
+            return
+        }
+        val field = compose.onNodeWithTag(presets[at].third).getUnclippedBoundsInRoot()
+        assertTrue("$open: its field is above it", field.top >= compose.onNodeWithTag(open!!).getUnclippedBoundsInRoot().bottom)
+        presets.getOrNull(at + 1)?.let { (next, _, _) ->
+            assertTrue("$open: its field is below $next", field.bottom <= compose.onNodeWithTag(next).getUnclippedBoundsInRoot().top)
+        }
     }
 
     @Test
@@ -230,6 +259,34 @@ class JobFormScreenTest {
             assertEquals("Say goodbye.", it.prompt)
             assertEquals(JobId("a1b2"), it.id)
         }
+    }
+
+    @Test
+    fun eachPresetRowReadsItsOwnLabelWhicheverIsOpen() {
+        show(JobForm.blank())
+        eachRowReadsItsOwnLabel("job-schedule-daily")  // a new job opens on Every day at
+        val order = presets.map { it.first }
+        for (open in order + order.reversed()) {  // each opened in turn, down the list and back up
+            tag(open).performClick()
+            compose.onNodeWithTag(open).assertIsSelected()
+            eachRowReadsItsOwnLabel(open)
+        }
+    }
+
+    @Test
+    fun anEditsRowsReadTheirOwnLabelsAndTheKeepRowItsSchedule() {
+        val j = job()  // every 120m
+        show(JobForm.of(j), listOf(j))
+        val keep = words(R.string.job_form_keep_schedule, "every 120m")
+        compose.onNodeWithTag("job-schedule-keep").assertTextEquals(keep)
+        eachRowReadsItsOwnLabel(null)  // the keep row: no field open
+        for (open in presets.map { it.first }) {
+            tag(open).performClick()
+            eachRowReadsItsOwnLabel(open)
+            compose.onNodeWithTag("job-schedule-keep").assertTextEquals(keep)
+        }
+        tag("job-schedule-keep").performClick()
+        eachRowReadsItsOwnLabel(null)
     }
 
     @Test

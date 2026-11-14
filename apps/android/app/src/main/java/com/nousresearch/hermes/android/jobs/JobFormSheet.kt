@@ -48,8 +48,9 @@ class JobFormActions(val save: (JobForm) -> Unit, val cancel: () -> Unit)
 
 /**
  * The job form as a bottom sheet over the Scheduled jobs page (automation-02, -06, -08): name, prompt, when (a
- * preset in the core's grammar, or the job's own schedule kept), how many times, and where the result goes. The
- * typed draft lives here, keyed on the job edited, and is dropped on close; Save is enabled only when the draft can
+ * preset in the core's grammar, or the job's own schedule kept, each preset row with its own label and its fields
+ * under it), how many times, and where the result goes.
+ * The typed draft lives here, keyed on the job edited, and is dropped on close; Save is enabled only when the draft can
  * be saved ([canSave]), never while the picked preset makes no schedule (on an edit too); a count (minutes, times
  * to run) is typed in full, and one the form cannot take is red, with Save off. Nothing can be tapped, and the sheet
  * cannot be dismissed, while a save is on its way.
@@ -116,24 +117,26 @@ fun JobFormSheet(ui: JobsUi, form: JobForm, actions: JobFormActions) {
                 Choice(chosen == option, tag, enabled, { preset = option.name }) {
                     Text(stringResource(label), style = MaterialTheme.typography.bodyLarge)
                 }
-                if (chosen != option) return@forEach
-                // Each field is judged alone by the draft's own rule (V2): only a value that makes no schedule is red.
-                when (option) {
-                    SchedulePreset.EVERY, SchedulePreset.ONCE ->
-                        Digits(minutes, DigitField.COUNT, { minutes = it }, R.string.job_form_minutes, "job-form-minutes", enabled,
-                               ScheduleDraft(option, minutes = minutes).schedule == null)
-                    SchedulePreset.DAILY, SchedulePreset.WEEKDAYS -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Digits(hour, DigitField.CLOCK, { hour = it }, R.string.job_form_hour, "job-form-hour", enabled,
-                               ScheduleDraft(option, hour = hour).schedule == null, Modifier.weight(1f))
-                        Digits(minute, DigitField.CLOCK, { minute = it }, R.string.job_form_minute, "job-form-minute", enabled,
-                               ScheduleDraft(option, minute = minute).schedule == null, Modifier.weight(1f))
-                    }
-                    SchedulePreset.CUSTOM -> {
-                        OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth().testTag("job-form-custom"), enabled = enabled,
-                                          singleLine = true, isError = schedule == null,
-                                          label = { Text(stringResource(R.string.job_form_custom)) },
-                                          keyboardOptions = KeyboardOptions(autoCorrectEnabled = false))
-                        Hint(stringResource(R.string.job_form_custom_hint))
+                // Only the open preset's fields, under its own row; every row emits the same before them (K9b FOUND 2).
+                if (chosen == option) {
+                    // Each field is judged alone by the draft's own rule (V2): only a value that makes no schedule is red.
+                    when (option) {
+                        SchedulePreset.EVERY, SchedulePreset.ONCE ->
+                            Digits(minutes, DigitField.COUNT, { minutes = it }, R.string.job_form_minutes, "job-form-minutes", enabled,
+                                   ScheduleDraft(option, minutes = minutes).schedule == null)
+                        SchedulePreset.DAILY, SchedulePreset.WEEKDAYS -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Digits(hour, DigitField.CLOCK, { hour = it }, R.string.job_form_hour, "job-form-hour", enabled,
+                                   ScheduleDraft(option, hour = hour).schedule == null, Modifier.weight(1f))
+                            Digits(minute, DigitField.CLOCK, { minute = it }, R.string.job_form_minute, "job-form-minute", enabled,
+                                   ScheduleDraft(option, minute = minute).schedule == null, Modifier.weight(1f))
+                        }
+                        SchedulePreset.CUSTOM -> {
+                            OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth().testTag("job-form-custom"), enabled = enabled,
+                                              singleLine = true, isError = schedule == null,
+                                              label = { Text(stringResource(R.string.job_form_custom)) },
+                                              keyboardOptions = KeyboardOptions(autoCorrectEnabled = false))
+                            Hint(stringResource(R.string.job_form_custom_hint))
+                        }
                     }
                 }
             }
