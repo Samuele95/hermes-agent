@@ -17,6 +17,7 @@ import com.nousresearch.hermes.android.gateway.ServiceGatewayLauncher
 import com.nousresearch.hermes.android.gateway.TelegramSetup
 import com.nousresearch.hermes.android.gateway.batteryExempt
 import com.nousresearch.hermes.android.gateway.observeGateway
+import com.nousresearch.hermes.android.gateway.watchGateway
 import com.nousresearch.hermes.android.jobs.JobsControl
 import com.nousresearch.hermes.android.setup.ApprovalSettings
 import com.nousresearch.hermes.android.setup.PrefsKeyNames
@@ -34,6 +35,7 @@ import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -94,6 +96,9 @@ class HermesApplication : Application() {
 
     /** The always-on gateway as observed now, one value shared by its controls and the jobs page (D38, D39). */
     private val seen: () -> GatewaySeen = { observeGateway(this) }
+
+    /** The always-on gateway, observed again each time its service rewrites its record, while collected (the jobs page). */
+    val gatewayChanges: Flow<GatewaySeen> get() = watchGateway(this)
 
     /** The optional always-on gateway's controls; they need no core (the gateway runs in its own process). */
     val gateway: GatewayControl by lazy {

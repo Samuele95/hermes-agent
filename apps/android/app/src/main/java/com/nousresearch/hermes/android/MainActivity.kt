@@ -209,10 +209,14 @@ class MainActivity : ComponentActivity() {
                                                    confirmRemove = { app.telegram { confirmRemove() } }))
     }
 
-    /** The jobs page, kept current while it shows: each `cron.changed`, and every 30 s for the ticker's age (DC-J16). */
+    /**
+     * The jobs page, kept current while it shows: each `cron.changed`, the gateway coming up (and its ticker a few
+     * seconds later), and every 30 s for the ticker's age (DC-J16).
+     */
     @Composable
     private fun JobsPanel(ui: JobsUi, app: HermesApplication, jobs: JobsControl) {
         LaunchedEffect(Unit) { withContext(Dispatchers.IO) { jobs.follow() } }
+        LaunchedEffect(Unit) { withContext(Dispatchers.IO) { jobs.followGateway(app.gatewayChanges) } }
         LaunchedEffect(Unit) {
             while (true) {
                 withContext(Dispatchers.IO) { jobs.refresh() }  // first on entry: back from the Gateway page (V9)

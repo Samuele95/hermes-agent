@@ -7,11 +7,18 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.os.Build
+import android.os.FileObserver
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.core.content.ContextCompat
 import com.nousresearch.hermes.android.HermesApplication
 import java.io.File
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 
 /** Starts and stops [GatewayService]; a stop is sent only to a running gateway (it would start the process to end it). */
 class ServiceGatewayLauncher(private val context: Context) : GatewayLauncher {
@@ -58,6 +65,25 @@ fun observeGateway(context: Context): GatewaySeen {
     // Force stop and a reboot are the user's ends, asked only of a running record whose process is gone (D38).
     return statusOf(record, gatewayPid(context)) { r -> endedOnPurpose(r, bootCount(context), userStopped(context, r.pid)) }
 }
+
+/**
+ * The gateway as observed now ([observeGateway]), then again each time its service replaces its record (the one
+ * rename in [writeGatewayRecord]), for as long as it is collected: a watch on the record's folder, not a poll, and
+ * it ends with its collector. An observation equal to the last one is not told again; a gateway killed outright
+ * writes no record, so it is not told here (the jobs page's 30 s cadence sees it).
+ */
+fun watchGateway(context: Context): Flow<GatewaySeen> = callbackFlow {
+    val record = gatewayRecordFile(context)
+    @Suppress("DEPRECATION")  // FileObserver(File, Int) is API 29; minSdk is 24
+    val watch = object : FileObserver(record.parentFile!!.path, MOVED_TO or CLOSE_WRITE) {
+        override fun onEvent(event: Int, path: String?) {
+            if (path == record.name) trySend(Unit)
+        }
+    }
+    watch.startWatching()
+    trySend(Unit)  // after the watch starts: a record written in between is told by the watch
+    awaitClose { watch.stopWatching() }
+}.conflate().map { observeGateway(context) }.distinctUntilChanged()
 
 /** Replaces the record in one rename, so a reader never sees half of one. */
 fun writeGatewayRecord(context: Context, record: GatewayRecord) {

@@ -15,9 +15,13 @@ import com.nousresearch.hermes.bridge.protocol.CronAction
 import com.nousresearch.hermes.bridge.protocol.CronManageParams
 import com.nousresearch.hermes.bridge.protocol.Events
 import com.nousresearch.hermes.bridge.protocol.Methods
+import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.update
 import kotlinx.serialization.json.JsonPrimitive
@@ -111,6 +115,12 @@ private fun JobsUi.runNowRefusal(id: JobId): String? {
 suspend fun AppBridge.runOwnership(run: StoredSessionId): RunOwnership =
     RunOwnership.of(ask(BridgeCalls.CRON_RUN_OWNED, CronRunOwnedParams(run.value)))
 
+/** After the gateway is seen coming up, a stale heartbeat is listed again this long later (J5: the first stamp lands ~4 s after RUNNING). */
+internal const val RECHECK_AFTER_MS = 5_000L
+
+/** At most this many such re-checks; a ticker still stale after them is left to the page's 30 s cadence. */
+internal const val RECHECKS = 2
+
 /**
  * Lists the core's jobs through `cron.manage` (paused ones too) and judges the warning from the app's own gateway
  * record and the core ticker's heartbeat (D39 F2, F5). It never patches the list: every read is a full re-list.
@@ -125,6 +135,8 @@ suspend fun AppBridge.runOwnership(run: StoredSessionId): RunOwnership =
  * closing the page only once the chat took it (D39 F7).
  * One activity runs at a time, admitted only while the page is idle and ended only by the step that began it; a
  * re-list on `cron.changed` ends none but its own (/architect 20261113T220113Z #1).
+ * It lists again as soon as the gateway is seen coming up, and re-checks a stale ticker a few seconds later
+ * (/improve 20261113T221531Z #6).
  * [state] is null while closed. [gateway] is the core, [bridge] the app's Python half (the ticker's record), [seen]
  * the app's own observation of the always-on gateway, [continueInChat] continues a stored session in the chat (the
  * chat's own `session.resume`, the call the drawer's pick makes; not [resume], which un-pauses a job), [now] a
@@ -139,6 +151,7 @@ class JobsControl(
 ) {
     private val screen = MutableStateFlow<JobsUi?>(null)
     val state: StateFlow<JobsUi?> = screen.asStateFlow()
+    private val listedSeen = AtomicReference<GatewaySeen?>(null)  // the gateway as the last landed list saw it
 
     suspend fun open() {
         screen.value = JobsUi(activity = JobActivity.Listing)
@@ -217,6 +230,25 @@ class JobsControl(
     /** Lists again on each `cron.changed` until cancelled (the page runs it while it shows); other signals are not the jobs'. */
     suspend fun follow() {
         gateway.events.collect { if (it.decode(Events.CRON_CHANGED) != null) refresh() }
+    }
+
+    /**
+     * Lists again as soon as the gateway is seen up ([changes]: RUNNING as this page's last list did not see it, so a
+     * restart's new process too), until cancelled (the page runs it while it shows). If that list still finds the
+     * ticker stale (its first stamp lands seconds after RUNNING), lists again [RECHECK_AFTER_MS] later, at most
+     * [RECHECKS] times, while it does; a newer observation cancels the re-check. Any other change lists nothing: the
+     * 30 s cadence and `cron.changed` carry them (/improve 20261113T221531Z #6).
+     */
+    suspend fun followGateway(changes: Flow<GatewaySeen>) {
+        changes.collectLatest { now ->
+            if (now.status != GatewayStatus.RUNNING || now == listedSeen.get()) return@collectLatest
+            refresh()
+            repeat(RECHECKS) {
+                if (screen.value?.warning !is JobsWarning.NotTicking) return@collectLatest
+                delay(RECHECK_AFTER_MS)
+                refresh()
+            }
+        }
     }
 
     /** Pauses the listed job [id] through `cron.manage` by its id; the core judges whether it can be (V5). */
@@ -424,6 +456,7 @@ class JobsControl(
         // (V4, V9, V12), and the runs sheet only while its job is listed. A failed list (above) never reaches here: its
         // words stay where `telling` put them.
         val seenNow = seen()
+        listedSeen.set(seenNow)
         val warning = jobsWarning(seenNow, ticker, jobs)
         val at = now()
         screen.update {

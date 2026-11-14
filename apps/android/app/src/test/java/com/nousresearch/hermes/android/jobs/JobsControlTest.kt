@@ -6,8 +6,11 @@ import com.nousresearch.hermes.android.gateway.GatewayStatus
 import com.nousresearch.hermes.bridge.AppBridge
 import com.nousresearch.hermes.bridge.CoreError
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
@@ -179,11 +182,119 @@ class JobsControlTest {
         assertNull(control.state.value)
     }
 
+    @Test
+    fun theGatewayComingUpListsOnceAtOnce() = runTest(UnconfinedTestDispatcher()) {
+        val changes = MutableStateFlow(seen)  // STOPPED, as the open's list saw it
+        control.open()
+        backgroundScope.launch { control.followGateway(changes) }
+        assertEquals(1, listCalls.size)
+
+        changes.value = GatewaySeen(GatewayStatus.STARTING)
+        assertEquals(1, listCalls.size)  // not up yet: nothing
+
+        seen = GatewaySeen(GatewayStatus.RUNNING, pid = 42)
+        changes.value = seen
+        assertEquals(2, listCalls.size)  // at once, with no 30 s tick
+        assertNull(control.state.value?.warning)  // FRESH ticker: the GatewayOff banner is gone
+
+        advanceTimeBy(60_000); runCurrent()
+        assertEquals(2, listCalls.size)  // a fresh heartbeat is not re-checked
+    }
+
+    @Test
+    fun aStaleHeartbeatAtRunningIsListedAgainSecondsLater() = runTest(UnconfinedTestDispatcher()) {
+        ticker = STALE
+        val changes = MutableStateFlow(seen)
+        control.open()
+        backgroundScope.launch { control.followGateway(changes) }
+
+        seen = GatewaySeen(GatewayStatus.RUNNING, pid = 42)
+        changes.value = seen
+        assertEquals(2, listCalls.size)
+        assertEquals(JobsWarning.NotTicking(3, null), control.state.value?.warning)
+
+        ticker = FRESH  // the new ticker's first stamp lands
+        advanceTimeBy(RECHECK_AFTER_MS - 1); runCurrent()
+        assertEquals(2, listCalls.size)
+        advanceTimeBy(1); runCurrent()
+        assertEquals(3, listCalls.size)
+        assertNull(control.state.value?.warning)
+
+        advanceTimeBy(60_000); runCurrent()
+        assertEquals(3, listCalls.size)
+    }
+
+    @Test
+    fun aHeartbeatStillStaleIsCheckedTwiceThenLeftToTheCadence() = runTest(UnconfinedTestDispatcher()) {
+        ticker = STALE
+        val changes = MutableStateFlow(seen)
+        control.open()
+        backgroundScope.launch { control.followGateway(changes) }
+
+        seen = GatewaySeen(GatewayStatus.RUNNING, pid = 42)
+        changes.value = seen
+        assertEquals(2, listCalls.size)
+        advanceTimeBy(RECHECK_AFTER_MS); runCurrent()
+        assertEquals(3, listCalls.size)
+        advanceTimeBy(RECHECK_AFTER_MS); runCurrent()
+        assertEquals(4, listCalls.size)
+        advanceTimeBy(60_000); runCurrent()
+        assertEquals(4, listCalls.size)
+        assertEquals(JobsWarning.NotTicking(3, null), control.state.value?.warning)
+    }
+
+    @Test
+    fun aGatewayTheLastListSawRunningListsNothingButARestartDoes() = runTest(UnconfinedTestDispatcher()) {
+        seen = GatewaySeen(GatewayStatus.RUNNING, pid = 42)
+        val changes = MutableStateFlow(seen)
+        control.open()
+        backgroundScope.launch { control.followGateway(changes) }
+        assertEquals(1, listCalls.size)  // the open's list already saw this gateway
+
+        seen = GatewaySeen(GatewayStatus.RUNNING, pid = 43)
+        changes.value = seen
+        assertEquals(2, listCalls.size)  // a new process is a new start
+    }
+
+    @Test
+    fun aGatewayGoingDownCancelsTheRecheck() = runTest(UnconfinedTestDispatcher()) {
+        ticker = STALE
+        val changes = MutableStateFlow(seen)
+        control.open()
+        backgroundScope.launch { control.followGateway(changes) }
+
+        seen = GatewaySeen(GatewayStatus.RUNNING, pid = 42)
+        changes.value = seen
+        assertEquals(2, listCalls.size)
+
+        advanceTimeBy(2_000)
+        seen = GatewaySeen(GatewayStatus.STOPPING)
+        changes.value = seen
+        assertEquals(2, listCalls.size)
+        advanceTimeBy(30_000); runCurrent()
+        assertEquals(2, listCalls.size)  // the pending re-check was cancelled
+    }
+
+    @Test
+    fun aClosedPageListsNothingWhenTheGatewayComesUp() = runTest(UnconfinedTestDispatcher()) {
+        val changes = MutableStateFlow(seen)
+        backgroundScope.launch { control.followGateway(changes) }
+        control.open()
+        control.close()
+
+        seen = GatewaySeen(GatewayStatus.RUNNING, pid = 42)
+        changes.value = seen
+
+        assertEquals(1, listCalls.size)
+        assertNull(control.state.value)
+    }
+
     private companion object {
         const val SCHEDULED = """{"job_id":"j1","name":"Morning news","schedule":"30 9 * * *","state":"scheduled",
                                  "next_run_at":"2026-11-14T09:30:00+01:00","repeat":"forever"}"""
         const val PAUSED = """{"job_id":"j2","name":"Weekly report","schedule":"every 10080m","state":"paused","enabled":false}"""
         const val TWO_JOBS = """{"success":true,"count":2,"jobs":[$SCHEDULED,$PAUSED]}"""
         const val FRESH = """{"heartbeat_age_s":30,"success_age_s":30,"last_error":null,"stale_after_s":200}"""
+        const val STALE = """{"heartbeat_age_s":207,"success_age_s":207,"last_error":null,"stale_after_s":200}"""
     }
 }

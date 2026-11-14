@@ -38,7 +38,8 @@ import org.junit.runner.RunWith
 /**
  * The Scheduled jobs page's controller over the real embedded core and the real `:gateway` (no model, no network):
  * a job the core holds is listed by its id, and the warning follows the app's own gateway record and the ticker's
- * heartbeat. Each test adds a weekly job, which the ticker never finds due here, and removes it again.
+ * heartbeat, and a gateway turned on under the open page clears its warning within seconds, told by the gateway's own
+ * record. Each test adds a weekly job, which the ticker never finds due here, and removes it again.
  */
 @RunWith(AndroidJUnit4::class)
 class JobsDeviceTest {
@@ -159,6 +160,41 @@ class JobsDeviceTest {
             ready.jobs.close()
             app.gateway.turnOff()
             gatewayEnded()
+        }
+    }
+
+    @Test
+    fun aGatewayTurnedOnUnderTheOpenPageClearsItsWarningWithinSeconds() {
+        if (gatewayPid() != null) {
+            app.gateway.turnOff()
+            gatewayEnded()
+        }
+        val id = addJob()  // first: it brings the core up, and with it the native library the bridge call below needs
+        val before = runBlocking { EmbeddedBridge.ask(BridgeCalls.CRON_SCHEDULER) }
+        Log.i(TAG, "before the start: cron_scheduler $before (the stale branch runs only if heartbeatAgeS > staleAfterS)")
+        val warnings = java.util.Collections.synchronizedList(mutableListOf<String>())
+        @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
+        val recorder = GlobalScope.launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
+            ready.jobs.state.collect { warnings += "${SystemClock.elapsedRealtime()} ${it?.warning}" }
+        }
+        @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
+        val follower = GlobalScope.launch(Dispatchers.IO) { ready.jobs.followGateway(app.gatewayChanges) }
+        try {
+            runBlocking { ready.jobs.open() }
+            assertEquals(JobsWarning.GatewayOff(GatewayStatus.STOPPED), ready.jobs.state.value?.warning)
+
+            app.gateway.turnOn()
+            waitFor("RUNNING") { observeGateway(context).status.takeIf { it == GatewayStatus.RUNNING } }
+            val running = SystemClock.elapsedRealtime()
+            // Nothing else lists here: no JobsPanel loop runs and the test calls no refresh(). Only followGateway can clear it.
+            waitFor("the warning cleared", 12) { if (ready.jobs.state.value?.warning == null) true else null }
+            Log.i(TAG, "warning cleared ${SystemClock.elapsedRealtime() - running} ms after RUNNING; warnings seen: $warnings")
+            assertEquals(JobState.SCHEDULED, ready.jobs.state.value!!.jobs.single { it.id == JobId(id) }.state)
+        } finally {
+            follower.cancel()
+            recorder.cancel()
+            removeJob(id)
+            ready.jobs.close()
         }
     }
 }
