@@ -27,8 +27,8 @@ import kotlin.coroutines.cancellation.CancellationException
  * The Scheduled jobs page: the core's jobs and why they will not run, if they will not. [jobs] is the core's last
  * answer, [activity] what the page is doing (the first list, a save, an action on one job, a delete, a runs read,
  * opening a run, a Run now), one at a time, each ended only by the step that began it; [busy] whether one is. [error]
- * the core's words when the list or a save was refused. [form] is the job being made or edited (its starting values;
- * the typed draft is the sheet's), [targets] where it may deliver, read when the form opens. [confirmDelete] the job a delete waits to be confirmed for; [queued]
+ * the core's words when the list or a save was refused, shown on the page and in the open form's sheet. [form] is
+ * the job being made or edited (its starting values; the typed draft is the sheet's), [targets] where it may deliver, read when the form opens. [confirmDelete] the job a delete waits to be confirmed for; [queued]
  * the jobs Run now was asked for, until the core shows their run (V1); [gatewayRunning] whether the always-on gateway
  * was running at the last list (V2); [runs] the job whose past runs the sheet shows, while it shows.
  */
@@ -43,7 +43,7 @@ data class JobsUi(val jobs: List<Job> = emptyList(), val warning: JobsWarning? =
 
 /**
  * The runs sheet of [job]: its past runs, newest first, as the core last listed them; [loaded] false while the
- * first read is on its way; [error] the core's words when a read or an open failed (V3).
+ * first read is on its way; [error] the core's words when a read, an open or a list failed while the sheet shows (V3).
  */
 data class RunsView(val job: JobId, val runs: List<JobRun> = emptyList(), val loaded: Boolean = false,
                     val error: String? = null)
@@ -53,6 +53,16 @@ fun JobsUi.offersRunNow(job: Job): Boolean = gatewayRunning && job.state == JobS
 
 /** This page with [mine] ended while it is still the activity; any other is left as it is (§2 JobActivity). */
 private fun JobsUi.ending(mine: JobActivity): JobsUi = if (activity == mine) copy(activity = JobActivity.Idle) else this
+
+/**
+ * This page with a failure's [words] where the user is looking (/improve 20261113T221531Z #7): the open form's line
+ * (the form sheet shows [JobsUi.error]), else the open runs sheet's, else the page's error line.
+ */
+private fun JobsUi.telling(words: String): JobsUi = when {
+    form != null -> copy(error = words)
+    runs != null -> copy(runs = runs.copy(error = words))
+    else -> copy(error = words)
+}
 
 /** Saving the open form: [JobActivity.Saving], or null when not admitted (the page not idle, or no form: V12). */
 private fun JobsUi.saving(): JobsUi? =
@@ -128,11 +138,15 @@ class JobsControl(
         screen.value = null
     }
 
-    /** Lists the jobs again into an open page, and the open sheet's runs; a closed page asks nothing. */
+    /**
+     * Lists the jobs again into an open page, and the open sheet's runs; a closed page asks nothing; a list that failed
+     * reads no runs: the sheet keeps its runs, with the list's words.
+     */
     suspend fun refresh() {
         if (screen.value == null) return
-        relist()
-        screen.value?.runs?.job?.let { readRuns(it) }  // the open sheet's runs, read again (V6)
+        // The open sheet's runs, read again (V6), only after a list that landed: a read's answer would wipe the list's
+        // words (K6 V2).
+        if (relist()) screen.value?.runs?.job?.let { readRuns(it) }
     }
 
     /** Shows the past runs of the listed job [id] in a sheet, read from the core by its id (F7); null closes the sheet. */
@@ -151,7 +165,10 @@ class JobsControl(
         screen.update { it?.ending(JobActivity.Showing(id)) }
     }
 
-    /** Continues the shown run [run] in the chat, then closes the page; a run the core cannot open keeps the sheet, with its words. */
+    /**
+     * Continues the shown run [run] in the chat, then closes the page; a run the core cannot open keeps the sheet, with
+     * its words, or tells the page when a re-list closed the sheet meanwhile (its job left the list).
+     */
     suspend fun openRun(run: StoredSessionId) {
         val before = screen.getAndUpdate { it?.opening(run) ?: it }  // one atomic step: a double tap opens once
         before?.opening(run) ?: return
@@ -160,7 +177,7 @@ class JobsControl(
                 resume.invoke(run)  // the chat's own session.resume: jobs/ sends no session call of its own
             } catch (failed: Exception) {
                 val words = forUser(failed)
-                screen.update { it?.ending(JobActivity.Opening(run))?.let { ui -> ui.copy(runs = ui.runs?.copy(error = words)) } }
+                screen.update { it?.ending(JobActivity.Opening(run))?.telling(words) }
                 return
             }
             screen.value = null  // only once the chat took the run; the chat now shows it
@@ -350,18 +367,21 @@ class JobsControl(
         }
     }
 
-    /** The one read path: the core's full list, the ticker's record, then the gateway as seen now. */
-    private suspend fun relist() {
+    /**
+     * The one read path: the core's full list, the ticker's record, then the gateway as seen now; true when the list
+     * landed. A failure's words go where the user is looking (`telling`).
+     */
+    private suspend fun relist(): Boolean {
         val answer = try {
             gateway.call(Methods.CRON_MANAGE, CronManageParams(includeDisabled = JsonPrimitive(true)))
         } catch (failed: Exception) {
             val words = forUser(failed)
-            screen.update { it?.ending(JobActivity.Listing)?.copy(error = words) }
-            return
+            screen.update { it?.ending(JobActivity.Listing)?.telling(words) }
+            return false
         }
         if (answer.success == false || answer.error != null) {
-            screen.update { it?.ending(JobActivity.Listing)?.copy(error = answer.error ?: "The core did not list the jobs.") }
-            return
+            screen.update { it?.ending(JobActivity.Listing)?.telling(answer.error ?: "The core did not list the jobs.") }
+            return false
         }
         val jobs = answer.jobs.orEmpty().mapNotNull(Job::of)
         // An unreadable ticker is "cannot tell", as the core's own probe treats a crash (V10).
@@ -376,7 +396,8 @@ class JobsControl(
         // form keeps its targets and its error (V11). A list ends only the page's own Listing (the open's); any other
         // activity on its way (a save, an action, a runs read, an open, a Run now) survives it, and its own step ends
         // it (§2 JobActivity). Queued marks and a confirmation last only while the core's list still bears them out
-        // (V4, V9, V12), and the runs sheet only while its job is listed.
+        // (V4, V9, V12), and the runs sheet only while its job is listed. A failed list (above) never reaches here: its
+        // words stay where `telling` put them.
         val seenNow = seen()
         val warning = jobsWarning(seenNow, ticker, jobs)
         val at = now()
@@ -388,5 +409,6 @@ class JobsControl(
                                     activity = ui.ending(JobActivity.Listing).activity,
                                     error = if (ui.form != null) ui.error else null) }
         }
+        return true
     }
 }

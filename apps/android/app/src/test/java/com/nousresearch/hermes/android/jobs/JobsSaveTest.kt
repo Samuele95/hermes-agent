@@ -220,6 +220,21 @@ class JobsSaveTest {
     }
 
     @Test
+    fun aListThatFailsWhileTheFormIsOpenIsToldInTheForm() = runTest {
+        control.open()
+        control.newJob()
+        val form = ui.form
+        listed = """{"success":false,"error":"cron store unreadable"}"""
+
+        control.refresh()
+
+        assertEquals("cron store unreadable", ui.error)  // the form sheet's own line (job-form-error, JobFormSheet.kt:165)
+        assertEquals(form, ui.form)
+        assertNull(ui.runs)
+        assertFalse(ui.busy)
+    }
+
+    @Test
     fun aSecondSaveWhileOneRunsIsNotSent() = runTest {
         control.open()
         control.newJob()

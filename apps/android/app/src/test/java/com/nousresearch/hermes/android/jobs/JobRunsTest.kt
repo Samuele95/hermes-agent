@@ -30,9 +30,11 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class) // UnconfinedTestDispatcher: a launched collector runs until it suspends
 class JobRunsTest {
     private var listed = ALL
+    private var listFails: Exception? = null
     private val core = FakeCoreGateway { method, params ->
         check(method == "cron.manage") { "unexpected $method" }  // a session.* call from jobs/ fails here
         check(params["action"] == null) { "unexpected action ${params["action"]}" }
+        listFails?.let { throw it }
         listed
     }
     private var runsReply = TWO
@@ -253,7 +255,31 @@ class JobRunsTest {
         assertNotNull(control.state.value)
         assertFalse(ui.busy)
         assertEquals("session not found", ui.runs!!.error)
+        assertNull(ui.error)  // the sheet, not the page behind it, while the sheet is open (K6 V6)
         assertEquals(listOf(newRun, oldRun), ui.runs!!.runs)
+    }
+
+    @Test
+    fun aRunThatFailsToOpenAfterItsJobLeftTheListTellsThePage() = runTest(UnconfinedTestDispatcher()) {
+        resumeFails = CoreError(4007, "session not found")
+        control.open()
+        backgroundScope.launch { control.follow() }
+        control.showRuns(j1)
+        var dropped = false
+        duringResume = {
+            duringResume = {}
+            listed = """{"success":true,"count":1,"jobs":[$PAUSED]}"""  // j1 deleted elsewhere
+            core.emit("cron.changed", "")                               // the core's change signal, while the chat resumes
+            dropped = control.state.value!!.runs == null                // the re-list closed the sheet first (guard: not vacuous)
+        }
+
+        control.openRun(StoredSessionId(NEW_ID))
+
+        assertTrue(dropped)
+        assertTrue(resumed.isEmpty())
+        assertNull(ui.runs)
+        assertEquals("session not found", ui.error)  // the page's error line
+        assertFalse(ui.busy)
     }
 
     @Test
@@ -325,6 +351,32 @@ class JobRunsTest {
 
         assertNull(ui.runs!!.error)
         assertEquals(2, ui.runs!!.runs.size)
+    }
+
+    @Test
+    fun aListThatFailsWhileTheRunsShowIsToldInTheSheet() = runTest {
+        control.open()
+        control.showRuns(j1)
+        val reads = runsCalls.size
+        listed = """{"success":false,"error":"cron store unreadable"}"""
+
+        control.refresh()
+
+        assertEquals("cron store unreadable", ui.runs!!.error)  // where the user looks: the sheet, not the page behind it
+        assertNull(ui.error)
+        assertEquals(listOf(newRun, oldRun), ui.runs!!.runs)    // the runs as last read
+        assertEquals(reads, runsCalls.size)                     // no re-read after a failed list (V2)
+
+        listed = ALL
+        listFails = CoreError(4016, "unknown cron action: list")
+        control.refresh()
+        assertEquals("unknown cron action: list", ui.runs!!.error)  // the thrown call, by the failure rule
+        assertNull(ui.error)
+
+        listFails = null
+        control.refresh()
+        assertNull(ui.runs!!.error)                             // a list that landed, then the re-read, clears it
+        assertFalse(ui.busy)
     }
 
     @Test
