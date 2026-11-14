@@ -152,7 +152,7 @@ class ChatSessionTest {
         val (method, params) = core.calls.last()
         assertEquals(Triple("prompt.submit", "s1", "hello"),
                      Triple(method, params.getValue("session_id").jsonPrimitive.content, params.getValue("text").jsonPrimitive.content))
-        assertEquals(listOf(Entry.User("hello")), chat.state.value.entries)
+        assertEquals(listOf(Entry.User("hello", stableId = 0)), chat.state.value.entries)
     }
 
     @Test
@@ -308,11 +308,26 @@ class ChatSessionTest {
         chat.resume(stored("db-old"))
         chat.send("and tomorrow?")
 
-        assertEquals(listOf(Entry.User("what's on my calendar?"), Entry.Reply("Two meetings.", TurnStatus.COMPLETE),
-                            Entry.User("and tomorrow?")), chat.state.value.entries)
+        assertEquals(listOf(Entry.User("what's on my calendar?", stableId = 0), Entry.Reply("Two meetings.", TurnStatus.COMPLETE, stableId = 1),
+                            Entry.User("and tomorrow?", stableId = 2)), chat.state.value.entries)
         assertEquals("s-resumed", core.calls.last().second.getValue("session_id").jsonPrimitive.content)
         val resumed = core.calls.single { it.first == "session.resume" }.second
         assertEquals("db-old", resumed.getValue("session_id").jsonPrimitive.content)
+    }
+
+    @Test
+    fun aResumedOrNewTranscriptTakesNoIdTheChatShowedBefore() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hello")                                         // 0
+        core.emit("message.start", "s1")
+        core.emit("message.complete", "s1", """{"text":"hi"}""")   // 1
+
+        chat.resume(stored("db-old"))                              // the fixture's two stored rows
+
+        assertEquals(listOf(2L, 3L), chat.state.value.entries.map { it.stableId })
+        chat.open()                                                // a new, empty chat: the count goes on (V5)
+        chat.send("again")
+        assertEquals(listOf(4L), chat.state.value.entries.map { it.stableId })
     }
 
     @Test
@@ -334,7 +349,7 @@ class ChatSessionTest {
         core.emit("error", "s1", """{"message":"compression failed: busy"}""")
 
         assertEquals(emptyList<String>(), turns)
-        assertEquals(Entry.Notice("compression failed: busy"), chat.state.value.entries.single())
+        assertEquals(Entry.Notice("compression failed: busy", stableId = 0), chat.state.value.entries.single())
     }
 
     @Test
@@ -369,7 +384,7 @@ class ChatSessionTest {
         chat.send("hello")
         chat.send("hello")  // a second tap before the turn started (V5)
         assertEquals(1, submits())
-        assertEquals(listOf(Entry.User("hello")), chat.state.value.entries)
+        assertEquals(listOf(Entry.User("hello", stableId = 0)), chat.state.value.entries)
 
         core.emit("message.start", "s1")
         chat.send("again")
@@ -391,7 +406,7 @@ class ChatSessionTest {
         assertEquals("session.interrupt" to "s1", callsAfter(core.calls.size - 1).single())
         core.emit("error", "s1", """{"message":"Turn cancelled before the agent was ready"}""")
         assertFalse(chat.state.value.busy)
-        assertEquals(Entry.Notice("Turn cancelled before the agent was ready"), chat.state.value.entries.last())
+        assertEquals(Entry.Notice("Turn cancelled before the agent was ready", stableId = 1), chat.state.value.entries.last())
         assertEquals(emptyList<String>(), turns)  // no turn began
 
         // The chat moved on from the busy session: Stop is about the chat's own, idle one.
@@ -410,7 +425,7 @@ class ChatSessionTest {
 
         chat.send("hello")
 
-        assertEquals(listOf(Entry.User("hello"), Entry.Notice("session busy")), chat.state.value.entries)
+        assertEquals(listOf(Entry.User("hello", stableId = 0), Entry.Notice("session busy", stableId = 1)), chat.state.value.entries)
         assertFalse(chat.state.value.busy)  // Send comes back
     }
 
@@ -495,7 +510,7 @@ class ChatSessionTest {
         chat.secret(chat.state.value.prompts.single() as Prompt.Secret, "x".toByteArray())
 
         assertTrue(core.settled.single().second.startsWith("declined"))
-        assertEquals(Entry.Notice("Something went wrong (IllegalStateException)."), chat.state.value.entries.last())
+        assertEquals(Entry.Notice("Something went wrong (IllegalStateException).", stableId = 0), chat.state.value.entries.last())
     }
 
     @Test
@@ -695,7 +710,8 @@ class ChatSessionTest {
 
         assertEquals(listOf("s1"), closed())
         assertEquals(runtime("s-resumed"), chat.sessionId)
-        assertEquals(listOf(Entry.User("what's on my calendar?"), Entry.Reply("Two meetings.", TurnStatus.COMPLETE)), chat.state.value.entries)
+        assertEquals(listOf(Entry.User("what's on my calendar?", stableId = 0), Entry.Reply("Two meetings.", TurnStatus.COMPLETE, stableId = 1)),
+                     chat.state.value.entries)
     }
 
     @Test
@@ -1017,7 +1033,8 @@ class ChatSessionTest {
         assertEquals("full", core.calls.single { it.first == "config.get" }.second.getValue("key").jsonPrimitive.content)
         assertEquals("android", core.calls.single { it.first == "session.resume" }.second.getValue("source").jsonPrimitive.content)
         assertEquals(runtime("s-resumed"), chat.sessionId)
-        assertEquals(listOf(Entry.User("what's on my calendar?"), Entry.Reply("Two meetings.", TurnStatus.COMPLETE)), chat.state.value.entries)
+        assertEquals(listOf(Entry.User("what's on my calendar?", stableId = 0), Entry.Reply("Two meetings.", TurnStatus.COMPLETE, stableId = 1)),
+                     chat.state.value.entries)
     }
 
     @Test
@@ -1157,7 +1174,7 @@ class ChatSessionTest {
 
         chat.send("hello")
 
-        assertEquals(listOf(Entry.User("hello", 41)), chat.state.value.entries)
+        assertEquals(listOf(Entry.User("hello", 41, 0)), chat.state.value.entries)
     }
 
     @Test
@@ -1180,7 +1197,7 @@ class ChatSessionTest {
         assertEquals("true", sent.getValue("confirm_truncate").jsonPrimitive.content)
         assertEquals("true", sent.getValue("confirm_empty_truncate").jsonPrimitive.content)
         assertFalse("never a deep cut (D7)", "confirm_deep_truncate" in sent)
-        assertEquals(listOf(Entry.User("hello", 52)), chat.state.value.entries)
+        assertEquals(listOf(Entry.User("hello", 52, stableId = 2)), chat.state.value.entries)  // the prompt again, a new row (0, 1 were cut)
     }
 
     @Test
@@ -1197,8 +1214,9 @@ class ChatSessionTest {
 
         val sent = lastSubmit()
         assertEquals("s-resumed" to "12", sent.getValue("session_id").jsonPrimitive.content to sent.getValue("truncate_before_row_id").jsonPrimitive.content)
-        assertEquals(listOf(Entry.User("what's on my calendar?", 10), Entry.Reply("Two meetings.", TurnStatus.COMPLETE),
-                            Entry.User("and tomorrow?", 61)), chat.state.value.entries)
+        // The stored rows took 0-3; the retried prompt takes the next id, not the cut row's 2.
+        assertEquals(listOf(Entry.User("what's on my calendar?", 10, 0), Entry.Reply("Two meetings.", TurnStatus.COMPLETE, stableId = 1),
+                            Entry.User("and tomorrow?", 61, 4)), chat.state.value.entries)
     }
 
     @Test
@@ -1236,7 +1254,7 @@ class ChatSessionTest {
             val sent = lastSubmit()
             assertFalse("answer $i: no cut", "truncate_before_row_id" in sent)
             assertFalse("answer $i: no consent", "confirm_truncate" in sent)
-            assertEquals("answer $i: appended (D1)", listOf(Entry.User("ok"), Entry.Reply("done", TurnStatus.COMPLETE), Entry.User("ok")),
+            assertEquals("answer $i: appended (D1)", listOf(Entry.User("ok", stableId = 0), Entry.Reply("done", TurnStatus.COMPLETE, stableId = 1), Entry.User("ok", stableId = 2)),
                          chat.state.value.entries)
         }
     }
@@ -1276,7 +1294,7 @@ class ChatSessionTest {
             assertFalse("answer $i: no cut", "truncate_before_row_id" in sent)
             assertFalse("answer $i: no consent", "confirm_truncate" in sent)
             assertEquals("answer $i: appended (B5-D1), no notice",
-                         listOf(Entry.User("ok"), Entry.Reply("done", TurnStatus.COMPLETE), Entry.User("ok")), chat.state.value.entries)
+                         listOf(Entry.User("ok", stableId = 0), Entry.Reply("done", TurnStatus.COMPLETE, stableId = 1), Entry.User("ok", stableId = 2)), chat.state.value.entries)
         }
     }
 
@@ -1295,8 +1313,9 @@ class ChatSessionTest {
 
         assertEquals(listOf("prompt.submit", "session.history"), callsAfter(mark).map { it.first })
         // The core's transcript, re-read: not the predicted [User("hello")].
-        assertEquals(listOf(Entry.User("hello", 41), Entry.Reply("hi there", TurnStatus.COMPLETE),
-                            Entry.Notice("target user message is no longer in session history")), chat.state.value.entries)
+        // Keyed on after the retried prompt's id 2 (V4): the re-read rows are 3, 4, the notice 5.
+        assertEquals(listOf(Entry.User("hello", 41, 3), Entry.Reply("hi there", TurnStatus.COMPLETE, stableId = 4),
+                            Entry.Notice("target user message is no longer in session history", stableId = 5)), chat.state.value.entries)
     }
 
     @Test
@@ -1311,8 +1330,9 @@ class ChatSessionTest {
 
         chat.retry()
 
-        assertEquals(listOf(Entry.User("hello", 41), Entry.Reply("hi", TurnStatus.COMPLETE),
-                            Entry.Notice("target user message is no longer in session history")), chat.state.value.entries)
+        // The rows put back are the same rows (0, 1); the notice takes the id after the retried prompt's 2.
+        assertEquals(listOf(Entry.User("hello", 41, 0), Entry.Reply("hi", TurnStatus.COMPLETE, stableId = 1),
+                            Entry.Notice("target user message is no longer in session history", stableId = 3)), chat.state.value.entries)
     }
 
     @Test
@@ -1351,7 +1371,7 @@ class ChatSessionTest {
         val said = chat.compress(" here 1 ")
 
         assertEquals("Compressed: 4 → 2 messages\nApprox request size: ~9,000 → ~2,100 tokens", said)
-        assertEquals(listOf(Entry.User("latest", 9), Entry.Reply("ok", TurnStatus.COMPLETE)), chat.state.value.entries)
+        assertEquals(listOf(Entry.User("latest", 9, 2), Entry.Reply("ok", TurnStatus.COMPLETE, stableId = 3)), chat.state.value.entries)
         assertEquals(ContextMeter(2_100, 8_192, 26, false), chat.state.value.meter)
         assertEquals(listOf("begin:compress:s-resumed#1", "end:compress:s-resumed#1"), turns)
         assertFalse(chat.state.value.compressing)
@@ -1390,7 +1410,7 @@ class ChatSessionTest {
         }
 
         assertEquals(4009, refused?.code)
-        assertEquals(listOf(Entry.User("hi"), Entry.Reply("hello", TurnStatus.COMPLETE)), chat.state.value.entries)
+        assertEquals(listOf(Entry.User("hi", stableId = 0), Entry.Reply("hello", TurnStatus.COMPLETE, stableId = 1)), chat.state.value.entries)
         assertEquals(listOf("begin:compress:s1#1", "end:compress:s1#1"), turns.takeLast(2))
         assertFalse(chat.state.value.compressing)
         assertFalse("a blank focus is none", core.calls.single { it.first == "session.compress" }.second.containsKey("focus_topic"))
@@ -1428,7 +1448,7 @@ class ChatSessionTest {
         assertEquals(ChatSession.STILL_COMPRESSING, sendRefused?.message)
         assertEquals(emptyList<Pair<String, String?>>(),
                      callsDuringCompression().filter { it.first == "prompt.submit" || it.first == "session.history" })
-        assertEquals(listOf(Entry.User("latest", 9), Entry.Reply("ok", TurnStatus.COMPLETE)), chat.state.value.entries)  // no stray prompt
+        assertEquals(listOf(Entry.User("latest", 9, 2), Entry.Reply("ok", TurnStatus.COMPLETE, stableId = 3)), chat.state.value.entries)  // no stray prompt
         assertFalse(chat.state.value.compressing)
 
         chat.send("next")  // the session is the chat's again
@@ -1725,14 +1745,14 @@ class ChatSessionTest {
 
         scheduled("s1", "t1")
 
-        assertEquals(listOf(Entry.Tool("t1", "cronjob_manage", SCHEDULED, done = true),
-                            Entry.Notice(ChatSession.JOBS_NEED_GATEWAY, NoticeShortcut.GATEWAY)), chat.state.value.entries)
+        assertEquals(listOf(Entry.Tool("t1", "cronjob_manage", SCHEDULED, done = true, stableId = 0),
+                            Entry.Notice(ChatSession.JOBS_NEED_GATEWAY, NoticeShortcut.GATEWAY, 1)), chat.state.value.entries)
 
         scheduled("s1", "t2")  // a second job in the same conversation is not said again
         core.emit("message.complete", "s1", """{"text":"Done: two jobs."}""")
 
         assertEquals(1, chat.jobNotices().size)
-        assertEquals(Entry.Reply("Done: two jobs.", TurnStatus.COMPLETE), chat.state.value.entries.last())
+        assertEquals(Entry.Reply("Done: two jobs.", TurnStatus.COMPLETE, stableId = 3), chat.state.value.entries.last())
         // The core's remedy (a CLI command) is never shown by the app.
         assertFalse(chat.state.value.entries.toString(), chat.state.value.entries.any { e ->
             listOfNotNull((e as? Entry.Notice)?.text, (e as? Entry.Tool)?.summary, (e as? Entry.Reply)?.text).any { "hermes gateway" in it }
@@ -1750,13 +1770,15 @@ class ChatSessionTest {
         chat.open()  // s2
         scheduled("s2", "t3")
 
-        assertEquals(listOf(Entry.Notice(ChatSession.JOBS_NEED_GATEWAY, NoticeShortcut.GATEWAY)), chat.jobNotices())
-        assertEquals(Entry.Tool("t3", "cronjob_manage", SCHEDULED, done = true), chat.state.value.entries.first())
+        // s1 showed 0 and 1: the new session's tool and notice go on from there (V5).
+        assertEquals(listOf(Entry.Notice(ChatSession.JOBS_NEED_GATEWAY, NoticeShortcut.GATEWAY, 3)), chat.jobNotices())
+        assertEquals(Entry.Tool("t3", "cronjob_manage", SCHEDULED, done = true, stableId = 2), chat.state.value.entries.first())
 
         chat.resume(stored("db-old"))  // s-resumed
         scheduled("s-resumed", "t4")
 
-        assertEquals(listOf(Entry.Notice(ChatSession.JOBS_NEED_GATEWAY, NoticeShortcut.GATEWAY)), chat.jobNotices())
+        // The stored rows 4, 5, the tool 6, the notice 7.
+        assertEquals(listOf(Entry.Notice(ChatSession.JOBS_NEED_GATEWAY, NoticeShortcut.GATEWAY, 7)), chat.jobNotices())
     }
 
     @Test
@@ -1818,7 +1840,7 @@ class ChatSessionTest {
         core.emit("message.complete", "s1", """{"text":"Scheduled."}""")
 
         assertEquals(emptyList<Entry.Notice>(), chat.jobNotices())
-        assertEquals(Entry.Reply("Scheduled.", TurnStatus.COMPLETE), chat.state.value.entries.last())  // the chat still reduces
+        assertEquals(Entry.Reply("Scheduled.", TurnStatus.COMPLETE, stableId = 1), chat.state.value.entries.last())  // the chat still reduces
 
         seen = { GatewaySeen(GatewayStatus.STOPPED) }  // "cannot tell" spent nothing
         scheduled("s1", "t2")
@@ -1845,14 +1867,14 @@ class ChatSessionTest {
 
         assertTrue(chat.state.value.runOwned)
         assertEquals(listOf(RUN), ownedAsked)
-        assertEquals(listOf(Entry.User("Summarise the news"), Entry.Reply("Three stories.", TurnStatus.COMPLETE)),
+        assertEquals(listOf(Entry.User("Summarise the news", stableId = 0), Entry.Reply("Three stories.", TurnStatus.COMPLETE, stableId = 1)),
                      chat.state.value.entries)  // viewing stays allowed
 
         chat.send("hello")
 
         assertEquals(emptyList<Any>(), submits())
-        assertEquals(Entry.Notice(ChatSession.RUN_STILL_OWNED), chat.state.value.entries.last())
-        assertFalse(chat.state.value.entries.contains(Entry.User("hello")))
+        assertEquals(Entry.Notice(ChatSession.RUN_STILL_OWNED, stableId = 2), chat.state.value.entries.last())
+        assertTrue(chat.state.value.entries.none { it is Entry.User && it.text == "hello" })
         assertFalse(chat.state.value.busy)
         assertFalse(turns.toString(), "begin:s-run" in turns)
         assertEquals(listOf(RUN), ownedAsked)  // one read at open: the send asks nothing (V4)

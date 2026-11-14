@@ -49,6 +49,8 @@ import com.nousresearch.hermes.android.chat.Todo
 import com.nousresearch.hermes.android.chat.TodoList
 import com.nousresearch.hermes.android.chat.TodoStatus
 import com.nousresearch.hermes.bridge.protocol.TurnStatus
+import com.nousresearch.hermes.bridge.CoreEvent
+import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -69,10 +71,11 @@ class ChatScreenTest {
 
     @Test
     fun theTranscriptShowsEveryKindOfEntry() {
-        val chat = Chat(listOf(Entry.User("what's the weather?"), Entry.Tool("t1", "web_search", "3 results", done = true),
-                               Entry.Tool("t2", "clarify", "", done = true),
-                               Entry.Reply("Sunny.", TurnStatus.COMPLETE), Entry.Reply("", TurnStatus.ERROR, error = "provider unreachable"),
-                               Entry.Notice("session busy")))
+        val chat = Chat(listOf(Entry.User("what's the weather?", stableId = 0), Entry.Tool("t1", "web_search", "3 results", done = true, stableId = 1),
+                               Entry.Tool("t2", "clarify", "", done = true, stableId = 2),
+                               Entry.Reply("Sunny.", TurnStatus.COMPLETE, stableId = 3),
+                               Entry.Reply("", TurnStatus.ERROR, error = "provider unreachable", stableId = 4),
+                               Entry.Notice("session busy", stableId = 5)))
 
         compose.setContent { ChatScreen(chat, onSend = {}) }
 
@@ -83,7 +86,7 @@ class ChatScreenTest {
 
     @Test
     fun aRepliesMarkdownIsDrawnNotShownAsMarkup() {
-        val reply = Entry.Reply("## Plan\n\n**Bold** and `code`\n\n- one\n- two\n\n```sh\nls -la\n```", TurnStatus.COMPLETE)
+        val reply = Entry.Reply("## Plan\n\n**Bold** and `code`\n\n- one\n- two\n\n```sh\nls -la\n```", TurnStatus.COMPLETE, stableId = 0)
 
         compose.setContent { ChatScreen(Chat(listOf(reply)), onSend = {}) }
 
@@ -93,8 +96,9 @@ class ChatScreenTest {
 
     @Test
     fun commentaryIsDrawnAsMarkdownAboveItsTool() {
-        val chat = Chat(listOf(Entry.User("what day is it?"), Entry.Interim("Let me **check** the date."),
-                               Entry.Tool("t1", "terminal", "Mon 3 Nov", done = true), Entry.Reply("It is Monday.", TurnStatus.COMPLETE)))
+        val chat = Chat(listOf(Entry.User("what day is it?", stableId = 0), Entry.Interim("Let me **check** the date.", 1),
+                               Entry.Tool("t1", "terminal", "Mon 3 Nov", done = true, stableId = 2),
+                               Entry.Reply("It is Monday.", TurnStatus.COMPLETE, stableId = 3)))
 
         compose.setContent { ChatScreen(chat, onSend = {}) }
 
@@ -108,7 +112,7 @@ class ChatScreenTest {
 
     @Test
     fun commentaryStaysWhileTheTurnRunsOn() {
-        compose.setContent { ChatScreen(Chat(listOf(Entry.User("hi"), Entry.Interim("Let me check.")), streaming = ""), onSend = {}) }
+        compose.setContent { ChatScreen(Chat(listOf(Entry.User("hi", stableId = 0), Entry.Interim("Let me check.", 1)), streaming = ""), onSend = {}) }
 
         compose.onNodeWithText("Let me check.").assertExists()
         compose.onNodeWithText("…").assertExists()
@@ -133,8 +137,8 @@ class ChatScreenTest {
 
     @Test
     fun aRepliesReasoningIsFoldedAwayUntilAskedFor() {
-        val chat = Chat(listOf(Entry.Reply("It is 42.", TurnStatus.COMPLETE, reasoning = "Counted twice"),
-                               Entry.Reply("Plain answer.", TurnStatus.COMPLETE)))
+        val chat = Chat(listOf(Entry.Reply("It is 42.", TurnStatus.COMPLETE, reasoning = "Counted twice", stableId = 0),
+                               Entry.Reply("Plain answer.", TurnStatus.COMPLETE, stableId = 1)))
         compose.setContent { ChatScreen(chat, onSend = {}) }
 
         compose.onNodeWithText("Counted twice", substring = true).assertDoesNotExist()
@@ -190,7 +194,7 @@ class ChatScreenTest {
 
     @Test
     fun aFailedReplyThatAlreadyExplainsItsErrorShowsItOnce() {
-        val reply = Entry.Reply("The request failed.\nDetails: no provider", TurnStatus.ERROR, error = "no provider")
+        val reply = Entry.Reply("The request failed.\nDetails: no provider", TurnStatus.ERROR, error = "no provider", stableId = 0)
 
         compose.setContent { ChatScreen(Chat(listOf(reply)), onSend = {}) }
 
@@ -261,7 +265,7 @@ class ChatScreenTest {
         compose.setContent { ChatScreen(chat, onSend = {}) }
         compose.onNodeWithTag("intro").assertExists()
 
-        chat = Chat(listOf(Entry.User("hi")))
+        chat = Chat(listOf(Entry.User("hi", stableId = 0)))
 
         compose.onNodeWithTag("intro").assertDoesNotExist()
     }
@@ -270,7 +274,7 @@ class ChatScreenTest {
     fun theAgentsUnfinishedPlanShowsAboveTheComposerWhileItWorks() {
         val plan = TodoList(listOf(Todo("1", "Read the repo", TodoStatus.COMPLETED), Todo("2", "Run the tests", TodoStatus.IN_PROGRESS),
                                    Todo("3", "Fix failures", TodoStatus.PENDING, "2")), 5)
-        val chat by mutableStateOf(Chat(listOf(Entry.User("tidy up")), streaming = "", todos = plan))
+        val chat by mutableStateOf(Chat(listOf(Entry.User("tidy up", stableId = 0)), streaming = "", todos = plan))
         compose.setContent { ChatScreen(chat, onSend = {}) }
 
         compose.onNodeWithTag("todo-strip").assertExists()
@@ -288,17 +292,17 @@ class ChatScreenTest {
     fun thePlanLeavesWhenTheTurnEndsOrNothingIsLeftToDo() {
         val active = TodoList(listOf(Todo("1", "Boil", TodoStatus.COMPLETED), Todo("2", "Pour", TodoStatus.PENDING)), 2)
         val resolved = TodoList(listOf(Todo("1", "Boil", TodoStatus.COMPLETED), Todo("2", "Pour", TodoStatus.CANCELLED)), 3)
-        var chat by mutableStateOf(Chat(listOf(Entry.User("tea")), streaming = "", todos = resolved))
+        var chat by mutableStateOf(Chat(listOf(Entry.User("tea", stableId = 0)), streaming = "", todos = resolved))
         compose.setContent { ChatScreen(chat, onSend = {}) }
         compose.onNodeWithTag("todo-strip").assertDoesNotExist()  // running, nothing left to do
 
-        chat = Chat(listOf(Entry.User("tea"), Entry.Reply("ok", TurnStatus.COMPLETE)), todos = active)
+        chat = Chat(listOf(Entry.User("tea", stableId = 0), Entry.Reply("ok", TurnStatus.COMPLETE, stableId = 1)), todos = active)
         compose.onNodeWithTag("todo-strip").assertDoesNotExist()  // the turn ended on an unfinished plan (D1)
 
-        chat = Chat(listOf(Entry.User("tea")), streaming = "")
+        chat = Chat(listOf(Entry.User("tea", stableId = 0)), streaming = "")
         compose.onNodeWithTag("todo-strip").assertDoesNotExist()  // running, no plan
 
-        chat = Chat(listOf(Entry.User("tea")), streaming = "", todos = active)
+        chat = Chat(listOf(Entry.User("tea", stableId = 0)), streaming = "", todos = active)
         compose.onNodeWithTag("todo-strip").assertExists()
     }
 
@@ -332,7 +336,7 @@ class ChatScreenTest {
     fun theLastAnswerOffersRetryAndATapAsksForIt() {
         var taps = 0
         compose.setContent {
-            ChatScreen(Chat(listOf(Entry.User("hi", 1), Entry.Reply("Hello", TurnStatus.COMPLETE))), onSend = {}, onRetry = { taps++ })
+            ChatScreen(Chat(listOf(Entry.User("hi", 1, 0), Entry.Reply("Hello", TurnStatus.COMPLETE, stableId = 1))), onSend = {}, onRetry = { taps++ })
         }
 
         compose.onNodeWithTag("retry").performClick()
@@ -344,24 +348,24 @@ class ChatScreenTest {
 
     @Test
     fun aFailedTurnOffersRetryInWords() {
-        var chat by mutableStateOf(Chat(listOf(Entry.User("hi"), Entry.Notice("Provider unavailable"))))
+        var chat by mutableStateOf(Chat(listOf(Entry.User("hi", stableId = 0), Entry.Notice("Provider unavailable", stableId = 1))))
         compose.setContent { ChatScreen(chat, onSend = {}, onRetry = {}) }
 
         compose.onNodeWithText("Retry").assertExists()
-        chat = Chat(listOf(Entry.User("hi"), Entry.Reply("", TurnStatus.ERROR, error = "timed out")))
+        chat = Chat(listOf(Entry.User("hi", stableId = 0), Entry.Reply("", TurnStatus.ERROR, error = "timed out", stableId = 2)))
         compose.onNodeWithText("Retry").assertExists()
     }
 
     @Test
     fun noRetryWhileATurnRunsBeforeAnAnswerOrWithoutAHandler() {
-        var chat by mutableStateOf(Chat(listOf(Entry.User("hi")), streaming = "He"))
+        var chat by mutableStateOf(Chat(listOf(Entry.User("hi", stableId = 0)), streaming = "He"))
         var onRetry by mutableStateOf<(() -> Unit)?>({})
         compose.setContent { ChatScreen(chat, onSend = {}, onRetry = onRetry) }
 
         compose.onNodeWithTag("retry").assertDoesNotExist()  // running
-        chat = Chat(listOf(Entry.User("hi")))
+        chat = Chat(listOf(Entry.User("hi", stableId = 0)))
         compose.onNodeWithTag("retry").assertDoesNotExist()  // sent, no answer yet
-        chat = Chat(listOf(Entry.User("hi"), Entry.Reply("Hello", TurnStatus.COMPLETE)))
+        chat = Chat(listOf(Entry.User("hi", stableId = 0), Entry.Reply("Hello", TurnStatus.COMPLETE, stableId = 1)))
         onRetry = null
         compose.onNodeWithTag("retry").assertDoesNotExist()  // no handler
     }
@@ -372,7 +376,7 @@ class ChatScreenTest {
                ContextCategory("var(--context-usage-conversation)", "conversation", "Conversation", 41_800)),
         contextMax = 128_000, contextPercent = 42, contextUsed = 53_800, estimatedTotal = 53_800, contextEstimated = true,
         contextSource = "estimate", model = "gemma4")
-    private val answered = Chat(listOf(Entry.User("hi"), Entry.Reply("Hello", TurnStatus.COMPLETE)), meter = meter)
+    private val answered = Chat(listOf(Entry.User("hi", stableId = 0), Entry.Reply("Hello", TurnStatus.COMPLETE, stableId = 1)), meter = meter)
 
     @Test
     fun theMeterOpensTheContextSheet() {
@@ -441,7 +445,7 @@ class ChatScreenTest {
 
     @Test
     fun aPromptOnItsWayShowsStopAndHoldsRetryAndCompress() {
-        var chat by mutableStateOf(Chat(listOf(Entry.User("hi"), Entry.Notice("x")), submitted = true))
+        var chat by mutableStateOf(Chat(listOf(Entry.User("hi", stableId = 0), Entry.Notice("x", stableId = 1)), submitted = true))
         var stopped = 0
         compose.setContent { ChatScreen(chat, onSend = {}, onStop = { stopped++ }, onRetry = {}, context = ContextUi(meter, breakdown)) }
 
@@ -513,14 +517,16 @@ class ChatScreenTest {
     }
 
     // chat-17: the transcript follows a streaming reply only while the reader is at its end.
-    private val earlier = (1..6).flatMap { listOf(Entry.User("Question $it"), Entry.Reply("Answer $it", TurnStatus.COMPLETE)) }
+    private val earlier = (1..6).flatMap {
+        listOf(Entry.User("Question $it", stableId = 2L * it), Entry.Reply("Answer $it", TurnStatus.COMPLETE, stableId = 2L * it + 1))
+    }
     private fun reply(lines: Int) = (1..lines).joinToString("\n\n") { "Line $it of a long reply." }  // paragraphs: one per line
     /** The transcript's position: the lazy list's estimate, equal to its maximum exactly when nothing is below (1.12.1). */
     private fun position(): ScrollAxisRange =
         compose.onNodeWithTag("transcript").fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange]
     private fun atTheEnd() = position().let { it.value() == it.maxValue() }
     private fun readBack() { compose.onNodeWithTag("transcript").performTouchInput { swipeDown() }; compose.waitForIdle() }
-    private fun streamingChat() = Chat(earlier + Entry.User("Tell me a lot"), streaming = reply(20))
+    private fun streamingChat() = Chat(earlier + Entry.User("Tell me a lot", stableId = 100), streaming = reply(20))
 
     @Test
     fun aLongStreamingReplyIsFollowedToItsNewestLine() {
@@ -538,7 +544,7 @@ class ChatScreenTest {
         chat = chat.copy(reasoning = "Weighing it")
         compose.waitForIdle()
         assertTrue("followed as the reasoning streams", atTheEnd())
-        chat = Chat(chat.entries + Entry.Reply(reply(60), TurnStatus.COMPLETE))
+        chat = Chat(chat.entries + Entry.Reply(reply(60), TurnStatus.COMPLETE, stableId = 101))
         compose.waitForIdle()
         assertTrue("followed as the reply completes", atTheEnd())
     }
@@ -597,7 +603,9 @@ class ChatScreenTest {
     @Test
     fun aConversationPickedInTheDrawerIsShownFromItsEnd() {
         var chat by mutableStateOf(streamingChat())
-        val other = Chat((1..30).flatMap { listOf(Entry.User("Other $it"), Entry.Reply("Reply $it", TurnStatus.COMPLETE)) })
+        val other = Chat((1..30).flatMap {
+            listOf(Entry.User("Other $it", stableId = 1000L + 2 * it), Entry.Reply("Reply $it", TurnStatus.COMPLETE, stableId = 1001L + 2 * it))
+        })
         val sessions = HistoryUi(listOf(SessionListRow(id = "db-2", title = "Other", messageCount = 60,
                                                        startedAt = System.currentTimeMillis() / 1000.0)))
         compose.setContent { ChatScreen(chat, onSend = {}, sessions = sessions, onPickSession = { chat = other }) }
@@ -616,7 +624,7 @@ class ChatScreenTest {
     fun aFinishedAnswerIsCopiedWholeAsItsMarkdown() {
         val copies = mutableListOf<String>()
         compose.setContent {
-            ChatScreen(Chat(listOf(Entry.User("hi"), Entry.Reply("**Bold** and `code`", TurnStatus.COMPLETE))), onSend = {},
+            ChatScreen(Chat(listOf(Entry.User("hi", stableId = 0), Entry.Reply("**Bold** and `code`", TurnStatus.COMPLETE, stableId = 1))), onSend = {},
                        onCopy = { copies += it })
         }
         compose.waitForIdle()
@@ -634,8 +642,8 @@ class ChatScreenTest {
     @Test
     fun theLastAnswersCopyAndRetrySitInOneRow() {
         compose.setContent {
-            ChatScreen(Chat(listOf(Entry.User("a", 1), Entry.Reply("One", TurnStatus.COMPLETE), Entry.User("b", 2),
-                                   Entry.Reply("Two", TurnStatus.COMPLETE))), onSend = {}, onRetry = {}, onCopy = {})
+            ChatScreen(Chat(listOf(Entry.User("a", 1, 0), Entry.Reply("One", TurnStatus.COMPLETE, stableId = 1), Entry.User("b", 2, 2),
+                                   Entry.Reply("Two", TurnStatus.COMPLETE, stableId = 3))), onSend = {}, onRetry = {}, onCopy = {})
         }
 
         compose.onAllNodesWithTag("copy-reply").assertCountEquals(2)
@@ -648,18 +656,18 @@ class ChatScreenTest {
 
     @Test
     fun noCopyWhileAReplyStreamsForAnEmptyAnswerOrWithoutAHandler() {
-        var chat by mutableStateOf(Chat(listOf(Entry.User("hi")), streaming = "He"))
+        var chat by mutableStateOf(Chat(listOf(Entry.User("hi", stableId = 0)), streaming = "He"))
         var onCopy by mutableStateOf<((String) -> Unit)?>({})
         compose.setContent { ChatScreen(chat, onSend = {}, onRetry = {}, onCopy = onCopy) }
         compose.waitForIdle()
         compose.onNodeWithTag("copy-reply").assertDoesNotExist()
 
-        chat = Chat(listOf(Entry.User("hi"), Entry.Reply("", TurnStatus.ERROR, error = "timed out")))
+        chat = Chat(listOf(Entry.User("hi", stableId = 0), Entry.Reply("", TurnStatus.ERROR, error = "timed out", stableId = 1)))
         compose.waitForIdle()
         compose.onNodeWithTag("copy-reply").assertDoesNotExist()
         compose.onNodeWithTag("retry").assertExists()
 
-        chat = Chat(listOf(Entry.User("hi"), Entry.Reply("Hello", TurnStatus.COMPLETE)))
+        chat = Chat(listOf(Entry.User("hi", stableId = 0), Entry.Reply("Hello", TurnStatus.COMPLETE, stableId = 2)))
         onCopy = null
         compose.waitForIdle()
         compose.onNodeWithTag("copy-reply").assertDoesNotExist()
@@ -668,7 +676,7 @@ class ChatScreenTest {
     @Test
     fun aLongPressOnYourMessageCopiesIt() {
         val copies = mutableListOf<String>()
-        compose.setContent { ChatScreen(Chat(listOf(Entry.User("ls -la ~/notes"))), onSend = {}, onCopy = { copies += it }) }
+        compose.setContent { ChatScreen(Chat(listOf(Entry.User("ls -la ~/notes", stableId = 0))), onSend = {}, onCopy = { copies += it }) }
 
         compose.onNodeWithText("ls -la ~/notes").performTouchInput { longClick() }
         compose.onNodeWithTag("copy-message").performClick()
@@ -677,7 +685,7 @@ class ChatScreenTest {
         compose.onNodeWithTag("copy-message").assertDoesNotExist()
     }
 
-    private val kotlinReply = Entry.Reply("Run:\n\n```kotlin\nval x = \"hi\" // note\n```", TurnStatus.COMPLETE)
+    private val kotlinReply = Entry.Reply("Run:\n\n```kotlin\nval x = \"hi\" // note\n```", TurnStatus.COMPLETE, stableId = 0)
 
     @Test
     fun aCodeBlockIsColouredByItsLanguage() {
@@ -707,8 +715,9 @@ class ChatScreenTest {
     fun theJobNoticeOpensTheGatewayPage() {
         val went = mutableListOf<String>()
         compose.setContent {
-            ChatScreen(Chat(listOf(Entry.User("every morning at 8, summarise the news"), Entry.Tool("t1", "cronjob_manage", done = true),
-                                   Entry.Notice(ChatSession.JOBS_NEED_GATEWAY, NoticeShortcut.GATEWAY))),
+            ChatScreen(Chat(listOf(Entry.User("every morning at 8, summarise the news", stableId = 0),
+                                   Entry.Tool("t1", "cronjob_manage", done = true, stableId = 1),
+                                   Entry.Notice(ChatSession.JOBS_NEED_GATEWAY, NoticeShortcut.GATEWAY, 2))),
                        onSend = {}, places = ChatPlaces(gateway = { went += "gateway" }))
         }
 
@@ -721,7 +730,7 @@ class ChatScreenTest {
 
     @Test
     fun aNoticeOffersOnlyTheWayItNames() {
-        var chat by mutableStateOf(Chat(listOf(Entry.Notice("session busy"))))
+        var chat by mutableStateOf(Chat(listOf(Entry.Notice("session busy", stableId = 0))))
         var places by mutableStateOf<ChatPlaces?>(ChatPlaces(gateway = {}))
         compose.setContent { ChatScreen(chat, onSend = {}, places = places) }
 
@@ -729,11 +738,38 @@ class ChatScreenTest {
         compose.onNodeWithTag("notice-open-gateway").assertDoesNotExist()  // a plain notice is words only
 
         places = null
-        chat = Chat(listOf(Entry.Notice(ChatSession.JOBS_NEED_GATEWAY, NoticeShortcut.GATEWAY)))
+        chat = Chat(listOf(Entry.Notice(ChatSession.JOBS_NEED_GATEWAY, NoticeShortcut.GATEWAY, 1)))
         compose.onNodeWithText("drawer → Gateway", substring = true).assertIsDisplayed()  // no place: the words name the way
         compose.onNodeWithTag("notice-open-gateway").assertDoesNotExist()
 
         places = ChatPlaces(gateway = {})
         compose.onNodeWithTag("notice-open-gateway").assertIsDisplayed()
+    }
+
+    private fun frame(type: String, json: String? = null) = CoreEvent(type, "s1", json?.let { Json.parseToJsonElement(it) })
+    private fun Chat.answered(text: String, thought: String) =
+        reduce(frame("message.start")).reduce(frame("message.complete", """{"text":"$text","status":"complete","reasoning":"$thought"}"""))
+
+    /** /improve 20261113T221531Z #8: a row's state is its entry's, not its place's; Retry's new answer at the old one's index starts folded. */
+    @Test
+    fun aRetriedAnswerOpensWithItsReasoningFolded() {
+        var chat by mutableStateOf(Chat().sent("a").answered("One.", "First thought").sent("b").answered("Two.", "Counted twice"))
+        compose.setContent { ChatScreen(chat, onSend = {}, onRetry = { chat = chat.rewound(checkNotNull(chat.retryTarget())).sent("b") }) }
+        compose.onAllNodesWithTag("reasoning-toggle").assertCountEquals(2)
+        compose.onAllNodesWithTag("reasoning-toggle")[1].performClick()          // the last answer's fold, opened
+        compose.onNodeWithText("Counted twice", substring = true).assertExists()
+
+        compose.onNodeWithTag("retry").performClick()                            // Retry rewinds: [a, One.] and b, on its way
+        compose.waitForIdle()
+        chat = chat.reduce(frame("message.start"))                                // the streaming row stands where the answer was
+        compose.waitForIdle()
+        chat = chat.reduce(frame("message.complete", """{"text":"Two again.","status":"complete","reasoning":"Counted again"}"""))
+        compose.waitForIdle()
+
+        compose.onNodeWithText("Two again.", substring = true).assertExists()
+        compose.onNodeWithText("Counted again", substring = true).assertDoesNotExist()  // the new answer's own fold: closed
+        compose.onNodeWithText("First thought", substring = true).assertDoesNotExist()  // the earlier one as it was left
+        compose.onAllNodesWithTag("reasoning-toggle")[1].performClick()
+        compose.onNodeWithText("Counted again", substring = true).assertExists()        // and it opens on its own tap
     }
 }

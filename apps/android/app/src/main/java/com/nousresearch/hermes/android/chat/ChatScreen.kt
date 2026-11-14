@@ -202,7 +202,9 @@ private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, onCopy: ((String) -> 
                    verticalArrangement = Arrangement.spacedBy(14.dp)) {
             // The last answer carries Retry in its own action row, beside Copy (F10); after a turn that ended in a notice or a
             // tool row, Retry stands alone in words, as before.
-            itemsIndexed(chat.entries) { i, entry ->
+            // Each row's state (the reasoning fold, the bubble's menu) is kept by its entry's id, not its place: a rewind or a
+            // re-read transcript never hands it to another row (/improve 20261113T221531Z #8).
+            itemsIndexed(chat.entries, key = { _, entry -> entry.stableId }) { i, entry ->
                 EntryRow(entry, onCopy, retry.takeIf { i == chat.entries.lastIndex && entry is Entry.Reply }, onGateway)
             }
             retry?.takeIf { chat.entries.last() !is Entry.Reply }?.let { item { RetryAction(failed = true, it) } }

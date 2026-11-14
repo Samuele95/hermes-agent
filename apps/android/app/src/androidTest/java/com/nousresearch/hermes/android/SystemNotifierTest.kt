@@ -86,7 +86,7 @@ class SystemNotifierTest {
 
     @Test
     fun aFinishedReplyIsNotifiedWithItsText() {
-        notifier.turnFinished(Entry.Reply("Three meetings today.", TurnStatus.COMPLETE))
+        notifier.turnFinished(Entry.Reply("Three meetings today.", TurnStatus.COMPLETE, stableId = 0))
 
         val posted = posted(SystemNotifier.REPLY_ID)
         assertEquals("Hermes replied", posted.extras.getString(Notification.EXTRA_TITLE))
@@ -99,7 +99,7 @@ class SystemNotifierTest {
 
         notifier.promptPending(approval)
         visible = false
-        notifier.turnFinished(Entry.Reply("done", TurnStatus.COMPLETE))  // posted after the question would have been
+        notifier.turnFinished(Entry.Reply("done", TurnStatus.COMPLETE, stableId = 0))  // posted after the question would have been
 
         posted(SystemNotifier.REPLY_ID)
         assertNull(shown(SystemNotifier.QUESTION_ID))
@@ -109,7 +109,7 @@ class SystemNotifierTest {
     fun openingTheAppClearsWhatItWouldSay() {
         val app = context.applicationContext as HermesApplication
         app.notifier.promptPending(approval)
-        app.notifier.turnFinished(Entry.Reply("done", TurnStatus.COMPLETE))
+        app.notifier.turnFinished(Entry.Reply("done", TurnStatus.COMPLETE, stableId = 0))
         posted(SystemNotifier.QUESTION_ID)
         posted(SystemNotifier.REPLY_ID)
 

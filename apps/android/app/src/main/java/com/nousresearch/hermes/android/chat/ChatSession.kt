@@ -30,6 +30,7 @@ import com.nousresearch.hermes.bridge.protocol.SessionListRow
 import com.nousresearch.hermes.bridge.protocol.SessionListParams
 import com.nousresearch.hermes.bridge.protocol.SessionMostRecentParams
 import com.nousresearch.hermes.bridge.protocol.SessionTitleParams
+import com.nousresearch.hermes.bridge.protocol.TranscriptMessage
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -301,8 +302,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         refuseWhileCompressing()
         val resumed = core.call(Methods.SESSION_RESUME, SessionResumeParams(sessionId = stored.value, source = SOURCE))
         val inTurn = resumed.running == true
-        val chat = Chat(entries = transcriptOf(resumed.messages),
-                        streaming = if (inTurn) resumed.inflight?.assistant.orEmpty() else null, model = resumed.info.model.ifBlank { null },
+        val chat = Chat(streaming = if (inTurn) resumed.inflight?.assistant.orEmpty() else null, model = resumed.info.model.ifBlank { null },
                         todos = resumed.todoState?.let { TodoList.of(it.todos, it.revision) }, meter = resumed.info.usage?.let(ContextMeter::of))
         val open = resumed.openRequests.orEmpty().map { InTurnPrompt(it.id, it.method, it.params) }
         // The live info's key first (the core's own); the reply's session_key next; the caller's id as the last resort.
@@ -311,7 +311,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         // cannot tell, which keeps today's rule (V6).
         val owned = if (isCronRun(key)) orElse(null) { runOwned(key) } else null
         return switchTo(SessionRef(RuntimeSessionId(resumed.sessionId), key), chat.copy(runOwned = refusesSend(owned)),
-                        resumed.info.desktopContract, open)
+                        resumed.info.desktopContract, open, transcript = resumed.messages)
     }
 
     /** Invariant 6: no switch while the core compresses the chat's session; [switching] is held, so none is admitted meanwhile. */
@@ -322,18 +322,19 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     /**
      * Makes [ref] the chat's session, showing [chat] with the cards of the [open] requests it can show; the previous
      * session's turn and questions are let go, and the session itself is closed in the core if it was idle: the
-     * returned value is that close's outcome.
+     * returned value is that close's outcome. [transcript] is shown keyed on after every id the chat showed before (V5).
      */
-    private fun switchTo(ref: SessionRef, chat: Chat, reportedContract: JsonElement?,
-                         open: List<InTurnPrompt> = emptyList()): Deferred<LeftSessions.Outcome>? {
+    private fun switchTo(ref: SessionRef, chat: Chat, reportedContract: JsonElement?, open: List<InTurnPrompt> = emptyList(),
+                         transcript: List<TranscriptMessage> = emptyList()): Deferred<LeftSessions.Outcome>? {
         val notice = contractNotice(reportedContract)
         val (before, after) = change { now ->
+            val shown = chat.copy(nextId = now.chat.nextId).restored(transcript)
             val opened = open.mapNotNull { raw -> prompt(raw, ref.runtime)?.let { it to raw } }
             // The same session resumed: questions it asked after the core's snapshot are still its own.
             val kept = if (now.ref?.runtime == ref.runtime) now.chat.prompts.filter { p -> opened.none { it.first.id == p.id } }
                        .mapNotNull { p -> now.waiting[p.id]?.let { p to it } } else emptyList()
             val cards = opened + kept
-            Live(ref, cards.fold(notice?.let(chat::notice) ?: chat) { shownChat, (p, _) -> shownChat.asked(p) },
+            Live(ref, cards.fold(notice?.let(shown::notice) ?: shown) { shownChat, (p, _) -> shownChat.asked(p) },
                  cards.associate { (p, raw) -> p.id to raw })
         }
         // Invariant 3, decided from the one atomic swap (EJ-78): an idle session the chat left is closed; a busy one (a turn
@@ -481,17 +482,17 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
 
     /** After a refused retry: the core's transcript re-read (invariant 5), else [before] (D5); then [words]. */
     private suspend fun resync(session: RuntimeSessionId, before: List<Entry>, words: String) {
-        val entries = try {
-            transcriptOf(core.call(Methods.SESSION_HISTORY, SessionHistoryParams(sessionId = session.value)).messages)
+        val messages = try {
+            core.call(Methods.SESSION_HISTORY, SessionHistoryParams(sessionId = session.value)).messages
         } catch (failed: Exception) {
             if (failed is CancellationException) throw failed
-            before
+            null
         }
         change { now ->
             when {
                 now.ref?.runtime != session -> now
                 now.chat.running -> now.copy(chat = now.chat.notice(words))  // a turn began after all: its events are the truth
-                else -> now.copy(chat = now.chat.copy(entries = entries).unsent().notice(words))
+                else -> now.copy(chat = (messages?.let(now.chat::restored) ?: now.chat.copy(entries = before)).unsent().notice(words))
             }
         }
     }

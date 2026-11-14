@@ -4,25 +4,34 @@ import com.nousresearch.hermes.bridge.CoreEvent
 import com.nousresearch.hermes.bridge.protocol.Events
 import com.nousresearch.hermes.bridge.protocol.MessageCompletePayload
 import com.nousresearch.hermes.bridge.protocol.SessionCompressResult
+import com.nousresearch.hermes.bridge.protocol.TranscriptMessage
 import com.nousresearch.hermes.bridge.protocol.TurnStatus
 import com.nousresearch.hermes.bridge.protocol.Usage
 import kotlinx.serialization.json.JsonPrimitive
 
 /** One item of a chat's transcript. */
 sealed interface Entry {
+    /**
+     * This row's own id, given once by the chat that adds it ([Chat.nextId]) and kept by every copy: never another
+     * entry's in the same chat, so the transcript keys its row state by it, not by its place (/improve 20261113T221531Z #8).
+     */
+    val stableId: Long
+
     /** The user's words; [rowId] is the core's durable row for them once the core names it (null: unproven, never "none"). */
-    data class User(val text: String, val rowId: Long? = null) : Entry
+    data class User(val text: String, val rowId: Long? = null, override val stableId: Long) : Entry
 
     /** The agent's commentary between tool calls, sealed as its own segment while its turn runs on (not its answer). */
-    data class Interim(val text: String) : Entry
+    data class Interim(val text: String, override val stableId: Long) : Entry
 
     /** The agent's answer; [reasoning] is the model's reasoning for it, when the core shows reasoning. */
-    data class Reply(val text: String, val status: TurnStatus, val error: String? = null, val reasoning: String? = null) : Entry
+    data class Reply(val text: String, val status: TurnStatus, val error: String? = null, val reasoning: String? = null,
+                     override val stableId: Long) : Entry
 
-    data class Tool(val id: String, val name: String, val summary: String? = null, val done: Boolean = false) : Entry
+    data class Tool(val id: String, val name: String, val summary: String? = null, val done: Boolean = false,
+                    override val stableId: Long) : Entry
 
     /** Something the chat tells the user; [opens] is a place it offers to go (none: words only). */
-    data class Notice(val text: String, val opens: NoticeShortcut? = null) : Entry
+    data class Notice(val text: String, val opens: NoticeShortcut? = null, override val stableId: Long) : Entry
 }
 
 /** A place a notice offers to open: the always-on gateway's page. */
@@ -41,22 +50,25 @@ data class Retry(val index: Int, val text: String, val rowId: Long?)
  * clears it (invariant 6).
  * [runOwned]: the session is a job's run the gateway's scheduler still owns: it is read here, never written; only
  * `ChatSession` sets and clears it (/architect #4).
+ * [nextId]: the id the next entry takes. It only grows: a rewind keeps it, a transcript the core answers is keyed on
+ * from it, and a session switch carries it, so no id is given twice (/improve 20261113T221531Z #8).
  */
 data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? = null, val activity: String? = null,
                 val prompts: List<Prompt> = emptyList(), val reasoning: String? = null, val model: String? = null,
                 val todos: TodoList? = null, val meter: ContextMeter? = null, val submitted: Boolean = false,
-                val compressing: Boolean = false, val runOwned: Boolean = false) {
+                val compressing: Boolean = false, val runOwned: Boolean = false,
+                val nextId: Long = entries.maxOfOrNull { it.stableId + 1 } ?: 0) {
     val running: Boolean get() = streaming != null
 
     /** A turn runs or is about to: from the prompt's send to the turn's end (GoF-State; improve #4). */
     val busy: Boolean get() = running || submitted
 
-    fun sent(text: String): Chat = copy(entries = entries + Entry.User(text), submitted = true)
+    fun sent(text: String): Chat = adding { Entry.User(text, stableId = it) }.copy(submitted = true)
 
     /** The prompt did not go out (refused, or never reached the core): the chat is idle again. */
     fun unsent(): Chat = copy(submitted = false)
 
-    fun notice(text: String, opens: NoticeShortcut? = null): Chat = copy(entries = entries + Entry.Notice(text, opens))
+    fun notice(text: String, opens: NoticeShortcut? = null): Chat = adding { Entry.Notice(text, opens, it) }
 
     fun asked(prompt: Prompt): Chat = copy(prompts = prompts + prompt)
 
@@ -78,12 +90,16 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
         return Retry(i, user.text, user.rowId).takeIf { i < entries.lastIndex && user.text.isNotBlank() }
     }
 
-    /** The transcript before [target]'s prompt: what the core keeps when it cuts before that row. */
+    /** The transcript before [target]'s prompt: what the core keeps when it cuts before that row (its ids, and the counter, stay). */
     fun rewound(target: Retry): Chat = copy(entries = entries.take(target.index))
 
     /** After the core compressed the session: its transcript and its fill as the core answered (invariant 5); a reply without them changes neither. */
     fun compressed(result: SessionCompressResult): Chat =
-        (result.messages?.let { copy(entries = transcriptOf(it)) } ?: this).measured(result.usage)
+        (result.messages?.let(::restored) ?: this).measured(result.usage)
+
+    /** The core's [messages] in place of the transcript shown, keyed on from [nextId]: no row takes an id shown before (V4). */
+    fun restored(messages: List<TranscriptMessage>): Chat =
+        transcriptOf(messages, nextId).let { copy(entries = it, nextId = nextId + it.size) }
 
     /** The chat after one event of its session. A payload the app cannot read leaves it unchanged. */
     fun reduce(event: CoreEvent): Chat = runCatching { apply(event) }.getOrDefault(this)
@@ -93,12 +109,12 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
         Events.MESSAGE_DELTA.name -> copy(streaming = streaming.orEmpty() + event.decode(Events.MESSAGE_DELTA)!!.text)
         // Commentary beside tool calls: sealed with the core's words, the buffer emptied (never null: the turn runs on).
         Events.MESSAGE_INTERIM.name -> event.decode(Events.MESSAGE_INTERIM)!!.text.trim()
-            .takeIf { running && it.isNotEmpty() }?.let { copy(entries = entries + Entry.Interim(it), streaming = "") } ?: this
+            .takeIf { running && it.isNotEmpty() }?.let { text -> adding { id -> Entry.Interim(text, id) }.copy(streaming = "") } ?: this
         Events.REASONING_DELTA.name -> copy(reasoning = reasoning.orEmpty() + event.decode(Events.REASONING_DELTA)!!.text)
         // A preview of reasoning the core will not stream: it stands in until the completion's own.
         Events.REASONING_AVAILABLE.name -> if (reasoning.isNullOrEmpty()) copy(reasoning = event.decode(Events.REASONING_AVAILABLE)!!.text) else this
         Events.MESSAGE_COMPLETE.name -> complete(event.decode(Events.MESSAGE_COMPLETE)!!)
-        Events.TOOL_START.name -> event.decode(Events.TOOL_START)!!.let { copy(entries = entries + Entry.Tool(it.toolId, it.name)) }
+        Events.TOOL_START.name -> event.decode(Events.TOOL_START)!!.let { start -> adding { Entry.Tool(start.toolId, start.name, stableId = it) } }
         Events.TOOL_COMPLETE.name -> event.decode(Events.TOOL_COMPLETE)!!.let { done ->
             copy(entries = entries.map { if (it is Entry.Tool && it.id == done.toolId) it.copy(summary = done.summary, done = true) else it })
                 .planned(done.revision?.let { revision -> done.todos?.let { TodoList.of(it, revision) } })  // an unversioned list is not taken (D3)
@@ -124,10 +140,13 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
         // The completed text is authoritative; a structured (parts) completion keeps what was streamed.
         val text = (done.text as? JsonPrimitive)?.takeIf { it.isString }?.content ?: streaming.orEmpty()
         val thought = done.reasoning?.takeIf { it.isNotBlank() } ?: reasoning?.takeIf { it.isNotBlank() }
-        val ended = copy(entries = entries + Entry.Reply(text, done.status ?: TurnStatus.COMPLETE, done.error, thought),
-                         streaming = null, activity = null, reasoning = null, submitted = false).measured(done.usage)
+        val ended = adding { Entry.Reply(text, done.status ?: TurnStatus.COMPLETE, done.error, thought, it) }
+            .copy(streaming = null, activity = null, reasoning = null, submitted = false).measured(done.usage)
         return done.persistedTurn?.userRowId?.let(ended::boundUser) ?: ended
     }
+
+    /** This chat with one more entry, made with the next id: the one way the reducer adds a row (/improve 20261113T221531Z #8). */
+    private inline fun adding(entry: (id: Long) -> Entry): Chat = copy(entries = entries + entry(nextId), nextId = nextId + 1)
 
     /** The core's newer plan, when [next] is one (invariant 2); an unreadable or absent one changes nothing. */
     private fun planned(next: TodoList?): Chat = if (next == null) this else copy(todos = todos?.after(next) ?: next)

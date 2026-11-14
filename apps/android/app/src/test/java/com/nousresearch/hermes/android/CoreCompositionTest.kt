@@ -248,7 +248,8 @@ class CoreCompositionTest {
         now = GatewaySeen(GatewayStatus.STOPPED)
         scheduled("t2")
 
-        assertEquals(listOf(Entry.Notice(ChatSession.JOBS_NEED_GATEWAY, NoticeShortcut.GATEWAY)),
+        // The two tools take 0 and 1, the notice the next id.
+        assertEquals(listOf(Entry.Notice(ChatSession.JOBS_NEED_GATEWAY, NoticeShortcut.GATEWAY, 2)),
                      ready.chat.state.value.entries.filterIsInstance<Entry.Notice>())
     }
 

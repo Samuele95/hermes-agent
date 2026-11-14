@@ -19,6 +19,8 @@ class ChatTest {
 
     private fun Chat.after(vararg events: CoreEvent): Chat = events.fold(this) { chat, e -> chat.reduce(e) }
 
+    private fun Chat.answered(text: String): Chat = after(event("message.start"), event("message.complete", """{"text":"$text","status":"complete"}"""))
+
     @Test
     fun theCoresSessionInfoNamesTheModel() {
         val switched = Chat(model = "deepseek-chat").reduce(event("session.info", """{"model":"kimi-k2","provider":"kimi"}"""))
@@ -38,7 +40,7 @@ class ChatTest {
         val done = streaming.reduce(event("message.complete", """{"text":"Hello","status":"complete"}"""))
 
         assertFalse(done.running)
-        assertEquals(listOf(Entry.User("hi"), Entry.Reply("Hello", TurnStatus.COMPLETE)), done.entries)
+        assertEquals(listOf(Entry.User("hi", stableId = 0), Entry.Reply("Hello", TurnStatus.COMPLETE, stableId = 1)), done.entries)
     }
 
     @Test
@@ -55,13 +57,13 @@ class ChatTest {
         // The core's cancel before the agent was ready ends with an error alone (V6).
         val cancelled = sent.reduce(event("error", """{"message":"Turn cancelled before the agent was ready"}"""))
         assertFalse(cancelled.busy)
-        assertEquals(Entry.Notice("Turn cancelled before the agent was ready"), cancelled.entries.last())
+        assertEquals(Entry.Notice("Turn cancelled before the agent was ready", stableId = 1), cancelled.entries.last())
         // A failed agent build completes the turn with no start.
         assertFalse(sent.reduce(event("message.complete", """{"text":"x","status":"error","error":"agent init failed"}""")).busy)
 
         val unsent = sent.unsent()
         assertFalse(unsent.busy)
-        assertEquals(listOf(Entry.User("hi")), unsent.entries)
+        assertEquals(listOf(Entry.User("hi", stableId = 0)), unsent.entries)
     }
 
     @Test
@@ -74,7 +76,7 @@ class ChatTest {
 
         assertFalse(failed.running)
         assertEquals(null, failed.activity)
-        assertEquals(Entry.Notice("Context injection refused."), failed.entries.last())
+        assertEquals(Entry.Notice("Context injection refused.", stableId = 1), failed.entries.last())
     }
 
     @Test
@@ -86,7 +88,7 @@ class ChatTest {
         val done = reasoning.reduce(event("message.complete", """{"text":"Because.","status":"complete"}"""))
 
         assertEquals(null, done.reasoning)
-        assertEquals(Entry.Reply("Because.", TurnStatus.COMPLETE, reasoning = "Thinking."), done.entries.last())
+        assertEquals(Entry.Reply("Because.", TurnStatus.COMPLETE, reasoning = "Thinking.", stableId = 1), done.entries.last())
     }
 
     @Test
@@ -119,7 +121,7 @@ class ChatTest {
         val chat = Chat().after(event("message.start"), event("message.delta", """{"text":"Draft"}"""),
                                 event("message.complete", """{"text":"Final answer"}"""))
 
-        assertEquals(Entry.Reply("Final answer", TurnStatus.COMPLETE), chat.entries.single())
+        assertEquals(Entry.Reply("Final answer", TurnStatus.COMPLETE, stableId = 0), chat.entries.single())
     }
 
     @Test
@@ -127,7 +129,7 @@ class ChatTest {
         val chat = Chat().after(event("message.start"), event("message.delta", """{"text":"Streamed"}"""),
                                 event("message.complete", """{"text":[{"type":"text","text":"Streamed"}]}"""))
 
-        assertEquals(Entry.Reply("Streamed", TurnStatus.COMPLETE), chat.entries.single())
+        assertEquals(Entry.Reply("Streamed", TurnStatus.COMPLETE, stableId = 0), chat.entries.single())
     }
 
     @Test
@@ -135,17 +137,17 @@ class ChatTest {
         val chat = Chat().after(event("message.start"),
                                 event("message.complete", """{"text":"","status":"error","error":"provider unreachable"}"""))
 
-        assertEquals(Entry.Reply("", TurnStatus.ERROR, error = "provider unreachable"), chat.entries.single())
+        assertEquals(Entry.Reply("", TurnStatus.ERROR, error = "provider unreachable", stableId = 0), chat.entries.single())
     }
 
     @Test
     fun toolsShowWhileTheyRunAndSettleWithTheirSummary() {
         val running = Chat().after(event("message.start"), event("tool.start", """{"tool_id":"t1","name":"web_search"}"""))
-        assertEquals(Entry.Tool("t1", "web_search"), running.entries.single())
+        assertEquals(Entry.Tool("t1", "web_search", stableId = 0), running.entries.single())
 
         val done = running.reduce(event("tool.complete", """{"tool_id":"t1","name":"web_search","summary":"3 results"}"""))
 
-        assertEquals(Entry.Tool("t1", "web_search", summary = "3 results", done = true), done.entries.single())
+        assertEquals(Entry.Tool("t1", "web_search", summary = "3 results", done = true, stableId = 0), done.entries.single())
     }
 
     @Test
@@ -158,7 +160,7 @@ class ChatTest {
 
     @Test
     fun anErrorEventBecomesANotice() {
-        assertEquals(Entry.Notice("session expired"), Chat().reduce(event("error", """{"message":"session expired"}""")).entries.single())
+        assertEquals(Entry.Notice("session expired", stableId = 0), Chat().reduce(event("error", """{"message":"session expired"}""")).entries.single())
     }
 
     @Test
@@ -237,7 +239,7 @@ class ChatTest {
 
     @Test
     fun commentaryIsSealedAsItsOwnSegmentWhileTheTurnRuns() {
-        assertEquals(listOf(Entry.User("what day is it?"), Entry.Interim("Let me check.")), dateTurn.entries)
+        assertEquals(listOf(Entry.User("what day is it?", stableId = 0), Entry.Interim("Let me check.", 1)), dateTurn.entries)
         assertTrue(dateTurn.running)
         assertEquals("", dateTurn.streaming)
     }
@@ -251,8 +253,9 @@ class ChatTest {
 
         val done = answering.reduce(event("message.complete", """{"text":"It is Monday.","status":"complete"}"""))
 
-        assertEquals(listOf(Entry.User("what day is it?"), Entry.Interim("Let me check."),
-                            Entry.Tool("t1", "terminal", "Mon 3 Nov", done = true), Entry.Reply("It is Monday.", TurnStatus.COMPLETE)),
+        assertEquals(listOf(Entry.User("what day is it?", stableId = 0), Entry.Interim("Let me check.", 1),
+                            Entry.Tool("t1", "terminal", "Mon 3 Nov", done = true, stableId = 2),
+                            Entry.Reply("It is Monday.", TurnStatus.COMPLETE, stableId = 3)),
                      done.entries)
         assertFalse(done.running)
     }
@@ -262,7 +265,7 @@ class ChatTest {
         val sealed = Chat().sent("what day is it?").after(event("message.start"), event("message.delta", """{"text":"Let me ch"}"""),
                                                          event("message.interim", """{"text":"Let me check.","already_streamed":false}"""))
 
-        assertEquals(Entry.Interim("Let me check."), sealed.entries.last())
+        assertEquals(Entry.Interim("Let me check.", 1), sealed.entries.last())
         assertEquals("", sealed.streaming)
     }
 
@@ -271,7 +274,8 @@ class ChatTest {
         val chat = Chat().sent("what day is it?").after(event("message.start"), event("tool.start", """{"tool_id":"t1","name":"terminal"}"""),
                                                        event("message.interim", """{"text":"Done checking.","already_streamed":true}"""))
 
-        assertEquals(listOf(Entry.User("what day is it?"), Entry.Tool("t1", "terminal"), Entry.Interim("Done checking.")), chat.entries)
+        assertEquals(listOf(Entry.User("what day is it?", stableId = 0), Entry.Tool("t1", "terminal", stableId = 1), Entry.Interim("Done checking.", 2)),
+                     chat.entries)
         assertTrue(chat.running)
     }
 
@@ -306,39 +310,39 @@ class ChatTest {
     fun theCoreNamesThePromptsRowWhenItsTurnCompletes() {
         val named = Chat().sent("hi").after(event("message.start"), event("message.complete",
             """{"text":"Hello","persisted_turn":{"row_ids":[7,8],"complete":true,"user_row_id":7}}"""))
-        assertEquals(listOf(Entry.User("hi", 7), Entry.Reply("Hello", TurnStatus.COMPLETE)), named.entries)
+        assertEquals(listOf(Entry.User("hi", 7, 0), Entry.Reply("Hello", TurnStatus.COMPLETE, stableId = 1)), named.entries)
 
         // A completion without the receipt leaves the prompt unproven.
         val unnamed = Chat().sent("hi").after(event("message.start"), event("message.complete", """{"text":"Hello"}"""))
-        assertEquals(Entry.User("hi"), unnamed.entries.first())
+        assertEquals(Entry.User("hi", stableId = 0), unnamed.entries.first())
     }
 
     @Test
     fun onlyTheNewestUnnamedPromptTakesARowId() {
-        val reply = Entry.Reply("r", TurnStatus.COMPLETE)
-        val newestNamed = Chat(listOf(Entry.User("a"), reply, Entry.User("b", 9), reply))
+        val reply = Entry.Reply("r", TurnStatus.COMPLETE, stableId = 1)
+        val newestNamed = Chat(listOf(Entry.User("a", stableId = 0), reply, Entry.User("b", 9, 2), reply))
         assertEquals(newestNamed, newestNamed.boundUser(12))  // the older unnamed prompt is not the newest one
 
-        val unnamed = Chat(listOf(Entry.User("a", 3), reply, Entry.User("b")))
+        val unnamed = Chat(listOf(Entry.User("a", 3, 0), reply, Entry.User("b", stableId = 2)))
         assertEquals(unnamed, unnamed.boundUser(3))  // an id already shown stays where it is
-        assertEquals(listOf(Entry.User("a", 3), reply, Entry.User("b", 12)), unnamed.boundUser(12).entries)
+        assertEquals(listOf(Entry.User("a", 3, 0), reply, Entry.User("b", 12, 2)), unnamed.boundUser(12).entries)
     }
 
     @Test
     fun theRetryTargetIsTheLastAnsweredPromptWhileNothingRuns() {
-        val reply = Entry.Reply("r", TurnStatus.COMPLETE)
+        val reply = Entry.Reply("r", TurnStatus.COMPLETE, stableId = 1)
         assertEquals(null, Chat().retryTarget())
-        assertEquals(null, Chat(listOf(Entry.User("a"))).retryTarget())  // no answer yet (D3)
-        assertEquals(null, Chat(listOf(Entry.User("a", 1), reply), streaming = "").retryTarget())  // running
-        assertEquals(null, Chat(listOf(Entry.User("  "), Entry.Notice("x"))).retryTarget())  // blank
+        assertEquals(null, Chat(listOf(Entry.User("a", stableId = 0))).retryTarget())  // no answer yet (D3)
+        assertEquals(null, Chat(listOf(Entry.User("a", 1, 0), reply), streaming = "").retryTarget())  // running
+        assertEquals(null, Chat(listOf(Entry.User("  ", stableId = 0), Entry.Notice("x", stableId = 1))).retryTarget())  // blank
 
-        assertEquals(Retry(2, "b", 2), Chat(listOf(Entry.User("a", 1), reply, Entry.User("b", 2), Entry.Notice("x"))).retryTarget())
+        assertEquals(Retry(2, "b", 2), Chat(listOf(Entry.User("a", 1, 0), reply, Entry.User("b", 2, 2), Entry.Notice("x", stableId = 3))).retryTarget())
     }
 
     @Test
     fun noRetryWhileAPromptIsOnItsWay() {
-        val reply = Entry.Reply("r", TurnStatus.COMPLETE)
-        val onItsWay = Chat(listOf(Entry.User("a", 1), reply)).sent("b").notice("x")
+        val reply = Entry.Reply("r", TurnStatus.COMPLETE, stableId = 1)
+        val onItsWay = Chat(listOf(Entry.User("a", 1, 0), reply)).sent("b").notice("x")
 
         assertEquals(null, onItsWay.retryTarget())
         assertEquals(Retry(2, "b", null), onItsWay.unsent().retryTarget())
@@ -346,7 +350,7 @@ class ChatTest {
 
     @Test
     fun aCompressionHoldsRetryAndOnlyTheSessionEndsIt() {
-        val compressing = Chat(listOf(Entry.User("a", 1), Entry.Reply("b", TurnStatus.COMPLETE)), compressing = true)
+        val compressing = Chat(listOf(Entry.User("a", 1, 0), Entry.Reply("b", TurnStatus.COMPLETE, stableId = 1)), compressing = true)
 
         assertEquals(null, compressing.retryTarget())
         assertEquals(Retry(0, "a", 1), compressing.copy(compressing = false).retryTarget())
@@ -356,7 +360,7 @@ class ChatTest {
 
     @Test
     fun anOwnedRunHoldsRetry() {
-        val owned = Chat(listOf(Entry.User("a", 1), Entry.Reply("b", TurnStatus.COMPLETE)), runOwned = true)
+        val owned = Chat(listOf(Entry.User("a", 1, 0), Entry.Reply("b", TurnStatus.COMPLETE, stableId = 1)), runOwned = true)
 
         assertEquals(null, owned.retryTarget())  // a retry is a prompt.submit into the same session (V5)
         assertEquals(Retry(0, "a", 1), owned.copy(runOwned = false).retryTarget())
@@ -364,10 +368,11 @@ class ChatTest {
 
     @Test
     fun rewindingKeepsWhatCameBeforeThePrompt() {
-        val reply = Entry.Reply("r", TurnStatus.COMPLETE)
-        val chat = Chat(listOf(Entry.User("a", 1), reply, Entry.User("b", 2), Entry.Notice("x")), model = "kimi-k2")
+        val reply = Entry.Reply("r", TurnStatus.COMPLETE, stableId = 1)
+        val chat = Chat(listOf(Entry.User("a", 1, 0), reply, Entry.User("b", 2, 2), Entry.Notice("x", stableId = 3)), model = "kimi-k2")
 
-        assertEquals(Chat(listOf(Entry.User("a", 1), reply), model = "kimi-k2"), chat.rewound(Retry(2, "b", 2)))
+        // The counter stays: the next entry is not row 2 again.
+        assertEquals(Chat(listOf(Entry.User("a", 1, stableId = 0), reply), model = "kimi-k2", nextId = 4), chat.rewound(Retry(2, "b", 2)))
     }
 
     private fun compression(json: String): SessionCompressResult =
@@ -375,13 +380,15 @@ class ChatTest {
 
     @Test
     fun aCompressionShowsTheCoresTranscriptAndFill() {
-        val long = Chat(listOf(Entry.User("a", 1), Entry.Reply("A", TurnStatus.COMPLETE), Entry.User("b", 3), Entry.Reply("B", TurnStatus.COMPLETE)),
+        val long = Chat(listOf(Entry.User("a", 1, 0), Entry.Reply("A", TurnStatus.COMPLETE, stableId = 1), Entry.User("b", 3, 2),
+                               Entry.Reply("B", TurnStatus.COMPLETE, stableId = 3)),
                         meter = ContextMeter(7_000, 8_000, 88, false))
 
         val kept = long.compressed(compression("""{"status":"compressed","messages":[{"role":"user","text":"b","row_id":7},{"role":"assistant","text":"B"}],
                                                    "usage":{"context_used":2000,"context_max":8000,"context_percent":25}}"""))
 
-        assertEquals(listOf(Entry.User("b", 7), Entry.Reply("B", TurnStatus.COMPLETE)), kept.entries)
+        // Keyed on after the rows shown before (V4): no kept row takes a cut row's id.
+        assertEquals(listOf(Entry.User("b", 7, stableId = 4), Entry.Reply("B", TurnStatus.COMPLETE, stableId = 5)), kept.entries)
         assertEquals(ContextMeter(2_000, 8_000, 25, false), kept.meter)
         // A lock held elsewhere answers no transcript and no usage: nothing changes.
         assertEquals(long, long.compressed(compression("""{"compressed":false,"lock_held":true,"message":"busy elsewhere"}""")))
@@ -393,7 +400,7 @@ class ChatTest {
 
     @Test
     fun aStatusOutsideATurnIsNotTheAgentsActivity() {
-        val idle = Chat(listOf(Entry.User("hi"), Entry.Reply("Hello", TurnStatus.COMPLETE)))
+        val idle = Chat(listOf(Entry.User("hi", stableId = 0), Entry.Reply("Hello", TurnStatus.COMPLETE, stableId = 1)))
 
         // The core's compress pins "compressing" and ends with an idle "ready" (D5).
         assertEquals(idle, idle.after(event("status.update", """{"kind":"compressing","text":"⠋ compressing 6 messages (~1,200 tok)…"}"""),
@@ -410,7 +417,41 @@ class ChatTest {
                                          "result":{"success":true,"job_id":"ab12","gateway_running":false}}"""))
 
         // The reducer is a function of (Chat, event): the gateway's notice is ChatSession's to add (FP, D39 F11).
-        assertEquals(listOf(Entry.Tool("t1", "cronjob_manage", summary = "created", done = true)), scheduled.entries)
-        assertEquals(Chat(listOf(Entry.Notice("x", null))), Chat().notice("x"))
+        assertEquals(listOf(Entry.Tool("t1", "cronjob_manage", summary = "created", done = true, stableId = 0)), scheduled.entries)
+        assertEquals(Chat(listOf(Entry.Notice("x", null, 0))), Chat().notice("x"))
+    }
+
+    @Test
+    fun everyEntryTheChatAddsTakesTheNextId() {
+        val turn = Chat().sent("what day is it?").after(
+            event("message.start"), event("message.interim", """{"text":"Let me check.","already_streamed":false}"""),
+            event("tool.start", """{"tool_id":"t1","name":"terminal"}"""),
+            event("tool.complete", """{"tool_id":"t1","name":"terminal","summary":"Mon 3 Nov"}"""),
+            event("message.complete", """{"text":"It is Monday.","status":"complete"}"""),
+            event("error", """{"message":"session expired"}"""))
+
+        // The prompt, the commentary, the tool (its completion keeps its id), the answer, the notice: one id each, in order.
+        assertEquals(listOf(0L, 1L, 2L, 3L, 4L), turn.entries.map { it.stableId })
+        assertEquals(5L, turn.nextId)
+        assertEquals(Entry.User("what day is it?", 7, stableId = 0), turn.boundUser(7).entries.first())  // named, same row
+    }
+
+    @Test
+    fun aRewindNeverGivesAnIdAgain() {
+        val asked = Chat().sent("a").answered("One").sent("b").answered("Two")           // 0, 1, 2, 3
+        val again = asked.rewound(checkNotNull(asked.retryTarget())).sent("b").answered("Two again")
+
+        assertEquals(listOf(0L, 1L, 4L, 5L), again.entries.map { it.stableId })         // the new answer is not row 3
+        assertEquals(6L, again.nextId)
+    }
+
+    @Test
+    fun aChatBuiltWithEntriesGoesOnAfterTheirHighestId() {
+        assertEquals(0L, Chat().nextId)
+
+        val built = Chat(listOf(Entry.User("a", stableId = 7), Entry.Reply("A", TurnStatus.COMPLETE, stableId = 3)))
+
+        assertEquals(8L, built.nextId)
+        assertEquals(8L, built.notice("x").entries.last().stableId)
     }
 }
