@@ -76,6 +76,6 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps
     val fts = if (facts.fts5) "with FTS5" else "without FTS5"
     return CoreState.Ready(gateway, chat, setup, SshSetup(deps.secrets, bridge),
                            TelegramSetup(deps.secrets, bridge, deps.seen), history, context,
-                           ApprovalSettings(gateway), JobsControl(gateway, bridge, deps.seen, resume = chat::resume),
+                           ApprovalSettings(gateway), JobsControl(gateway, bridge, deps.seen, continueInChat = chat::resume),
                            "Python ${facts.python} · SQLite ${facts.sqlite} $fts")
 }

@@ -126,14 +126,15 @@ suspend fun AppBridge.runOwnership(run: StoredSessionId): RunOwnership =
  * One activity runs at a time, admitted only while the page is idle and ended only by the step that began it; a
  * re-list on `cron.changed` ends none but its own (/architect 20261113T220113Z #1).
  * [state] is null while closed. [gateway] is the core, [bridge] the app's Python half (the ticker's record), [seen]
- * the app's own observation of the always-on gateway, [resume] continues a stored session in the chat (the chat's own
- * `session.resume`, the call the drawer's pick makes), [now] a monotonic clock in milliseconds (V3).
+ * the app's own observation of the always-on gateway, [continueInChat] continues a stored session in the chat (the
+ * chat's own `session.resume`, the call the drawer's pick makes; not [resume], which un-pauses a job), [now] a
+ * monotonic clock in milliseconds (V3).
  */
 class JobsControl(
     private val gateway: CoreGateway,
     private val bridge: AppBridge,
     private val seen: () -> GatewaySeen,
-    private val resume: suspend (StoredSessionId) -> Unit,
+    private val continueInChat: suspend (StoredSessionId) -> Unit,
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
     private val screen = MutableStateFlow<JobsUi?>(null)
@@ -184,7 +185,7 @@ class JobsControl(
         before?.opening(run) ?: return
         holding(JobActivity.Opening(run)) {
             try {
-                resume.invoke(run)  // the chat's own session.resume: jobs/ sends no session call of its own
+                continueInChat(run)  // the chat's own session.resume: jobs/ sends no session call of its own
             } catch (failed: Exception) {
                 val words = forUser(failed)
                 screen.update { it?.ending(JobActivity.Opening(run))?.telling(words) }

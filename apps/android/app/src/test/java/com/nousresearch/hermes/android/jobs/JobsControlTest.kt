@@ -33,7 +33,7 @@ class JobsControlTest {
         ticker
     }
     private var seen = GatewaySeen(GatewayStatus.STOPPED)
-    private val control = JobsControl(core, bridge, seen = { seen }, resume = {})
+    private val control = JobsControl(core, bridge, seen = { seen }, continueInChat = {})
 
     private val listCalls get() = core.calls.filter { it.first == "cron.manage" }
 

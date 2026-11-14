@@ -215,7 +215,7 @@ class JobActionsDeviceTest {
             EmbeddedBridge.call(function, arg).also { if (function == "cron_trigger") triggerMs = SystemClock.elapsedRealtime() - t0 }
         }
         // The page's controller over the same core, with only the gateway's record stubbed: no ticker runs here.
-        val control = JobsControl(ready.gateway, timed, seen = { GatewaySeen(GatewayStatus.RUNNING, pid = -1) }, resume = {})
+        val control = JobsControl(ready.gateway, timed, seen = { GatewaySeen(GatewayStatus.RUNNING, pid = -1) }, continueInChat = {})
         try {
             val id = addProbe("now")
             val before = OffsetDateTime.now()
@@ -255,7 +255,7 @@ class JobActionsDeviceTest {
             EmbeddedBridge.call(function, arg)
         }
         // The page's controller over the same core, with only the gateway's record stubbed: no ticker runs here.
-        val control = JobsControl(ready.gateway, counted, seen = { GatewaySeen(GatewayStatus.RUNNING, pid = -1) }, resume = {})
+        val control = JobsControl(ready.gateway, counted, seen = { GatewaySeen(GatewayStatus.RUNNING, pid = -1) }, continueInChat = {})
         try {
             val id = addProbe("paused")
             runBlocking { control.open() }

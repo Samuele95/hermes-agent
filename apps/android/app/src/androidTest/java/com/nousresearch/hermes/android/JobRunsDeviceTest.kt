@@ -155,7 +155,7 @@ class JobRunsDeviceTest {
                 EmbeddedBridge.call(function, arg)
             }
         }
-        val control = JobsControl(ready.gateway, runs, seen = { GatewaySeen(GatewayStatus.STOPPED) }, resume = ready.chat::resume)
+        val control = JobsControl(ready.gateway, runs, seen = { GatewaySeen(GatewayStatus.STOPPED) }, continueInChat = ready.chat::resume)
         val before = ready.chat.sessionId
         try {
             val id = addProbe("cannot open")

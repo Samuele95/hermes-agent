@@ -61,7 +61,7 @@ class JobRunsTest {
     private var onResume: () -> Unit = {}
     private var resumeFails: Exception? = null
     private val seen = GatewaySeen(GatewayStatus.RUNNING, pid = 42)
-    private val control = JobsControl(core, bridge, seen = { seen }, resume = { stored ->
+    private val control = JobsControl(core, bridge, seen = { seen }, continueInChat = { stored ->
         duringResume()
         onResume()
         resumeFails?.let { throw it }
