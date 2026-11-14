@@ -30,8 +30,8 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * A job row's ⋮ menu (automation-03, -04, -05): Run now only while the gateway runs and the job is scheduled and not
- * queued, Pause for a job that could still fire, Resume for a paused one, Delete always, asking first in the job's name.
+ * A job row's ⋮ menu (automation-03, -04, -05): Run now only while the gateway runs, on a scheduled or paused job
+ * (D43) not queued, Pause for a job that could still fire, Resume for a paused one, Delete always, asking first in the job's name.
  */
 @RunWith(AndroidJUnit4::class)
 class JobActionsScreenTest {
@@ -85,13 +85,30 @@ class JobActionsScreenTest {
     }
 
     @Test
-    fun aPausedJobOffersResumeAndNoRunNow() {
+    fun aPausedJobsMenuOffersRunNowAndResume() {
         show(JobsUi(listOf(paused), gatewayRunning = true))
 
         menuOf("c3d4")
         item("job-pause").assertDoesNotExist()
-        item("job-run-now").assertDoesNotExist()
+        item("job-run-now").assertExists()          // D43: as Desktop's job panel offers it
+        item("job-resume").assertExists()
         item("job-delete").assertExists()
+        item("job-run-now").performClick()
+        compose.waitForIdle()
+        assertEquals(listOf("run:c3d4"), calls)
+        item("job-run-now").assertDoesNotExist()    // the menu has closed
+
+        menuOf("c3d4")
+        item("job-resume").performClick()
+        assertEquals(listOf("run:c3d4", "resume:c3d4"), calls)
+    }
+
+    @Test
+    fun aPausedJobWithTheGatewayOffOffersResumeAndNoRunNow() {
+        show(JobsUi(listOf(paused), gatewayRunning = false))
+
+        menuOf("c3d4")
+        item("job-run-now").assertDoesNotExist()
         item("job-resume").performClick()
 
         assertEquals(listOf("resume:c3d4"), calls)

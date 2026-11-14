@@ -52,8 +52,13 @@ data class JobsUi(val jobs: List<Job> = emptyList(), val warning: JobsWarning? =
 data class RunsView(val job: JobId, val runs: List<JobRun> = emptyList(), val loaded: Boolean = false,
                     val error: String? = null)
 
-/** Run now is offered for [job] (§2.4 invariant 3, F1): the gateway runs, the job is scheduled, and not already queued. */
-fun JobsUi.offersRunNow(job: Job): Boolean = gatewayRunning && job.state == JobState.SCHEDULED && job.id !in queued
+/**
+ * Run now is offered for [job] (§2.4 invariant 3 as D43 amends it, F1): the gateway runs, the job is scheduled or
+ * paused (the core's trigger_job resumes a paused job and makes it due, as Desktop's Run now does), and it is not
+ * already queued. A finished job is not: the core refuses it.
+ */
+fun JobsUi.offersRunNow(job: Job): Boolean =
+    gatewayRunning && (job.state == JobState.SCHEDULED || job.state == JobState.PAUSED) && job.id !in queued
 
 /** This page with [mine] ended while it is still the activity; any other is left as it is (§2 JobActivity). */
 private fun JobsUi.ending(mine: JobActivity): JobsUi = if (activity == mine) copy(activity = JobActivity.Idle) else this
@@ -102,13 +107,18 @@ private fun JobsUi.triggering(id: JobId): JobsUi? {
 }
 
 /**
- * Why this page's fresh list refuses Run now for [id], in the app's words (/improve 20261113T221531Z #5): the job is
- * gone, or no longer scheduled (the core's trigger_job would resume a paused one); null while it is still scheduled,
- * when only the gateway can refuse it, without words (V10).
+ * Why this page's fresh list refuses Run now for the job the user [tapped], in the app's words: it is gone, or its
+ * state changed since the page listed it (/improve 20261113T221531Z #5; D43: trigger_job resumes a paused job, so a
+ * tap acts only on the state the user saw). Null while the state is the one tapped, when only the gateway can
+ * refuse it, without words (V10).
  */
-private fun JobsUi.runNowRefusal(id: JobId): String? {
-    val job = jobs.find { it.id == id } ?: return "That job no longer exists."
-    return if (job.state != JobState.SCHEDULED) "The job is no longer scheduled, so it was not run." else null
+private fun JobsUi.runNowRefusal(tapped: Job): String? {
+    val job = jobs.find { it.id == tapped.id } ?: return "That job no longer exists."
+    return when {
+        job.state == tapped.state -> null
+        tapped.state == JobState.PAUSED -> "The job is no longer paused, so it was not run."
+        else -> "The job is no longer scheduled, so it was not run."
+    }
 }
 
 /** Asks the app's `cron_run_owned` whether the gateway's scheduler still owns [run]: a value read each time, never kept here. */
@@ -128,8 +138,9 @@ internal const val RECHECKS = 2
  * changed and the job's id (D39 F6, F10); after either it lists again, never patching the list.
  * It pauses, resumes and deletes a job through `cron.manage` by its id, deletes only the one the user confirmed, and
  * runs one now only by making it due for the gateway's ticker (the app's `cron_trigger`, never a run in this process),
- * offered while the gateway runs and the job is scheduled as the core lists it at the tap, marked queued until the
- * core shows its run or two minutes pass (D39 F1, §2.4); after each it lists again, never patching the list.
+ * offered while the gateway runs on a scheduled or paused job (the core's trigger_job resumes a paused one: D43), and
+ * sent only while the core lists it at the tap in the state the page showed, marked queued until the core shows its
+ * run or two minutes pass (D39 F1, §2.4); after each it lists again, never patching the list.
  * It shows a job's past runs as the core's own per-job query lists them (the app's `cron_runs`, by the job's id,
  * never derived from the session list), and opens one by continuing its session in the chat, the drawer's way,
  * closing the page only once the chat took it (D39 F7).
@@ -263,31 +274,34 @@ class JobsControl(
 
     /**
      * Makes the listed job [id] due for the gateway's ticker through the app's `cron_trigger` (F1): nothing runs in
-     * this process. Offered only while the gateway runs, read at the tap, and the job is scheduled (invariant 3); a
-     * failed guard sends nothing and drops the offer (V10). Admitted, the jobs are listed fresh first, as the core's
-     * trigger_job would resume a paused job: a job gone or no longer scheduled is refused in the app's words, a gateway
-     * seen stopped by that list drops the offer, a list that failed sends nothing (/improve 20261113T221531Z #5).
-     * Accepted, the job is marked queued from its fresh last run, then the jobs are listed again.
+     * this process, and a paused job is resumed by it, as Desktop's Run now does (D43). Offered only while the gateway
+     * runs, read at the tap, on a scheduled or paused job (invariant 3 as D43 amends it). A failed guard sends nothing
+     * and drops the offer (V10). Admitted, the jobs are listed fresh first: a job gone, or whose state changed since
+     * the page listed it, is refused in the app's words. A gateway seen stopped by that list drops the offer, and a
+     * list that failed sends nothing (/improve 20261113T221531Z #5). Accepted, the job is marked queued from its fresh
+     * last run, then the jobs are listed again.
      */
     suspend fun runNow(id: JobId) {
         val running = seen().status == GatewayStatus.RUNNING
         // One atomic step: the offer follows the gateway as seen now, and a double tap triggers once.
         val before = screen.getAndUpdate { ui -> ui?.copy(gatewayRunning = running)?.let { it.triggering(id) ?: it } }
-        before?.copy(gatewayRunning = running)?.takeIf { it.triggering(id) != null } ?: return
+        val tapped = before?.copy(gatewayRunning = running)?.takeIf { it.triggering(id) != null }
+            ?.jobs?.find { it.id == id } ?: return
         val mine = JobActivity.Triggering(id)
-        // The job as the core holds it now, not as the page last listed it: the core's trigger_job resumes a paused job
-        // (/improve 20261113T221531Z #5). The same list reads the gateway again (V10); a list that failed told its words.
+        // The job as the core holds it now, in the state the page showed at the tap: trigger_job resumes a paused job
+        // (D43), so a job paused, resumed, finished or deleted since is not acted on (/improve 20261113T221531Z #5).
+        // The same list reads the gateway again (V10); a list that failed told its words.
         var fresh: JobsUi? = null
         holding(mine) { if (relist()) fresh = screen.value }
         val listed = fresh
-        val job = listed?.jobs?.find { it.id == id }?.takeIf { listed.offersRunNow(it) }
+        val job = listed?.jobs?.find { it.id == id }?.takeIf { it.state == tapped.state && listed.offersRunNow(it) }
         if (job == null) {
-            val words = listed?.runNowRefusal(id)
+            val words = listed?.runNowRefusal(tapped)
             screen.update { ui -> ui?.ending(mine)?.let { if (words != null) it.copy(error = words) else it } }
             return
         }
         finish(mine) {
-            bridge.ask(BridgeCalls.CRON_TRIGGER, CronTriggerParams(id.value))  // its next_run_at is not shown (invariant 1)
+            bridge.ask(BridgeCalls.CRON_TRIGGER, CronTriggerParams(id.value))  // resumes a paused job too; its next_run_at is not shown (invariant 1)
             screen.update { it?.copy(queued = it.queued + (id to RunMark(job.last?.at, now()))) }  // the fresh last run (K7 V5)
             null
         }

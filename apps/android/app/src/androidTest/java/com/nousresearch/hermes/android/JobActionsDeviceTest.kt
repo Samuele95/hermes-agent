@@ -47,7 +47,8 @@ import org.junit.runner.RunWith
 /**
  * A job row's actions over the real embedded core (no model, no network, no token): pause, resume and delete change
  * the core's own job; Run now is not offered while the gateway is off, and with the gateway's record stubbed it only
- * makes the job due (D39 F1, V8), and a job paused after the page listed it is not run, nor resumed. The `:gateway`
+ * makes the job due (D39 F1, V8), and a job paused after the page listed it is not run, nor resumed; a job paused
+ * before the list is resumed and made due by Run now (D43). The `:gateway`
  * stays off in every test, so no ticker ever meets a due job, and every `j7 probe` job a test adds is removed again.
  */
 @RunWith(AndroidJUnit4::class)
@@ -279,6 +280,54 @@ class JobActionsDeviceTest {
             assertEquals(JobState.PAUSED, ui.jobs.single { it.id == id }.state)
             assertEquals("The job is no longer scheduled, so it was not run.", ui.error)
             assertTrue(ui.queued.isEmpty())
+        } finally {
+            removeProbes()
+            control.close()
+        }
+    }
+
+    @SdkSuppress(minSdkVersion = 26)  // java.time; the phone is API 36
+    @Test
+    fun aPausedJobsRunNowResumesItAndMakesItDue() {
+        gatewayOff()
+        var triggerMs = -1L
+        val timed = AppBridge { function, arg ->
+            val t0 = SystemClock.elapsedRealtime()
+            EmbeddedBridge.call(function, arg).also { if (function == "cron_trigger") triggerMs = SystemClock.elapsedRealtime() - t0 }
+        }
+        // The page's controller over the same core, with only the gateway's record stubbed: no ticker runs here.
+        val control = JobsControl(ready.gateway, timed, seen = { GatewaySeen(GatewayStatus.RUNNING, pid = -1) }, continueInChat = {})
+        try {
+            val id = addProbe("paused now")
+            runBlocking { ready.gateway.call(Methods.CRON_MANAGE, CronManageParams(action = CronAction.PAUSE, name = id.value)) }
+            val before = OffsetDateTime.now()
+            runBlocking { control.open() }
+            val listed = checkNotNull(control.state.value)
+            assertEquals(JobState.PAUSED, listed.jobs.single { it.id == id }.state)
+            assertTrue(listed.offersRunNow(listed.jobs.single { it.id == id }))  // D43
+            check(gatewayPid() == null) { "a :gateway is alive: a due job must never meet its ticker" }
+
+            val t0 = SystemClock.elapsedRealtime()
+            runBlocking { control.runNow(id) }
+            val runNowMs = SystemClock.elapsedRealtime() - t0
+
+            val row = coreList().single { it.jobId == id.value }
+            // Removed at once, before any other assertion or log: a due job must not wait in the store.
+            runBlocking { ready.gateway.call(Methods.CRON_MANAGE, CronManageParams(action = CronAction.REMOVE, name = id.value)) }
+            val ui = checkNotNull(control.state.value)  // as the re-list after the trigger left it: no follow() runs here
+            Log.i(TAG, "paused run now: core '${row.state}', enabled ${row.enabled}, next ${row.nextRunAt} against the phone's " +
+                       "${OffsetDateTime.now()}; paused_at ${row.pausedAt}, paused_reason ${row.pausedReason}; page row " +
+                       "${ui.jobs.single { it.id == id }.state}, queued ${id in ui.queued}; " +
+                       "runNow $runNowMs ms, cron_trigger held hermes-python $triggerMs ms")
+            assertNull(ui.error)
+            assertEquals("scheduled", row.state)                    // resumed by trigger_job
+            assertTrue(row.enabled)
+            val next = OffsetDateTime.parse(checkNotNull(row.nextRunAt))
+            assertTrue("$next before $before", !next.isBefore(before.minusSeconds(5)))
+            assertTrue("$next after now", !next.isAfter(OffsetDateTime.now().plusSeconds(5)))
+            assertEquals(JobState.SCHEDULED, ui.jobs.single { it.id == id }.state)  // the re-list shows it scheduled
+            assertTrue(id in ui.queued)
+            assertTrue(coreList().none { it.jobId == id.value })
         } finally {
             removeProbes()
             control.close()

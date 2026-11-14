@@ -24,6 +24,7 @@ class JobActionsTest {
     private var answers: Map<String, String> = mapOf("pause" to OK, "resume" to OK, "remove" to OK)
     private var onAct: () -> Unit = {}
     private var onList: () -> Unit = {}
+    private var onTrigger: () -> Unit = {}
     private var actFails: CoreError? = null
     private val core = FakeCoreGateway { method, params ->
         check(method == "cron.manage") { "unexpected $method" }
@@ -45,7 +46,7 @@ class JobActionsTest {
         when (function) {
             "cron_scheduler" -> FRESH
             "cron_delivery_targets" -> """{"targets":[]}"""
-            "cron_trigger" -> { if (triggerFails) throw IllegalStateException("the bridge broke"); triggered }
+            "cron_trigger" -> { onTrigger(); if (triggerFails) throw IllegalStateException("the bridge broke"); triggered }
             else -> error("unexpected $function")
         }
     }
@@ -268,15 +269,17 @@ class JobActionsTest {
     }
 
     @Test
-    fun runNowIsOfferedOnlyWhileTheGatewayRunsAndTheJobIsScheduled() = runTest {
+    fun runNowIsOfferedOnlyWhileTheGatewayRunsOnAScheduledOrPausedJob() = runTest {
         for (status in listOf(GatewayStatus.STOPPED, GatewayStatus.STARTING, GatewayStatus.RESTARTING,
                               GatewayStatus.STOPPING, GatewayStatus.FAILED, GatewayStatus.DIED)) {
             seen = GatewaySeen(status)
             control.open()
             assertFalse(status.name, ui.gatewayRunning)
             assertFalse(status.name, ui.offersRunNow(shown(j1)))
+            assertFalse(status.name, ui.offersRunNow(shown(j2)))
 
             control.runNow(j1)
+            control.runNow(j2)
 
             assertTrue(status.name, triggers.isEmpty())
             assertTrue(status.name, ui.queued.isEmpty())
@@ -287,9 +290,8 @@ class JobActionsTest {
 
         assertTrue(ui.gatewayRunning)
         assertTrue(ui.offersRunNow(shown(j1)))
-        assertFalse(ui.offersRunNow(shown(j2)))
+        assertTrue(ui.offersRunNow(shown(j2)))  // D43
         assertFalse(ui.offersRunNow(shown(j3)))
-        control.runNow(j2)
         control.runNow(j3)
         assertTrue(triggers.isEmpty())
         assertTrue(ui.queued.isEmpty())
@@ -389,10 +391,59 @@ class JobActionsTest {
         assertTrue(triggers.isEmpty())                       // not resumed and fired by trigger_job
         assertEquals("The job is no longer scheduled, so it was not run.", ui.error)
         assertEquals(JobState.PAUSED, shown(j1).state)       // the fresh list is shown
-        assertFalse(ui.offersRunNow(shown(j1)))
+        assertTrue(ui.offersRunNow(shown(j1)))  // D43: the paused row offers Run now again, as the user now sees it
         assertTrue(ui.queued.isEmpty())
         assertEquals(2, listCalls.size)                      // the open's, then the fresh read; none after a refusal
         assertTrue(actCalls.isEmpty())
+        assertFalse(ui.busy)
+    }
+
+    @Test
+    fun aPausedJobsRunNowTriggersItAndThePageShowsItScheduled() = runTest {
+        control.open()
+        assertEquals(JobState.PAUSED, shown(j2).state)
+        assertTrue(ui.offersRunNow(shown(j2)))                       // D43: Run now on a paused job too
+        onTrigger = { listed = list(SCHEDULED, SCHEDULED_J2, COMPLETED) }  // the core's trigger_job un-pauses it
+
+        control.runNow(j2)
+
+        assertEquals("""{"job_id":"j2"}""", triggers.single().second)
+        assertTrue(actCalls.isEmpty())                               // no cron.manage resume: trigger_job resumes it (D6)
+        assertEquals(3, listCalls.size)                              // the open's, the fresh read, the re-list after
+        assertEquals(JobState.SCHEDULED, shown(j2).state)            // shown from the re-list (invariant 1)
+        assertEquals(mapOf(j2 to RunMark(null, 1_000)), ui.queued)   // queued until the core shows its run
+        assertFalse(ui.offersRunNow(shown(j2)))
+        assertNull(ui.error)
+        assertFalse(ui.busy)
+    }
+
+    @Test
+    fun aJobResumedSinceTheListIsRefused() = runTest {
+        control.open()
+        listed = list(SCHEDULED, SCHEDULED_J2, COMPLETED)            // resumed elsewhere: the page has not listed since
+
+        control.runNow(j2)
+
+        assertTrue(triggers.isEmpty())                               // the user tapped a paused job: not acted on
+        assertEquals("The job is no longer paused, so it was not run.", ui.error)
+        assertEquals(JobState.SCHEDULED, shown(j2).state)            // the fresh list is shown
+        assertTrue(ui.offersRunNow(shown(j2)))                       // a new tap is the user's own choice
+        assertTrue(ui.queued.isEmpty())
+        assertEquals(2, listCalls.size)                              // the open's, then the fresh read
+        assertFalse(ui.busy)
+    }
+
+    @Test
+    fun aPausedJobDeletedSinceTheListIsRefusedInTheAppsWords() = runTest {
+        control.open()
+        listed = list(SCHEDULED, COMPLETED)                          // deleted elsewhere: the page has not listed since
+
+        control.runNow(j2)
+
+        assertTrue(triggers.isEmpty())
+        assertEquals("That job no longer exists.", ui.error)
+        assertTrue(ui.jobs.none { it.id == j2 })
+        assertEquals(2, listCalls.size)
         assertFalse(ui.busy)
     }
 
@@ -450,6 +501,18 @@ class JobActionsTest {
         assertEquals("""{"job_id":"j1"}""", triggers.single().second)
         assertEquals(mapOf(j1 to RunMark("2026-11-13T10:00:30+01:00", 1_000)), ui.queued)  // still queued after the re-list
         assertFalse(ui.busy)
+    }
+
+    @Test
+    fun runNowIsOfferedOnAScheduledOrPausedJobOnly() {
+        val job = Job(j1, "Morning news", "every 60m", "", JobState.SCHEDULED, null, null, null)
+        val ui = JobsUi(gatewayRunning = true)
+        for (state in JobState.entries) {
+            assertEquals(state.name, state == JobState.SCHEDULED || state == JobState.PAUSED, ui.offersRunNow(job.copy(state = state)))
+        }
+        val paused = job.copy(state = JobState.PAUSED)
+        assertFalse(ui.copy(gatewayRunning = false).offersRunNow(paused))                 // still only while the gateway runs
+        assertFalse(ui.copy(queued = mapOf(j1 to RunMark(null, 0))).offersRunNow(paused))  // and not while queued
     }
 
     @Test
