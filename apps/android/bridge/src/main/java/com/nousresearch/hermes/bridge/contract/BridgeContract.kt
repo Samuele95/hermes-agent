@@ -103,6 +103,12 @@ data class PlatformEntry(
 )
 
 @Serializable
+data class Personality(
+    val name: String,
+    val description: String,
+)
+
+@Serializable
 data class RuntimeFactsReply(
     val python: String,
     val sqlite: String,
@@ -345,6 +351,32 @@ data class CronRunOwnedReply(
     val owned: Boolean?,
 )
 
+@Serializable
+data class SettingsReadReply(
+    @SerialName("approvals_timeout_s") val approvalsTimeoutS: Int,
+    @SerialName("command_allowlist") val commandAllowlist: List<String>,
+    @SerialName("memory_enabled") val memoryEnabled: Boolean,
+    @SerialName("user_profile_enabled") val userProfileEnabled: Boolean,
+    @SerialName("memory_char_limit") val memoryCharLimit: Int,
+    @SerialName("user_char_limit") val userCharLimit: Int,
+    val personalities: List<Personality>,
+)
+
+@Serializable
+data class SettingsWriteParams(
+    @SerialName("approvals_timeout_s") val approvalsTimeoutS: Int?,
+    @SerialName("memory_enabled") val memoryEnabled: Boolean?,
+    @SerialName("user_profile_enabled") val userProfileEnabled: Boolean?,
+    @SerialName("memory_char_limit") val memoryCharLimit: Int?,
+    @SerialName("user_char_limit") val userCharLimit: Int?,
+    @SerialName("allowlist_remove") val allowlistRemove: List<String>,
+)
+
+@Serializable
+data class SettingsWriteReply(
+    val applied: Boolean,
+)
+
 /** Every call the app may make into its Python half. */
 object BridgeCalls {
     /** The interpreter facts the app shows. */
@@ -405,6 +437,10 @@ object BridgeCalls {
     val CRON_RUN_OWNED = BridgeCall("cron_run_owned", CronRunOwnedParams.serializer(), CronRunOwnedReply.serializer())
     /** The app's startup calls are done: the job form's delivery targets (every plugin and platform adapter) start loading in this process's waiting background thread, once; answers at once. Asked earlier, the load slows those calls through the GIL. */
     val CRON_WARM_DELIVERY_TARGETS = BridgeCall("cron_warm_delivery_targets", NoParams.serializer(), NoReply.serializer())
+    /** The settings config.set refuses, as the core reads them: the approval timeout in seconds, the always-allowed command patterns, memory and the user profile on or off with their size limits in characters, and every personality the core offers with its preview line. */
+    val SETTINGS_READ = BridgeCall("settings_read", NoParams.serializer(), SettingsReadReply.serializer())
+    /** Changes only the given settings in config.yaml under the app's config lock (null leaves a field as it is; never .env); allowlist_remove takes those patterns out and makes this process stop honouring them at once, the gateway at its next start. applied says whether config.yaml changed; a timeout below 1 or a negative limit is refused in words. */
+    val SETTINGS_WRITE = BridgeCall("settings_write", SettingsWriteParams.serializer(), SettingsWriteReply.serializer())
 
     /** The calls that may wait on the network (`blocking` in the contract): EmbeddedPython runs them on their own thread. */
     val BLOCKING: Set<String> = setOf("probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check")

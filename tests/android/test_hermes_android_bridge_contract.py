@@ -163,6 +163,7 @@ def test_real_calls_answer_their_declared_replies():
 
     assert json.loads(hermes_android.call("gateway_state", "{}")) == {"gateway": "stopped"}
     assert set(json.loads(hermes_android.call("telegram_status", "{}"))) == {"token", "allowed_user", "sdk", "enabled", "live"}
+    assert set(json.loads(hermes_android.call("settings_read", ""))) == set(CONTRACT["calls"]["settings_read"]["reply"])
 
 
 def test_an_event_line_is_held_to_its_declared_fields():

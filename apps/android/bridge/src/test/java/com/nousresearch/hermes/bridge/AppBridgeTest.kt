@@ -5,6 +5,7 @@ import com.nousresearch.hermes.bridge.contract.CronRunsParams
 import com.nousresearch.hermes.bridge.contract.CronUpdateParams
 import com.nousresearch.hermes.bridge.contract.Pinned
 import com.nousresearch.hermes.bridge.contract.SaveCustomEndpointParams
+import com.nousresearch.hermes.bridge.contract.SettingsWriteParams
 import com.nousresearch.hermes.bridge.contract.SshHostKeyParams
 import com.nousresearch.hermes.bridge.contract.TelegramEnableParams
 import kotlinx.coroutines.runBlocking
@@ -98,5 +99,31 @@ class AppBridgeTest {
         val none = answering("""{"token":true,"allowed_user":"42","sdk":true,"enabled":false,"live":null}""")
             .ask(BridgeCalls.TELEGRAM_STATUS)
         assertNull(none.live)
+    }
+
+    @Test
+    fun aSettingsEditSendsEveryDeclaredFieldWithNullForTheUntouchedOnes() = runBlocking {
+        val written = answering("""{"applied":true}""").ask(
+            BridgeCalls.SETTINGS_WRITE,
+            SettingsWriteParams(approvalsTimeoutS = 120, memoryEnabled = null, userProfileEnabled = false,
+                                memoryCharLimit = null, userCharLimit = null, allowlistRemove = listOf("docker *")))
+
+        val (function, arg) = sent.single()
+        assertEquals("settings_write", function)
+        assertEquals(Json.parseToJsonElement("""{"approvals_timeout_s":120,"memory_enabled":null,"user_profile_enabled":false,"memory_char_limit":null,"user_char_limit":null,"allowlist_remove":["docker *"]}"""),
+                     Json.parseToJsonElement(arg))
+        assertTrue(written.applied)
+    }
+
+    @Test
+    fun theSettingsReplyDecodesItsListsAndPersonalities() = runBlocking {
+        val read = answering("""{"approvals_timeout_s":300,"command_allowlist":["git status"],"memory_enabled":true,"user_profile_enabled":false,"memory_char_limit":2200,"user_char_limit":1375,"personalities":[{"name":"helpful","description":"You are a helpful, friendly AI assistant."}]}""")
+            .ask(BridgeCalls.SETTINGS_READ)
+
+        assertEquals("settings_read" to "{}", sent.single())
+        assertEquals(300, read.approvalsTimeoutS)
+        assertEquals(listOf("git status"), read.commandAllowlist)
+        assertEquals(false, read.userProfileEnabled)
+        assertEquals("helpful", read.personalities.single().name)
     }
 }

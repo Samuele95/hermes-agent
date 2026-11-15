@@ -63,6 +63,10 @@
       "error_message": "string?",
       "writer_pid": "integer?",
       "updated_at": "string?"
+    },
+    "Personality": {
+      "name": "string",
+      "description": "string"
     }
   },
   "calls": {
@@ -335,6 +339,33 @@
       "summary": "The app's startup calls are done: the job form's delivery targets (every plugin and platform adapter) start loading in this process's waiting background thread, once; answers at once. Asked earlier, the load slows those calls through the GIL.",
       "params": {},
       "reply": {}
+    },
+    "settings_read": {
+      "summary": "The settings config.set refuses, as the core reads them: the approval timeout in seconds, the always-allowed command patterns, memory and the user profile on or off with their size limits in characters, and every personality the core offers with its preview line.",
+      "params": {},
+      "reply": {
+        "approvals_timeout_s": "integer",
+        "command_allowlist": "[string]",
+        "memory_enabled": "boolean",
+        "user_profile_enabled": "boolean",
+        "memory_char_limit": "integer",
+        "user_char_limit": "integer",
+        "personalities": "[Personality]"
+      }
+    },
+    "settings_write": {
+      "summary": "Changes only the given settings in config.yaml under the app's config lock (null leaves a field as it is; never .env); allowlist_remove takes those patterns out and makes this process stop honouring them at once, the gateway at its next start. applied says whether config.yaml changed; a timeout below 1 or a negative limit is refused in words.",
+      "params": {
+        "approvals_timeout_s": "integer?",
+        "memory_enabled": "boolean?",
+        "user_profile_enabled": "boolean?",
+        "memory_char_limit": "integer?",
+        "user_char_limit": "integer?",
+        "allowlist_remove": "[string]"
+      },
+      "reply": {
+        "applied": "boolean"
+      }
     }
   },
   "events": {

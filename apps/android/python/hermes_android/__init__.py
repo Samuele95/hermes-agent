@@ -390,3 +390,15 @@ def cron_run_owned(arg: str) -> str:
     from hermes_android import cron
 
     return cron.run_owned(arg)
+
+
+def settings_read(arg: str) -> str:
+    from hermes_android import settings
+
+    return settings.read(arg)
+
+
+def settings_write(arg: str) -> str:
+    from hermes_android import settings
+
+    return settings.write(arg)

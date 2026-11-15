@@ -18,6 +18,8 @@ import com.nousresearch.hermes.bridge.contract.CronSchedulerReply
 import com.nousresearch.hermes.bridge.contract.CronTriggerParams
 import com.nousresearch.hermes.bridge.contract.CronUpdateParams
 import com.nousresearch.hermes.bridge.contract.DeliveryTarget
+import com.nousresearch.hermes.bridge.contract.SettingsReadReply
+import com.nousresearch.hermes.bridge.contract.SettingsWriteParams
 import com.nousresearch.hermes.bridge.contract.TelegramEnableParams
 import com.nousresearch.hermes.bridge.contract.TelegramStatusReply
 import com.nousresearch.hermes.bridge.protocol.ClientCapabilitiesParams
@@ -350,6 +352,64 @@ class EmbeddedPythonTest {
             // the same as no key, since the gateway then starts a Telegram adapter that fails and stops it all.
             if (original != null) config.writeText(original) else config.delete()
             assertEquals(was.enabled, EmbeddedBridge.ask(BridgeCalls.TELEGRAM_STATUS).enabled)
+        }
+    }
+
+    @Test
+    fun theSettingsCallsAnswerOnThePhone() = runBlocking {
+        core // the interpreter starts with the core
+        val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext
+        val took = linkedMapOf<String, Long>() // each call holds hermes-python (neither is blocking)
+        val config = File(app.filesDir, ".hermes/config.yaml")
+        val original = config.takeIf { it.exists() }?.readBytes()
+        var before: SettingsReadReply? = null
+        took["settings_read"] = measureTimeMillis { before = EmbeddedBridge.ask(BridgeCalls.SETTINGS_READ) }
+        val was = before!!
+        // Sizes only: the allowlist is the phone owner's.
+        Log.i("M8Probe", "allowlist size=${was.commandAllowlist.size} personalities=${was.personalities.size}")
+        assertTrue("timeout ${was.approvalsTimeoutS}", was.approvalsTimeoutS >= 1)
+        assertTrue(was.memoryCharLimit >= 0 && was.userCharLimit >= 0)
+        val names = was.personalities.map { it.name }
+        assertTrue(names.toString(), "helpful" in names)
+        assertEquals(names.size, names.toSet().size)
+        assertTrue(was.personalities.all { it.description.isNotBlank() })
+        try {
+            // Never a removal or a memory switch here: the allowlist is the owner's, and a turn started meanwhile
+            // would build with a changed memory setting. The reconcile is proven on the host.
+            var longer: Boolean? = null
+            took["settings_write timeout"] = measureTimeMillis {
+                longer = EmbeddedBridge.ask(BridgeCalls.SETTINGS_WRITE,
+                    SettingsWriteParams(was.approvalsTimeoutS + 1, null, null, null, null, emptyList())).applied
+            }
+            assertEquals(true, longer)
+            var reread: SettingsReadReply? = null
+            took["settings_read again"] = measureTimeMillis { reread = EmbeddedBridge.ask(BridgeCalls.SETTINGS_READ) }
+            assertEquals(was.copy(approvalsTimeoutS = was.approvalsTimeoutS + 1), reread)
+
+            val bytes = config.readBytes()
+            var nothing: Boolean? = null
+            took["settings_write empty"] = measureTimeMillis {
+                nothing = EmbeddedBridge.ask(BridgeCalls.SETTINGS_WRITE,
+                    SettingsWriteParams(null, null, null, null, null, emptyList())).applied
+            }
+            assertEquals(false, nothing)
+            assertTrue("an empty edit changed config.yaml", bytes.contentEquals(config.readBytes()))
+
+            var refused: CoreError? = null
+            took["settings_write refused"] = measureTimeMillis {
+                refused = assertThrows(CoreError::class.java) {
+                    runBlocking {
+                        EmbeddedBridge.ask(BridgeCalls.SETTINGS_WRITE,
+                            SettingsWriteParams(0, null, null, null, null, emptyList()))
+                    }
+                }
+            }
+            assertEquals("The approval timeout must be at least 1 second.", refused!!.message)
+        } finally {
+            Log.i("M8Probe", "took ms: $took")
+            // The shared phone gets config.yaml back as it was.
+            if (original != null) config.writeBytes(original) else config.delete()
+            assertEquals(was, EmbeddedBridge.ask(BridgeCalls.SETTINGS_READ))
         }
     }
 
