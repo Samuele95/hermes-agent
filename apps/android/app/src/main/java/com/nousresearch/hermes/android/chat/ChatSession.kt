@@ -119,6 +119,18 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
             return copy(chat = chat.sent(item.text), queue = rest) to item.text
         }
 
+        /**
+         * The queue as no change may leave it: never idle, unpaused and stranded with a head to send. After a turn that
+         * completed the head goes out ([draining]; Desktop drains whenever idle and not parked, so a missed edge cannot
+         * strand it, `use-composer-queue.ts:580-594`); after anything else (a refused prompt, a late refusal, a notice
+         * since) it pauses, so Resume shows (DC-M6). Busy, paused, or nothing but the edited item: this and null.
+         */
+        fun settled(): Pair<Live, String?> = when {
+            ref == null || chat.busy || queue.next() == null -> this to null
+            chat.endedComplete -> draining()
+            else -> paused() to null
+        }
+
         /** The requests the core withdrew (their cards are gone from the transcript) let go too. */
         fun withdrawn(): Live = copy(waiting = waiting.filterKeys { id -> chat.prompts.any { it.id == id } })
 
@@ -152,17 +164,20 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
 
     /**
      * Replaces the live value by [next] of it, atomically; returns the value before and after. Pure and quick inside.
-     * A queue it changed is written after, off the lock: one small write per queue change (§6).
+     * A queue it changed is written after, off the lock: one small write per queue change (§6). Every change ends
+     * [Live.settled], so a head it leaves due goes out after it, with `queued: true`, decided once (EJ-78).
      */
     private inline fun change(next: (Live) -> Live): Pair<Live, Live> {
+        var drained: String? = null
         val (before, after, toSave) = synchronized(lock) {
             val before = live
-            live = next(before)
+            live = next(before).settled().let { (settled, text) -> drained = text; settled }
             shown.value = live.chat
             shownQueue.value = live.queue
             Triple(before, live, recordQueue(before, live))
         }
         if (toSave) scope.launch { flush() }
+        drained?.let { text -> after.ref?.runtime?.let { session -> scope.launch { submit(session, text, queued = true) } } }
         return before to after
     }
 
@@ -531,7 +546,8 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     /**
      * `prompt.submit` of [text] to [session], whose bubble is on its way; a refusal or a failure makes the chat idle again (V7).
      * A [queued] item goes with `queued: true`, so the core holds it for the next turn and never makes it a correction
-     * (§0 coherence 1); one that does not go out pauses the rest of the queue, with no retry (D8).
+     * (§0 coherence 1); one that does not go out leaves the chat idle after no completed turn, so [Live.settled] pauses
+     * the rest of the queue, with no retry (D8).
      */
     private suspend fun submit(session: RuntimeSessionId, text: String, queued: Boolean = false) {
         try {
@@ -539,9 +555,9 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
                                                                              queued = true.takeIf { queued }))
             result.userRowId?.let { bind(session, it) }
         } catch (refused: CoreError) {
-            unsent(session, refused.message ?: "The core refused the prompt (${refused.code}).", pause = queued)
+            unsent(session, refused.message ?: "The core refused the prompt (${refused.code}).")
         } catch (failed: Exception) {  // anything else: the message did not go out, and the user hears it
-            unsent(session, forUser(failed), pause = queued)
+            unsent(session, forUser(failed))
         }
     }
 
@@ -598,11 +614,11 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         }
     }
 
-    /** [session]'s prompt did not go out: idle again if the chat is still there, its queue paused on [pause]; [words] said either way (V7). */
-    private fun unsent(session: RuntimeSessionId, words: String, pause: Boolean = false) {
+    /** [session]'s prompt did not go out: idle again if the chat is still there (its queue then pauses: [Live.settled]); [words] said either way (V7). */
+    private fun unsent(session: RuntimeSessionId, words: String) {
         change { now ->
             if (now.ref?.runtime != session) now.copy(chat = now.chat.notice(words))
-            else now.copy(chat = now.chat.unsent().notice(words)).let { if (pause) it.paused() else it }
+            else now.copy(chat = now.chat.unsent().notice(words))
         }
     }
 

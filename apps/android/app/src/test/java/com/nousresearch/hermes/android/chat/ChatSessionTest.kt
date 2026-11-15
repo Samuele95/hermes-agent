@@ -2617,4 +2617,90 @@ class ChatSessionTest {
         assertTrue(chat.queueState.value.paused)  // no retry (D8)
         assertEquals(2, submits().size)
     }
+
+    // Fix round 1: no change leaves an idle chat with an unpaused queue that never drains (Desktop drains whenever idle
+    // and not parked, `use-composer-queue.ts:580-594`): after a completed turn the head goes out, else the queue pauses.
+
+    @Test
+    fun anEditThatOutlivesItsTurnsEndSendsTheItemOnceTheEditEnds() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        chat.queue("a")
+        chat.beginEdit(chat.idOf("a"))
+
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")
+
+        assertEquals(1, submits().size)  // the edited item waits (`use-composer-queue.ts:379-386`)
+        assertEquals(listOf("a"), chat.items())
+        assertFalse(chat.state.value.busy)
+        val mark = core.calls.size
+
+        chat.editQueued(chat.idOf("a"), "A2")  // Save: the edit ends with the chat idle after a completed turn
+
+        assertEquals(listOf("prompt.submit" to "s1"), callsAfter(mark))
+        assertEquals(Json.parseToJsonElement("""{"session_id":"s1","text":"A2","queued":true}"""), lastSubmit())
+        assertEquals(emptyList<String>(), chat.items())
+        assertEquals(Entry.User("A2", stableId = 2), chat.state.value.entries.last())
+        assertTrue(chat.state.value.submitted)
+
+        core.emit("message.start", "s1")
+        chat.queue("b")
+        chat.beginEdit(chat.idOf("b"))
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")
+        assertEquals(2, submits().size)
+
+        chat.beginEdit(null)  // Cancel: the same
+
+        assertEquals(Json.parseToJsonElement("""{"session_id":"s1","text":"b","queued":true}"""), lastSubmit())
+        assertEquals(emptyList<String>(), chat.items())
+        assertEquals(3, submits().size)
+    }
+
+    /** [core], with the first `prompt.submit` held until [answered] completes: the chat stays submitted meanwhile. */
+    private fun submitGated(answered: CompletableDeferred<Unit>) = object : CoreGateway by core {
+        override suspend fun <P, R> call(method: Method<P, R>, params: P): R {
+            if (method.name == "prompt.submit") answered.await()
+            return core.call(method, params)
+        }
+    }
+
+    @Test
+    fun aQueueLeftIdleByARefusedPromptOrALateRefusalIsPaused() = runTest(UnconfinedTestDispatcher()) {
+        val answered = CompletableDeferred<Unit>()
+        val chat = ChatSession(submitGated(answered), host, backgroundScope, keepSecret = { _, _ -> },
+                               queues = QueueStore.inMemory(savedQueues)).apply { open() }
+        val sending = launch { chat.send("hi") }
+        chat.queue("a")  // before message.start: the turn is about to begin
+        submit = { throw CoreError(4009, "session busy") }
+
+        answered.complete(Unit)
+        sending.join()
+
+        assertFalse(chat.state.value.busy)
+        assertEquals(listOf("a"), chat.items())
+        assertTrue(chat.queueState.value.paused)  // the prompt failed: Resume shows (DC-M6)
+        assertEquals(1, submits().size)
+    }
+
+    @Test
+    fun aCorrectionRefusedAfterItsTurnEndedWaitsPaused() = runTest(UnconfinedTestDispatcher()) {
+        busyWord = "steer"
+        steer = { throw CoreError(4010, "agent does not support active-turn steer") }
+        val answered = CompletableDeferred<Unit>()
+        val chat = ChatSession(gated(answered), host, backgroundScope, keepSecret = { _, _ -> },
+                               queues = QueueStore.inMemory(savedQueues)).apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        val correcting = launch { chat.send("use metric units") }
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")
+
+        answered.complete(Unit)
+        correcting.join()
+
+        assertFalse(chat.state.value.busy)
+        assertEquals(listOf("use metric units"), chat.items())
+        assertTrue(chat.queueState.value.paused)  // it reached an idle chat: it waits for Resume, never stranded
+        assertEquals(1, submits().size)
+    }
 }
