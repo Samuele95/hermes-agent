@@ -1,6 +1,7 @@
 package com.nousresearch.hermes.android
 
 import android.app.Activity
+import android.os.Build
 import android.os.Bundle
 import java.util.concurrent.atomic.AtomicInteger
 import com.nousresearch.hermes.android.turn.SystemNotifier
@@ -21,6 +22,7 @@ import com.nousresearch.hermes.android.gateway.batteryExempt
 import com.nousresearch.hermes.android.gateway.observeGateway
 import com.nousresearch.hermes.android.gateway.watchGateway
 import com.nousresearch.hermes.android.jobs.JobsControl
+import com.nousresearch.hermes.android.settings.AppPackage
 import com.nousresearch.hermes.android.settings.SettingsControl
 import com.nousresearch.hermes.android.settings.SkillsControl
 import com.nousresearch.hermes.android.setup.PrefsCustomModels
@@ -250,11 +252,15 @@ class HermesApplication : Application() {
     private suspend fun start(): CoreState.Ready {
         val began = SystemClock.elapsedRealtime()
         val paths = withContext(Dispatchers.IO) { installRuntime(this@HermesApplication) }
+        @Suppress("DEPRECATION") val info = packageManager.getPackageInfo(packageName, 0)
+        val app = AppPackage(info.versionName.orEmpty(),
+                             if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else @Suppress("DEPRECATION") info.versionCode.toLong())
         val deps = CoreDeps(secrets, ForegroundTurnHost(this), notifier,
                             keyNames = PrefsKeyNames(getSharedPreferences("provider_keys", MODE_PRIVATE)),
                             customModels = PrefsCustomModels(getSharedPreferences("custom_models", MODE_PRIVATE)),
                             subnet = { wifiSubnet(this@HermesApplication) }, seen = seen,
-                            queues = queueFiles(File(noBackupFilesDir, "queue")))  // app-private, never backed up
+                            queues = queueFiles(File(noBackupFilesDir, "queue")),  // app-private, never backed up
+                            packageInfo = app, payloadJson = { assets.payloadManifest() })
         val ready = composeCore(runtime, paths, deps, scope)
         return ready.copy(about = "${ready.about} · ready in ${SystemClock.elapsedRealtime() - began} ms")
     }

@@ -56,9 +56,12 @@ class ProviderAccess(val connected: suspend () -> List<ConnectedProvider>, val r
  *
  * Providers ([providers]): listed when the page opens; a removal asks first, goes through provider setup's one forget
  * path, and the page then shows the core's re-read (F10).
+ *
+ * About ([about]) is read at each open from the APK, the payload's manifest and the start-up facts (F13); no write
+ * re-reads it.
  */
 class SettingsControl(private val core: CoreGateway, private val bridge: AppBridge, private val seen: () -> GatewaySeen,
-                      private val providers: ProviderAccess) {
+                      private val providers: ProviderAccess, private val about: suspend () -> About) {
     private companion object {
         const val KEY = "approvals.mode"
         const val PERSONALITY = "personality"
@@ -70,7 +73,10 @@ class SettingsControl(private val core: CoreGateway, private val bridge: AppBrid
     /** The pid of the gateway that was running when a removal last applied (null: nothing waits for a start). */
     private val nextStartUnder = AtomicReference<Int?>(null)
 
-    /** Reads the mode, the personality, the bridge's settings and the connected providers, each on its own: a part that fails is null, and the first failure's words show. */
+    /**
+     * Reads the mode, the personality, the bridge's settings, the connected providers and About, each on its own: a
+     * part that fails is null, and the first failure's words show.
+     */
     suspend fun open() {
         var error: String? = null
         val keep: (String) -> Unit = { if (error == null) error = it }
@@ -78,7 +84,8 @@ class SettingsControl(private val core: CoreGateway, private val bridge: AppBrid
         val personality = orNull(keep) { core.call(Methods.CONFIG_GET, ConfigGetParams(key = PERSONALITY)).value }
         val config = orNull(keep) { ConfigSettings.of(bridge.ask(BridgeCalls.SETTINGS_READ)) }
         val connected = orNull(keep) { providers.connected() }
-        screen.value = SettingsUi(mode, personality, config, connected, nextStart = mark(seen()) != null, error = error)
+        val shown = orNull(keep) { about() }
+        screen.value = SettingsUi(mode, personality, config, connected, shown, nextStart = mark(seen()) != null, error = error)
     }
 
     fun close() {

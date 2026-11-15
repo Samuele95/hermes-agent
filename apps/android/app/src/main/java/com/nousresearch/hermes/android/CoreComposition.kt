@@ -11,9 +11,12 @@ import com.nousresearch.hermes.android.gateway.GatewayStatus
 import com.nousresearch.hermes.android.gateway.TelegramSetup
 import com.nousresearch.hermes.android.jobs.JobsControl
 import com.nousresearch.hermes.android.jobs.runOwnership
+import com.nousresearch.hermes.android.settings.About
+import com.nousresearch.hermes.android.settings.AppPackage
 import com.nousresearch.hermes.android.settings.ProviderAccess
 import com.nousresearch.hermes.android.settings.SettingsControl
 import com.nousresearch.hermes.android.settings.SkillsControl
+import com.nousresearch.hermes.android.settings.aboutOf
 import com.nousresearch.hermes.android.setup.CustomModels
 import com.nousresearch.hermes.android.setup.KeyNames
 import com.nousresearch.hermes.android.setup.ProviderSetup
@@ -46,7 +49,8 @@ fun installRuntime(context: Context): HermesPaths {
  * the provider [customModels]: ids the user typed, kept once the core took one,
  * the phone's Wi-Fi [subnet] for the endpoint search, [seen], the app's own observation of the always-on gateway:
  * the one value the chat, the jobs page and the bot's live state all judge it by (§3.1), and [queues], where the chat
- * keeps each session's queue of unsent messages (batch-3 F2). A field left out is today's default: names and
+ * keeps each session's queue of unsent messages (batch-3 F2); [packageInfo] the APK's version and [payloadJson] the
+ * payload's manifest, which About reads at each open (F13). A field left out is today's default: names and
  * model ids kept in memory, no subnet, a stopped gateway, queues kept in memory. Its lambdas compare by identity, so two values are
  * never compared.
  */
@@ -55,7 +59,9 @@ data class CoreDeps(val secrets: SecretStore, val turns: TurnHost, val notifier:
                     val customModels: CustomModels = CustomModels.InMemory(),
                     val subnet: suspend () -> String? = { null },
                     val seen: () -> GatewaySeen = { GatewaySeen(GatewayStatus.STOPPED) },
-                    val queues: QueueStore = QueueStore.inMemory())
+                    val queues: QueueStore = QueueStore.inMemory(),
+                    val packageInfo: AppPackage = AppPackage("", 0),
+                    val payloadJson: () -> String = { "{}" })
 
 /**
  * The chat process's composition root: starts [runtime]'s core and builds what the screens drive over it. The
@@ -84,6 +90,8 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps
     // Undispatched: setup is showing before the core is Ready, so the chat never flashes first.
     if (setup.needed()) scope.launch(start = CoroutineStart.UNDISPATCHED) { setup.open() }
     val facts = bridge.ask(BridgeCalls.RUNTIME_FACTS)
+    // The start-up facts: they cannot change in this process; the manifest at each open (D4).
+    val about: suspend () -> About = { aboutOf(deps.packageInfo, deps.payloadJson(), facts) }
     // Last: the warm's plugin loads share the GIL with every call above (+650 ms to ready, K1); the chat is open now.
     bridge.ask(BridgeCalls.CRON_WARM_DELIVERY_TARGETS)
     val fts = if (facts.fts5) "with FTS5" else "without FTS5"
@@ -91,7 +99,7 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps
     scope.launch { setup.followReadiness() }
     scope.launch { setup.checkReadiness() }
     return CoreState.Ready(gateway, chat, setup,
-                           Pages(SettingsControl(gateway, bridge, deps.seen, ProviderAccess(setup::connected, setup::remove)),
+                           Pages(SettingsControl(gateway, bridge, deps.seen, ProviderAccess(setup::connected, setup::remove), about),
                                  SkillsControl(bridge), JobsControl(gateway, bridge, deps.seen, continueInChat = chat::resume),
                                  TelegramSetup(deps.secrets, bridge, deps.seen), SshSetup(deps.secrets, bridge), history, context),
                            "Python ${facts.python} · SQLite ${facts.sqlite} $fts")

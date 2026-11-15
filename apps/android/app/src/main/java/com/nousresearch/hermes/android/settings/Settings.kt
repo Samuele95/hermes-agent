@@ -83,13 +83,14 @@ data class SettingsEdit(val approvalTimeoutS: Int? = null, val memoryEnabled: Bo
  * The settings page. [approvals] is null when the core's mode could not be read: no mode is shown as the one in force.
  * [personality] is the core's word (a name, or [NO_PERSONALITY]) and [config] its `settings_read`, each null when it
  * could not be read. [connected] the core's connected providers, null when they could not be read (D5).
+ * [about] the build the page's About names (F13), null when it could not be read.
  * [confirmRemove] the allowlist pattern a removal waits to be confirmed for; [confirmProvider] the provider slug a
  * removal waits to be confirmed for (D4): one question at a time. [nextStart] while a removal waits for the always-on
  * gateway's next start (the pid it was made under still runs; F4, Dv31). [busy] while one write runs; [error] the
  * core's words for the last failure.
  */
 data class SettingsUi(val approvals: ApprovalMode? = null, val personality: String? = null, val config: ConfigSettings? = null,
-                      val connected: List<ConnectedProvider>? = null, val confirmRemove: String? = null,
+                      val connected: List<ConnectedProvider>? = null, val about: About? = null, val confirmRemove: String? = null,
                       val confirmProvider: String? = null, val nextStart: Boolean = false, val busy: Boolean = false,
                       val error: String? = null)
 

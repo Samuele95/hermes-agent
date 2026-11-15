@@ -61,6 +61,8 @@ class SettingsControlTest {
     private var connectedFails: String? = null
     private var connectedReads = 0
     private var onRemove: (String) -> Unit = { s -> providerRows = providerRows.filterNot { it.slug == s } }
+    private var aboutFails: Exception? = null
+    private var aboutReads = 0
     private val settings = SettingsControl(core, bridge = { function, arg ->
         bridgeCalls += function to arg
         when (function) {
@@ -77,7 +79,7 @@ class SettingsControlTest {
         removeFails?.let { throw it }
         removed += it
         onRemove(it)
-    }))
+    }), about = { aboutFails?.let { throw it }; aboutReads++; AboutTest.ABOUT })
 
     private fun writes() = bridgeCalls.filter { it.first == "settings_write" }.map { Json.parseToJsonElement(it.second) }
     private fun reads() = bridgeCalls.count { it.first == "settings_read" }
@@ -108,7 +110,8 @@ class SettingsControlTest {
 
         settings.approvals(ApprovalMode.OFF)
 
-        assertEquals(SettingsUi(ApprovalMode.SMART, "concise", CFG, connected = ROWS, error = "managed install — settings are read-only"),
+        assertEquals(SettingsUi(ApprovalMode.SMART, "concise", CFG, connected = ROWS, about = AboutTest.ABOUT,
+                                error = "managed install — settings are read-only"),
                      settings.state.value)
     }
 
@@ -118,7 +121,8 @@ class SettingsControlTest {
 
         settings.open()
 
-        assertEquals(SettingsUi(approvals = null, personality = "concise", config = CFG, connected = ROWS, error = "config.yaml could not be read"),
+        assertEquals(SettingsUi(approvals = null, personality = "concise", config = CFG, connected = ROWS,
+                                about = AboutTest.ABOUT, error = "config.yaml could not be read"),
                      settings.state.value)
     }
 
@@ -135,7 +139,7 @@ class SettingsControlTest {
     fun openingShowsTheCoresModePersonalityAndSettings() = runTest {
         settings.open()
 
-        assertEquals(SettingsUi(ApprovalMode.SMART, "concise", CFG, connected = ROWS), settings.state.value)
+        assertEquals(SettingsUi(ApprovalMode.SMART, "concise", CFG, connected = ROWS, about = AboutTest.ABOUT), settings.state.value)
         assertEquals(listOf("settings_read" to "{}"), bridgeCalls)
         assertEquals(listOf("approvals.mode", "personality"),
                      core.calls.filter { it.first == "config.get" }.map { it.second.getValue("key").jsonPrimitive.content })
@@ -421,6 +425,48 @@ class SettingsControlTest {
         assertEquals(ROWS, ui.connected)
         assertEquals("no re-read after a refusal", 1, connectedReads)
         assertFalse(ui.busy)
+    }
+
+    @Test
+    fun aboutIsReadAtEachOpenAndShown() = runTest {
+        settings.open()
+
+        assertEquals(AboutTest.ABOUT, settings.state.value?.about)
+        assertEquals(1, aboutReads)
+
+        settings.close()
+        settings.open()
+
+        assertEquals(2, aboutReads)
+    }
+
+    @Test
+    fun anAboutThatCannotBeReadIsAbsentAndEverythingElseShows() = runTest {
+        aboutFails = java.io.FileNotFoundException("payload.json")
+
+        settings.open()
+
+        val ui = settings.state.value!!
+        assertNull(ui.about)
+        assertEquals(CFG, ui.config)
+        assertEquals(ROWS, ui.connected)
+        assertEquals("Something went wrong (FileNotFoundException).", ui.error)
+
+        refuse = "config.yaml could not be read"  // the mode fails first: its words show
+        settings.open()
+
+        assertNull(settings.state.value?.about)
+        assertEquals("config.yaml could not be read", settings.state.value?.error)
+    }
+
+    @Test
+    fun aWriteNeverReadsAboutAgain() = runTest {
+        settings.open()
+
+        settings.edit(SettingsEdit(approvalTimeoutS = 120))
+
+        assertEquals(AboutTest.ABOUT, settings.state.value?.about)
+        assertEquals(1, aboutReads)
     }
 
     companion object {

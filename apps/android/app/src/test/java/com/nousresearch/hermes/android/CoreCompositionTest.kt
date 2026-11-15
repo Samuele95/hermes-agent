@@ -13,6 +13,7 @@ import com.nousresearch.hermes.android.gateway.GatewayStatus
 import com.nousresearch.hermes.android.gateway.PlatformState
 import com.nousresearch.hermes.android.jobs.JobId
 import com.nousresearch.hermes.android.jobs.JobsWarning
+import com.nousresearch.hermes.android.settings.AboutTest
 import com.nousresearch.hermes.android.settings.ConnectedProvider
 import com.nousresearch.hermes.android.settings.SettingsControlTest
 import com.nousresearch.hermes.android.settings.SkillRow
@@ -268,6 +269,27 @@ class CoreCompositionTest {
 
         assertTrue(bridgeCalls.toString(), "settings_read" in bridgeCalls)
         assertEquals(300, ready.pages.settings.state.value?.config?.approvalTimeoutS)
+    }
+
+    @Test
+    fun aboutComesFromTheAppsBuildTheManifestAndTheStartUpFacts() = runTest(UnconfinedTestDispatcher()) {
+        var reads = 0
+        val ready = composeCore(runtime, paths, deps.copy(packageInfo = AboutTest.APP, payloadJson = { reads++; AboutTest.MANIFEST }),
+                                backgroundScope)
+        assertEquals("composing reads no manifest", 0, reads)
+        val settings = ready.pages.settings
+
+        settings.open()
+
+        assertEquals(AboutTest.ABOUT, settings.state.value?.about)
+        assertEquals(1, reads)
+        assertEquals("the start-up facts serve every open (D4)", 1, bridgeCalls.count { it == "runtime_facts" })
+
+        settings.close()
+        settings.open()
+
+        assertEquals(2, reads)
+        assertEquals(1, bridgeCalls.count { it == "runtime_facts" })
     }
 
     @Test
