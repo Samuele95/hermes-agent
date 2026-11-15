@@ -109,6 +109,14 @@ data class Personality(
 )
 
 @Serializable
+data class SkillEntry(
+    val name: String,
+    val description: String,
+    val category: String?,
+    val enabled: Boolean,
+)
+
+@Serializable
 data class RuntimeFactsReply(
     val python: String,
     val sqlite: String,
@@ -377,6 +385,22 @@ data class SettingsWriteReply(
     val applied: Boolean,
 )
 
+@Serializable
+data class SkillsListReply(
+    val skills: List<SkillEntry>,
+)
+
+@Serializable
+data class SkillsEnableParams(
+    val names: List<String>,
+    val enabled: Boolean,
+)
+
+@Serializable
+data class SkillsEnableReply(
+    val skills: List<SkillEntry>,
+)
+
 /** Every call the app may make into its Python half. */
 object BridgeCalls {
     /** The interpreter facts the app shows. */
@@ -441,6 +465,10 @@ object BridgeCalls {
     val SETTINGS_READ = BridgeCall("settings_read", NoParams.serializer(), SettingsReadReply.serializer())
     /** Changes only the given settings in config.yaml under the app's config lock (null leaves a field as it is; never .env); allowlist_remove takes those patterns out and makes this process stop honouring them at once, the gateway at its next start. applied says whether config.yaml changed; a timeout below 1 or a negative limit is refused in words. */
     val SETTINGS_WRITE = BridgeCall("settings_write", SettingsWriteParams.serializer(), SettingsWriteReply.serializer())
+    /** Every skill Hermes can use on this phone, in the core's listing order, with its description, its category (null when it has none) and whether the global skills.disabled list leaves it on. */
+    val SKILLS_LIST = BridgeCall("skills_list", NoParams.serializer(), SkillsListReply.serializer())
+    /** Turns the named skills on or off in config.yaml's global skills.disabled under the app's config lock (never .env), then answers the list re-read; the core's essential skills are never turned off: a request to turn off only those is refused in the core's words, and among others they stay on. */
+    val SKILLS_ENABLE = BridgeCall("skills_enable", SkillsEnableParams.serializer(), SkillsEnableReply.serializer())
 
     /** The calls that may wait on the network (`blocking` in the contract): EmbeddedPython runs them on their own thread. */
     val BLOCKING: Set<String> = setOf("probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check")

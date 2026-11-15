@@ -20,6 +20,8 @@ import com.nousresearch.hermes.bridge.contract.CronUpdateParams
 import com.nousresearch.hermes.bridge.contract.DeliveryTarget
 import com.nousresearch.hermes.bridge.contract.SettingsReadReply
 import com.nousresearch.hermes.bridge.contract.SettingsWriteParams
+import com.nousresearch.hermes.bridge.contract.SkillEntry
+import com.nousresearch.hermes.bridge.contract.SkillsEnableParams
 import com.nousresearch.hermes.bridge.contract.TelegramEnableParams
 import com.nousresearch.hermes.bridge.contract.TelegramStatusReply
 import com.nousresearch.hermes.bridge.protocol.ClientCapabilitiesParams
@@ -410,6 +412,52 @@ class EmbeddedPythonTest {
             // The shared phone gets config.yaml back as it was.
             if (original != null) config.writeBytes(original) else config.delete()
             assertEquals(was, EmbeddedBridge.ask(BridgeCalls.SETTINGS_READ))
+        }
+    }
+
+    @Test
+    fun theSkillsCallsAnswerOnThePhone() = runBlocking {
+        core // the interpreter starts with the core
+        val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext
+        val took = linkedMapOf<String, Long>() // each call holds hermes-python (neither is blocking)
+        val config = File(app.filesDir, ".hermes/config.yaml")
+        val original = config.takeIf { it.exists() }?.readBytes()
+        var listed: List<SkillEntry>? = null
+        took["skills_list cold"] = measureTimeMillis { listed = EmbeddedBridge.ask(BridgeCalls.SKILLS_LIST).skills }
+        val was = listed!!
+        Log.i("M11Probe", "skills=${was.size} categories=${was.map { it.category }.toSet().size}")
+        assertTrue("only ${was.size} skills", was.size >= 50) // BundledSkillsDeviceTest's floor
+        assertEquals(was.size, was.map { it.name }.toSet().size)
+        assertTrue("hermes-agent is not listed and on", was.any { it.name == "hermes-agent" && it.enabled })
+        try {
+            // One skill only, never a category: the phone is shared, and finally gives config.yaml back.
+            val victim = was.first { it.enabled && it.name != "hermes-agent" }
+            var off: List<SkillEntry>? = null
+            took["skills_enable off"] = measureTimeMillis {
+                off = EmbeddedBridge.ask(BridgeCalls.SKILLS_ENABLE, SkillsEnableParams(listOf(victim.name), false)).skills
+            }
+            assertEquals(was.map { if (it.name == victim.name) it.copy(enabled = false) else it }, off)
+            var on: List<SkillEntry>? = null
+            took["skills_enable on"] = measureTimeMillis {
+                on = EmbeddedBridge.ask(BridgeCalls.SKILLS_ENABLE, SkillsEnableParams(listOf(victim.name), true)).skills
+            }
+            assertEquals(was, on)
+
+            val bytes = config.readBytes()
+            var refused: CoreError? = null
+            took["skills_enable refused"] = measureTimeMillis {
+                refused = assertThrows(CoreError::class.java) {
+                    runBlocking { EmbeddedBridge.ask(BridgeCalls.SKILLS_ENABLE, SkillsEnableParams(listOf("hermes-agent"), false)) }
+                }
+            }
+            assertEquals("Skill 'hermes-agent' is essential to Hermes (the agent's own operating manual referenced by " +
+                         "the system prompt) and cannot be disabled.", refused!!.message)
+            assertTrue("a refused switch changed config.yaml", bytes.contentEquals(config.readBytes()))
+        } finally {
+            // The shared phone gets config.yaml back as it was.
+            if (original != null) config.writeBytes(original) else config.delete()
+            took["skills_list warm"] = measureTimeMillis { assertEquals(was, EmbeddedBridge.ask(BridgeCalls.SKILLS_LIST).skills) }
+            Log.i("M11Probe", "took ms: $took")
         }
     }
 

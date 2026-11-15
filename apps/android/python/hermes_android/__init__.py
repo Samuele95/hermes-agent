@@ -402,3 +402,15 @@ def settings_write(arg: str) -> str:
     from hermes_android import settings
 
     return settings.write(arg)
+
+
+def skills_list(arg: str) -> str:
+    from hermes_android import skills
+
+    return skills.listing(arg)
+
+
+def skills_enable(arg: str) -> str:
+    from hermes_android import skills
+
+    return skills.enable(arg)

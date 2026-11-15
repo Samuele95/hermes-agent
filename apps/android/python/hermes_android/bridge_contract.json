@@ -67,6 +67,12 @@
     "Personality": {
       "name": "string",
       "description": "string"
+    },
+    "SkillEntry": {
+      "name": "string",
+      "description": "string",
+      "category": "string?",
+      "enabled": "boolean"
     }
   },
   "calls": {
@@ -365,6 +371,23 @@
       },
       "reply": {
         "applied": "boolean"
+      }
+    },
+    "skills_list": {
+      "summary": "Every skill Hermes can use on this phone, in the core's listing order, with its description, its category (null when it has none) and whether the global skills.disabled list leaves it on.",
+      "params": {},
+      "reply": {
+        "skills": "[SkillEntry]"
+      }
+    },
+    "skills_enable": {
+      "summary": "Turns the named skills on or off in config.yaml's global skills.disabled under the app's config lock (never .env), then answers the list re-read; the core's essential skills are never turned off: a request to turn off only those is refused in the core's words, and among others they stay on.",
+      "params": {
+        "names": "[string]",
+        "enabled": "boolean"
+      },
+      "reply": {
+        "skills": "[SkillEntry]"
       }
     }
   },

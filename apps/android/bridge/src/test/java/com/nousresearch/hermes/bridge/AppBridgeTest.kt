@@ -6,6 +6,7 @@ import com.nousresearch.hermes.bridge.contract.CronUpdateParams
 import com.nousresearch.hermes.bridge.contract.Pinned
 import com.nousresearch.hermes.bridge.contract.SaveCustomEndpointParams
 import com.nousresearch.hermes.bridge.contract.SettingsWriteParams
+import com.nousresearch.hermes.bridge.contract.SkillsEnableParams
 import com.nousresearch.hermes.bridge.contract.SshHostKeyParams
 import com.nousresearch.hermes.bridge.contract.TelegramEnableParams
 import kotlinx.coroutines.runBlocking
@@ -125,5 +126,22 @@ class AppBridgeTest {
         assertEquals(listOf("git status"), read.commandAllowlist)
         assertEquals(false, read.userProfileEnabled)
         assertEquals("helpful", read.personalities.single().name)
+    }
+
+    @Test
+    fun aSkillsSwitchSendsItsNamesAndDecodesTheCoresList() = runBlocking {
+        val skills = answering("""{"skills":[{"name":"plain","description":"","category":null,"enabled":false},{"name":"arxiv","description":"Search arXiv.","category":"research","enabled":true}]}""")
+            .ask(BridgeCalls.SKILLS_ENABLE, SkillsEnableParams(listOf("arxiv", "scholar"), false)).skills
+
+        val (function, arg) = sent.single()
+        assertEquals("skills_enable", function)
+        assertEquals(Json.parseToJsonElement("""{"names":["arxiv","scholar"],"enabled":false}"""), Json.parseToJsonElement(arg))
+        assertNull(skills[0].category)
+        assertEquals("research", skills[1].category)
+        assertTrue(skills[1].enabled)
+
+        sent.clear()
+        answering("""{"skills":[]}""").ask(BridgeCalls.SKILLS_LIST)
+        assertEquals("skills_list" to "{}", sent.single())
     }
 }
