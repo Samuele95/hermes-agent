@@ -125,7 +125,7 @@ class JobActionsDeviceTest {
     @Test
     fun pauseResumeAndDeleteChangeTheCoresJob() {
         gatewayOff()
-        val jobs = ready.jobs
+        val jobs = ready.pages.jobs
         val ui: () -> JobsUi = { checkNotNull(jobs.state.value) }
         // As the page runs it while it shows; the timeline records whether a cron.changed re-list left the action's activity alone.
         val start = SystemClock.elapsedRealtime()
@@ -184,7 +184,7 @@ class JobActionsDeviceTest {
     @Test
     fun withTheGatewayOffRunNowIsNotOfferedAndSendsNothing() {
         gatewayOff()
-        val jobs = ready.jobs
+        val jobs = ready.pages.jobs
         try {
             val id = addProbe("off")
             val before = coreList().single { it.jobId == id.value }.nextRunAt

@@ -1,4 +1,4 @@
-package com.nousresearch.hermes.android.setup
+package com.nousresearch.hermes.android.settings
 
 import com.nousresearch.hermes.android.chat.FakeCoreGateway
 import com.nousresearch.hermes.bridge.CoreError
@@ -9,7 +9,7 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /** How the agent's risky commands get approved: the core's `approvals.mode`, read and set over the protocol. */
-class ApprovalSettingsTest {
+class SettingsControlTest {
     private var mode = "smart"
     private var refuse: String? = null
     private val core = FakeCoreGateway { method, params ->
@@ -23,13 +23,13 @@ class ApprovalSettingsTest {
             else -> error("unexpected $method")
         }
     }
-    private val settings = ApprovalSettings(core)
+    private val settings = SettingsControl(core)
 
     @Test
     fun openingShowsTheCoresMode() = runTest {
         settings.open()
 
-        assertEquals(SettingsState(ApprovalMode.SMART), settings.state.value)
+        assertEquals(SettingsUi(ApprovalMode.SMART), settings.state.value)
         assertEquals("approvals.mode", core.calls.single().second.getValue("key").jsonPrimitive.content)
     }
 
@@ -37,7 +37,7 @@ class ApprovalSettingsTest {
     fun aChosenModeIsWrittenToTheCore() = runTest {
         settings.open()
 
-        settings.choose(ApprovalMode.MANUAL)
+        settings.approvals(ApprovalMode.MANUAL)
 
         assertEquals("manual", mode)
         assertEquals(ApprovalMode.MANUAL, settings.state.value?.approvals)
@@ -48,9 +48,9 @@ class ApprovalSettingsTest {
         settings.open()
         refuse = "managed install — settings are read-only"
 
-        settings.choose(ApprovalMode.OFF)
+        settings.approvals(ApprovalMode.OFF)
 
-        assertEquals(SettingsState(ApprovalMode.SMART, error = "managed install — settings are read-only"), settings.state.value)
+        assertEquals(SettingsUi(ApprovalMode.SMART, error = "managed install — settings are read-only"), settings.state.value)
     }
 
     @Test
@@ -59,7 +59,7 @@ class ApprovalSettingsTest {
 
         settings.open()
 
-        assertEquals(SettingsState(approvals = null, error = "config.yaml could not be read"), settings.state.value)
+        assertEquals(SettingsUi(approvals = null, error = "config.yaml could not be read"), settings.state.value)
     }
 
     @Test

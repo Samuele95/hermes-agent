@@ -1,4 +1,4 @@
-package com.nousresearch.hermes.android.setup
+package com.nousresearch.hermes.android.settings
 
 import com.nousresearch.hermes.android.forUser
 import com.nousresearch.hermes.bridge.CoreGateway
@@ -11,43 +11,24 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.serialization.json.JsonPrimitive
 
-/** The core's `approvals.mode`: who approves a command the agent wants to run that the core flags as risky. */
-enum class ApprovalMode(val wire: String) {
-    /** The user, every time. */
-    MANUAL("manual"),
-
-    /** A second model approves the clearly safe, refuses the clearly destructive, and asks the user otherwise. */
-    SMART("smart"),
-
-    /** Nobody: flagged commands run without asking. */
-    OFF("off");
-
-    companion object {
-        /** The mode the core reports; anything else reads as the core's own fallback, manual. */
-        fun of(wire: String?): ApprovalMode = entries.firstOrNull { it.wire == wire } ?: MANUAL
-    }
-}
-
-/** [approvals] is null when the core's mode could not be read: no mode is shown as the one in force. */
-data class SettingsState(val approvals: ApprovalMode?, val busy: Boolean = false, val error: String? = null)
-
 /**
  * The app's settings that live in the core's config (Dv22): read and written over the protocol, like the
  * desktop's, so the core stays the one owner. [state] is null while the screen is closed.
+ * The process's one settings page (batch-3 F12), beside the other pages' controllers; `setup/` keeps provider auth.
  */
-class ApprovalSettings(private val core: CoreGateway) {
+class SettingsControl(private val core: CoreGateway) {
     private companion object {
         const val KEY = "approvals.mode"
     }
 
-    private val screen = MutableStateFlow<SettingsState?>(null)
-    val state: StateFlow<SettingsState?> = screen.asStateFlow()
+    private val screen = MutableStateFlow<SettingsUi?>(null)
+    val state: StateFlow<SettingsUi?> = screen.asStateFlow()
 
     suspend fun open() {
         screen.value = try {
-            SettingsState(ApprovalMode.of(core.call(Methods.CONFIG_GET, ConfigGetParams(key = KEY)).value))
+            SettingsUi(ApprovalMode.of(core.call(Methods.CONFIG_GET, ConfigGetParams(key = KEY)).value))
         } catch (failed: Exception) {
-            SettingsState(approvals = null, error = forUser(failed))
+            SettingsUi(approvals = null, error = forUser(failed))
         }
     }
 
@@ -56,7 +37,7 @@ class ApprovalSettings(private val core: CoreGateway) {
     }
 
     /** Writes [mode] for every session from now on; a refusal keeps the shown mode and says why. */
-    suspend fun choose(mode: ApprovalMode) {
+    suspend fun approvals(mode: ApprovalMode) {
         screen.update { it?.copy(busy = true, error = null) }
         try {
             core.call(Methods.CONFIG_SET, ConfigSetParams(key = KEY, value = JsonPrimitive(mode.wire)))

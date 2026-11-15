@@ -11,7 +11,7 @@ import com.nousresearch.hermes.android.gateway.GatewayStatus
 import com.nousresearch.hermes.android.gateway.TelegramSetup
 import com.nousresearch.hermes.android.jobs.JobsControl
 import com.nousresearch.hermes.android.jobs.runOwnership
-import com.nousresearch.hermes.android.setup.ApprovalSettings
+import com.nousresearch.hermes.android.settings.SettingsControl
 import com.nousresearch.hermes.android.setup.CustomModels
 import com.nousresearch.hermes.android.setup.KeyNames
 import com.nousresearch.hermes.android.setup.ProviderSetup
@@ -88,8 +88,8 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps
     // Last, and launched: the probe shares the GIL with every start-up call (K1b) and may take its 4 s budget; Ready never waits (F6).
     scope.launch { setup.followReadiness() }
     scope.launch { setup.checkReadiness() }
-    return CoreState.Ready(gateway, chat, setup, SshSetup(deps.secrets, bridge),
-                           TelegramSetup(deps.secrets, bridge, deps.seen), history, context,
-                           ApprovalSettings(gateway), JobsControl(gateway, bridge, deps.seen, continueInChat = chat::resume),
+    return CoreState.Ready(gateway, chat, setup,
+                           Pages(SettingsControl(gateway), JobsControl(gateway, bridge, deps.seen, continueInChat = chat::resume),
+                                 TelegramSetup(deps.secrets, bridge, deps.seen), SshSetup(deps.secrets, bridge), history, context),
                            "Python ${facts.python} · SQLite ${facts.sqlite} $fts")
 }

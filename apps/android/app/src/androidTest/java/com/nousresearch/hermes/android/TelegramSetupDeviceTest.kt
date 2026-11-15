@@ -27,7 +27,7 @@ class TelegramSetupDeviceTest {
 
     @Test
     fun aRefusedTokenLeavesNoTraceAndTheAllowedUserIsKept() = runBlocking {
-        val telegram = (app.core.first { it !is CoreState.Starting } as CoreState.Ready).telegram
+        val telegram = (app.core.first { it !is CoreState.Starting } as CoreState.Ready).pages.telegram
         telegram.open()
         assertTrue("this build carries python-telegram-bot", telegram.state.value!!.sdk)
 

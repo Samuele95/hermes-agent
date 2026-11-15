@@ -1,4 +1,4 @@
-package com.nousresearch.hermes.android.setup
+package com.nousresearch.hermes.android.settings
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -24,7 +24,7 @@ import androidx.compose.material3.HorizontalDivider
 
 /** The app's settings kept in the core's config; today, who approves the agent's risky commands. */
 @Composable
-fun SettingsScreen(state: SettingsState, onApprovals: (ApprovalMode) -> Unit, onClose: () -> Unit, modifier: Modifier = Modifier) {
+fun SettingsScreen(state: SettingsUi, onApprovals: (ApprovalMode) -> Unit, onClose: () -> Unit, modifier: Modifier = Modifier) {
     Page(stringResource(R.string.settings_title), modifier.testTag("settings"), onBack = onClose, backTag = "settings-close", busy = state.busy) {
         SectionCaption(stringResource(R.string.approvals_title), Modifier.padding(top = 0.dp))
         Hint(stringResource(R.string.approvals_explain))

@@ -201,39 +201,39 @@ class CoreCompositionTest {
     fun theContextPanelReadsTheChatsSession() = runTest(UnconfinedTestDispatcher()) {
         val ready = composeCore(runtime, paths, deps, backgroundScope)
 
-        ready.context.open()
+        ready.pages.context.open()
 
         assertEquals("s1", core.calls.single { it.first == "session.context_breakdown" }.second.getValue("session_id").jsonPrimitive.content)
         // A fresh session has no meter yet: the core reported no window.
         assertEquals(ContextUi(null, Json.decodeFromString(SessionContextBreakdownResult.serializer(), EMPTY_BREAKDOWN)),
-                     ready.context.state.value)
+                     ready.pages.context.state.value)
     }
 
     @Test
     fun theJobsPageIsClosedUntilOpenedAndSeesTheGatewayItIsGiven() = runTest(UnconfinedTestDispatcher()) {
         val ready = composeCore(runtime, paths, deps.copy(seen = { GatewaySeen(GatewayStatus.FAILED, "x") }), backgroundScope)
 
-        assertNull(ready.jobs.state.value)
+        assertNull(ready.pages.jobs.state.value)
         assertFalse(core.calls.any { it.first == "cron.manage" })  // composing lists nothing
 
-        ready.jobs.open()
+        ready.pages.jobs.open()
 
         // The bridge's "{}" is no ticker record: the warning is the gateway the composition was given.
-        assertEquals(JobsWarning.GatewayOff(GatewayStatus.FAILED), ready.jobs.state.value?.warning)
+        assertEquals(JobsWarning.GatewayOff(GatewayStatus.FAILED), ready.pages.jobs.state.value?.warning)
     }
 
     @Test
     fun aJobsRunOpensInTheComposedChat() = runTest(UnconfinedTestDispatcher()) {
         val ready = composeCore(runtime, paths, deps, backgroundScope)
 
-        ready.jobs.open()
-        ready.jobs.showRuns(JobId("j1"))
-        ready.jobs.openRun(StoredSessionId("cron_j1_20261113_093000"))
+        ready.pages.jobs.open()
+        ready.pages.jobs.showRuns(JobId("j1"))
+        ready.pages.jobs.openRun(StoredSessionId("cron_j1_20261113_093000"))
 
         assertEquals("cron_j1_20261113_093000",
                      core.calls.last { it.first == "session.resume" }.second.getValue("session_id").jsonPrimitive.content)
         assertEquals(RuntimeSessionId("s-last"), ready.chat.sessionId)
-        assertNull(ready.jobs.state.value)
+        assertNull(ready.pages.jobs.state.value)
     }
 
     @Test
@@ -241,12 +241,12 @@ class CoreCompositionTest {
         val ready = composeCore(runtime, paths, deps, backgroundScope)
         resumeReply = { """{"session_id":"s-last","message_count":1,"messages":[{"kind":"user"}],"info":{}}""" }  // no role: undecodable
 
-        ready.jobs.open()
-        ready.jobs.showRuns(JobId("j1"))
-        ready.jobs.openRun(StoredSessionId("cron_j1_20261113_093000"))
+        ready.pages.jobs.open()
+        ready.pages.jobs.showRuns(JobId("j1"))
+        ready.pages.jobs.openRun(StoredSessionId("cron_j1_20261113_093000"))
 
-        assertNotNull(ready.jobs.state.value)
-        assertNotNull(ready.jobs.state.value!!.runs!!.error)
+        assertNotNull(ready.pages.jobs.state.value)
+        assertNotNull(ready.pages.jobs.state.value!!.runs!!.error)
         assertEquals(RuntimeSessionId("s1"), ready.chat.sessionId)
     }
 
@@ -254,26 +254,26 @@ class CoreCompositionTest {
     fun theBotIsJudgedAgainstTheGatewayTheCompositionIsGiven() = runTest(UnconfinedTestDispatcher()) {
         val ready = composeCore(runtime, paths, deps.copy(seen = { GatewaySeen(GatewayStatus.RUNNING, pid = 7) }), backgroundScope)
 
-        ready.telegram.open()
+        ready.pages.telegram.open()
 
-        assertEquals(PlatformState.CONNECTED, ready.telegram.state.value?.live?.state)
+        assertEquals(PlatformState.CONNECTED, ready.pages.telegram.state.value?.live?.state)
 
         val other = composeCore(runtime, paths, deps.copy(seen = { GatewaySeen(GatewayStatus.RUNNING, pid = 8) }), backgroundScope)
 
-        other.telegram.open()
+        other.pages.telegram.open()
 
         assertEquals("the entry is pid 7's, the gateway given is pid 8", PlatformState.PENDING_RESTART,
-                     other.telegram.state.value?.live?.state)
+                     other.pages.telegram.state.value?.live?.state)
     }
 
     @Test
     fun aCompositionGivenNoGatewaySeesItStopped() = runTest(UnconfinedTestDispatcher()) {
         val ready = composeCore(runtime, paths, deps, backgroundScope)  // deps names no gateway
 
-        ready.jobs.open()
+        ready.pages.jobs.open()
 
         // Left out, the gateway is seen stopped (today's default), never running: the page warns.
-        assertEquals(JobsWarning.GatewayOff(GatewayStatus.STOPPED), ready.jobs.state.value?.warning)
+        assertEquals(JobsWarning.GatewayOff(GatewayStatus.STOPPED), ready.pages.jobs.state.value?.warning)
     }
 
     @Test

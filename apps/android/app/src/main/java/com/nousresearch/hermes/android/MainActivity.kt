@@ -65,7 +65,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
-import com.nousresearch.hermes.android.setup.SettingsScreen
+import com.nousresearch.hermes.android.settings.SettingsScreen
 import com.nousresearch.hermes.android.setup.SetupScreen
 import com.nousresearch.hermes.android.setup.SshScreen
 import com.nousresearch.hermes.android.ui.Hermes
@@ -89,28 +89,28 @@ class MainActivity : ComponentActivity() {
                             val chat by state.chat.state.collectAsState()
                             val setup by state.setup.state.collectAsState()
                             val readiness by state.setup.readiness.collectAsState()
-                            val ssh by state.ssh.state.collectAsState()
-                            val history by state.history.state.collectAsState()
-                            val context by state.context.state.collectAsState()
+                            val ssh by state.pages.ssh.state.collectAsState()
+                            val history by state.pages.history.state.collectAsState()
+                            val context by state.pages.context.state.collectAsState()
                             val queue by state.chat.queueState.collectAsState()
-                            val settings by state.settings.state.collectAsState()
+                            val settings by state.pages.settings.state.collectAsState()
                             settings?.let {
-                                SettingsScreen(it, onApprovals = { mode -> app.settings { choose(mode) } }, onClose = state.settings::close)
+                                SettingsScreen(it, onApprovals = { mode -> app.settings { approvals(mode) } }, onClose = state.pages.settings::close)
                                 return@Surface
                             }
                             val gateway by app.gateway.state.collectAsState()
                             gateway?.let {
-                                GatewayPanel(it, app, state.telegram, state.gateway.events)
+                                GatewayPanel(it, app, state.pages.telegram, state.gateway.events)
                                 return@Surface
                             }
-                            val jobs by state.jobs.state.collectAsState()
+                            val jobs by state.pages.jobs.state.collectAsState()
                             jobs?.let {
-                                JobsPanel(it, app, state.jobs)
+                                JobsPanel(it, app, state.pages.jobs)
                                 return@Surface
                             }
                             ssh?.let {
                                 SshScreen(it, onLook = { target -> app.ssh { look(target) } }, onTrust = { app.ssh { trust() } },
-                                          onCheck = { app.ssh { checkLogin() } }, onCopy = { copy("SSH public key", it) }, onClose = state.ssh::close,
+                                          onCheck = { app.ssh { checkLogin() } }, onCopy = { copy("SSH public key", it) }, onClose = state.pages.ssh::close,
                                           onRunOnPhone = { app.ssh { runOnPhone() } })
                                 return@Surface
                             }
@@ -135,7 +135,7 @@ class MainActivity : ComponentActivity() {
                                                     settings = { app.settings { open() } }, newChat = { app.chat { open() } },
                                                     jobs = { app.jobs { open() } })
                             val contextActions = ContextActions(open = { app.context { open() } }, compress = { focus -> app.context { compress(focus) } },
-                                                                close = state.context::close)
+                                                                close = state.pages.context::close)
                             val queueActions = QueueActions(add = { text -> app.chat { queue(text) } }, edit = { id -> app.chat { beginEdit(id) } },
                                                             save = { id, text -> app.chat { editQueued(id, text) } },
                                                             steer = { id -> app.chat { steerNow(id) } }, next = { id -> app.chat { sendNext(id) } },
@@ -143,10 +143,10 @@ class MainActivity : ComponentActivity() {
                             ChatScreen(chat, about = state.about, answers = answers, places = places, onStop = { app.chat { cancel() } },
                                        onRetry = { app.chat { retry() } }, onCopy = { copy("Hermes", it) },
                                        // The drawer's sessions load as it opens; a tap continues one.
-                                       sessions = history, onSessions = { open -> if (open) app.history { open() } else state.history.close() },
+                                       sessions = history, onSessions = { open -> if (open) app.history { open() } else state.pages.history.close() },
                                        onPickSession = { id -> app.history { pick(id) } },
-                                       sessionActions = SessionActions(edit = state.history::edit, saveTitle = { title -> app.history { saveTitle(title) } },
-                                                                       askDelete = state.history::askDelete, confirmDelete = { app.history { confirmDelete() } }),
+                                       sessionActions = SessionActions(edit = state.pages.history::edit, saveTitle = { title -> app.history { saveTitle(title) } },
+                                                                       askDelete = state.pages.history::askDelete, confirmDelete = { app.history { confirmDelete() } }),
                                        context = context, contextActions = contextActions, queue = queue, queueActions = queueActions,
                                        onOfferTaken = state.chat::offerTaken, onOpenUrl = ::openInBrowser, onDismissWall = state.chat::dismissWall,
                                        readiness = readiness, onCheckReadiness = { app.setup { checkReadiness() } },

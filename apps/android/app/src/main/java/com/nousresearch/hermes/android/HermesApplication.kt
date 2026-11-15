@@ -21,7 +21,7 @@ import com.nousresearch.hermes.android.gateway.batteryExempt
 import com.nousresearch.hermes.android.gateway.observeGateway
 import com.nousresearch.hermes.android.gateway.watchGateway
 import com.nousresearch.hermes.android.jobs.JobsControl
-import com.nousresearch.hermes.android.setup.ApprovalSettings
+import com.nousresearch.hermes.android.settings.SettingsControl
 import com.nousresearch.hermes.android.setup.PrefsCustomModels
 import com.nousresearch.hermes.android.setup.PrefsKeyNames
 import com.nousresearch.hermes.android.setup.ProviderSetup
@@ -50,12 +50,15 @@ import kotlinx.coroutines.withContext
 sealed interface CoreState {
     data object Starting : CoreState
 
-    data class Ready(val gateway: CoreGateway, val chat: ChatSession, val setup: ProviderSetup, val ssh: SshSetup,
-                     val telegram: TelegramSetup, val history: SessionHistory, val context: ContextPanel,
-                     val settings: ApprovalSettings, val jobs: JobsControl, val about: String) : CoreState
+    data class Ready(val gateway: CoreGateway, val chat: ChatSession, val setup: ProviderSetup, val pages: Pages,
+                     val about: String) : CoreState
 
     data class Failed(val reason: String) : CoreState
 }
+
+/** The pages the chat opens, each a controller with nullable state (F12): one holder, not ten positional fields. */
+data class Pages(val settings: SettingsControl, val jobs: JobsControl, val telegram: TelegramSetup, val ssh: SshSetup,
+                 val history: SessionHistory, val context: ContextPanel)
 
 /**
  * Owns the embedded core for the whole process. Activities come and go (rotation, the task being
@@ -207,32 +210,32 @@ class HermesApplication : Application() {
 
     /** Runs one SSH setup action on the app's scope, so it outlives the activity that asked for it. */
     fun ssh(action: suspend SshSetup.() -> Unit) {
-        scope.launch { (state.value as? CoreState.Ready)?.ssh?.action() }
+        scope.launch { (state.value as? CoreState.Ready)?.pages?.ssh?.action() }
     }
 
     /** Runs one history action on the app's scope, so it outlives the activity that asked for it. */
     fun history(action: suspend SessionHistory.() -> Unit) {
-        scope.launch { (state.value as? CoreState.Ready)?.history?.action() }
+        scope.launch { (state.value as? CoreState.Ready)?.pages?.history?.action() }
     }
 
     /** Runs one context-sheet action on the app's scope, so a compression outlives the activity that asked for it. */
     fun context(action: suspend ContextPanel.() -> Unit) {
-        scope.launch { (state.value as? CoreState.Ready)?.context?.action() }
+        scope.launch { (state.value as? CoreState.Ready)?.pages?.context?.action() }
     }
 
     /** Runs one settings action on the app's scope, so it outlives the activity that asked for it. */
-    fun settings(action: suspend ApprovalSettings.() -> Unit) {
-        scope.launch { (state.value as? CoreState.Ready)?.settings?.action() }
+    fun settings(action: suspend SettingsControl.() -> Unit) {
+        scope.launch { (state.value as? CoreState.Ready)?.pages?.settings?.action() }
     }
 
     /** Runs one Telegram setup action on the app's scope, so it outlives the activity that asked for it. */
     fun telegram(action: suspend TelegramSetup.() -> Unit) {
-        scope.launch { (state.value as? CoreState.Ready)?.telegram?.action() }
+        scope.launch { (state.value as? CoreState.Ready)?.pages?.telegram?.action() }
     }
 
     /** Runs one jobs-page action on the app's scope, so it outlives the activity that asked for it. */
     fun jobs(action: suspend JobsControl.() -> Unit) {
-        scope.launch { (state.value as? CoreState.Ready)?.jobs?.action() }
+        scope.launch { (state.value as? CoreState.Ready)?.pages?.jobs?.action() }
     }
 
     /** The core this process embeds; the one adapter is [EmbeddedPython]. */

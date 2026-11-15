@@ -108,9 +108,9 @@ class JobsDeviceTest {
         }
         val id = addJob()
         try {
-            runBlocking { ready.jobs.open() }
+            runBlocking { ready.pages.jobs.open() }
 
-            val ui = checkNotNull(ready.jobs.state.value)
+            val ui = checkNotNull(ready.pages.jobs.state.value)
             assertNull(ui.error)
             assertEquals(JobState.SCHEDULED, ui.jobs.single { it.id == JobId(id) }.state)
             assertEquals(JobsWarning.GatewayOff(GatewayStatus.STOPPED), ui.warning)
@@ -121,7 +121,7 @@ class JobsDeviceTest {
             Log.i(TAG, "gateway off: cron_scheduler ${runBlocking { EmbeddedBridge.ask(BridgeCalls.CRON_SCHEDULER) }}")
         } finally {
             removeJob(id)
-            ready.jobs.close()
+            ready.pages.jobs.close()
         }
     }
 
@@ -146,9 +146,9 @@ class JobsDeviceTest {
             Log.i(TAG, "first fresh heartbeat ${SystemClock.elapsedRealtime() - running} ms after RUNNING: $fresh")
 
             id = addJob()
-            runBlocking { ready.jobs.open() }
+            runBlocking { ready.pages.jobs.open() }
 
-            val ui = checkNotNull(ready.jobs.state.value)
+            val ui = checkNotNull(ready.pages.jobs.state.value)
             assertNull(ui.error)
             assertEquals(JobState.SCHEDULED, ui.jobs.single { it.id == JobId(id) }.state)
             assertNull(ui.warning)
@@ -157,7 +157,7 @@ class JobsDeviceTest {
         } finally {
             watcher.cancel()
             id?.let(::removeJob)
-            ready.jobs.close()
+            ready.pages.jobs.close()
             app.gateway.turnOff()
             gatewayEnded()
         }
@@ -175,26 +175,26 @@ class JobsDeviceTest {
         val warnings = java.util.Collections.synchronizedList(mutableListOf<String>())
         @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
         val recorder = GlobalScope.launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
-            ready.jobs.state.collect { warnings += "${SystemClock.elapsedRealtime()} ${it?.warning}" }
+            ready.pages.jobs.state.collect { warnings += "${SystemClock.elapsedRealtime()} ${it?.warning}" }
         }
         @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
-        val follower = GlobalScope.launch(Dispatchers.IO) { ready.jobs.followGateway(app.gatewayChanges) }
+        val follower = GlobalScope.launch(Dispatchers.IO) { ready.pages.jobs.followGateway(app.gatewayChanges) }
         try {
-            runBlocking { ready.jobs.open() }
-            assertEquals(JobsWarning.GatewayOff(GatewayStatus.STOPPED), ready.jobs.state.value?.warning)
+            runBlocking { ready.pages.jobs.open() }
+            assertEquals(JobsWarning.GatewayOff(GatewayStatus.STOPPED), ready.pages.jobs.state.value?.warning)
 
             app.gateway.turnOn()
             waitFor("RUNNING") { observeGateway(context).status.takeIf { it == GatewayStatus.RUNNING } }
             val running = SystemClock.elapsedRealtime()
             // Nothing else lists here: no JobsPanel loop runs and the test calls no refresh(). Only followGateway can clear it.
-            waitFor("the warning cleared", 12) { if (ready.jobs.state.value?.warning == null) true else null }
+            waitFor("the warning cleared", 12) { if (ready.pages.jobs.state.value?.warning == null) true else null }
             Log.i(TAG, "warning cleared ${SystemClock.elapsedRealtime() - running} ms after RUNNING; warnings seen: $warnings")
-            assertEquals(JobState.SCHEDULED, ready.jobs.state.value!!.jobs.single { it.id == JobId(id) }.state)
+            assertEquals(JobState.SCHEDULED, ready.pages.jobs.state.value!!.jobs.single { it.id == JobId(id) }.state)
         } finally {
             follower.cancel()
             recorder.cancel()
             removeJob(id)
-            ready.jobs.close()
+            ready.pages.jobs.close()
         }
     }
 }

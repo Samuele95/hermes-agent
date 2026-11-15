@@ -47,7 +47,7 @@ class SshSmokeTest {
         compose.onNodeWithText(fingerprint, substring = true).assertExists()  // the key the host printed, before trusting it
         compose.onNodeWithTag("ssh-trust").performClick()
         compose.waitUntil(60_000) { steps.shown("ssh-public-key") }
-        val ready = (steps.app.core.value as CoreState.Ready).ssh.state.value?.step as SshStep.Ready
+        val ready = (steps.app.core.value as CoreState.Ready).pages.ssh.state.value?.step as SshStep.Ready
         Log.i(SmokeSteps.TAG, "public key ${ready.publicKey}")  // public: the script compares it with the host's record
         compose.onNodeWithTag("ssh-check").performClick()
         compose.waitUntil(60_000) { steps.shown("ssh-login-ok") || steps.shown("ssh-error") }

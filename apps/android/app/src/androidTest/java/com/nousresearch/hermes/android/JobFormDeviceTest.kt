@@ -66,7 +66,7 @@ class JobFormDeviceTest {
         ?.firstOrNull { it.processName == gatewayProcess }?.pid
 
     private val ready by lazy { waitFor("the core") { app.core.value as? CoreState.Ready } }
-    private val jobs get() = ready.jobs
+    private val jobs get() = ready.pages.jobs
     private val ui: JobsUi get() = checkNotNull(jobs.state.value)
 
     private fun probe(n: Any) = "$PROBE ${System.nanoTime()} $n"

@@ -68,8 +68,8 @@ class CompressSmokeTest {
             compose.waitUntil(60_000) { steps.shown("context-meter") }
             val meterBefore = steps.chat().meter
             compose.onNodeWithTag("context-meter").performClick()
-            compose.waitUntil(120_000) { ready.context.state.value.let { it != null && (it.breakdown != null || it.error != null) } }
-            val opened = ready.context.state.value!!
+            compose.waitUntil(120_000) { ready.pages.context.state.value.let { it != null && (it.breakdown != null || it.error != null) } }
+            val opened = ready.pages.context.state.value!!
             val breakdown = opened.breakdown
             assertNotNull("the core's breakdown (error: ${opened.error})", breakdown)
             assertTrue("categories: $breakdown", breakdown!!.categories.isNotEmpty())
@@ -85,9 +85,9 @@ class CompressSmokeTest {
             var held = false
             compose.waitUntil(900_000) {
                 if (!TurnService.turns.isIdle) held = true
-                ready.context.state.value.let { it != null && !ready.chat.state.value.compressing && (it.outcome != null || it.error != null) }
+                ready.pages.context.state.value.let { it != null && !ready.chat.state.value.compressing && (it.outcome != null || it.error != null) }
             }
-            val done = ready.context.state.value!!
+            val done = ready.pages.context.state.value!!
             Log.i(SmokeSteps.TAG, "compress answered after ${System.currentTimeMillis() - began} ms: outcome=${done.outcome} error=${done.error}")
             assertNull("the core's compression (statuses: $statuses)", done.error)
             assertNotNull("an outcome", done.outcome)
@@ -97,8 +97,8 @@ class CompressSmokeTest {
             if (done.outcome!!.startsWith("Compressed")) assertTrue("fewer prompts shown: $before → ${shownUsers()}", shownUsers().size < before.size)
             assertNull("no status left on the idle chat (D5)", steps.chat().activity)
             // D7: the breakdown was re-read after the compression.
-            compose.waitUntil(120_000) { ready.context.state.value?.let { it.breakdown != null || it.error != null } == true }
-            assertNotNull("the breakdown re-read (error: ${ready.context.state.value?.error})", ready.context.state.value?.breakdown)
+            compose.waitUntil(120_000) { ready.pages.context.state.value?.let { it.breakdown != null || it.error != null } == true }
+            assertNotNull("the breakdown re-read (error: ${ready.pages.context.state.value?.error})", ready.pages.context.state.value?.breakdown)
             Log.i(SmokeSteps.TAG, "meter before $meterBefore after ${steps.chat().meter}; shown users $before → ${shownUsers()}")
             steps.screenshot("b7-compressed")
         } finally {

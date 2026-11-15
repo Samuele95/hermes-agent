@@ -119,7 +119,7 @@ class JobRunsDeviceTest {
     @Test
     fun aJobThatNeverRanHasNoRunsOnThePhone() {
         gatewayOff()
-        val jobs = ready.jobs
+        val jobs = ready.pages.jobs
         try {
             val id = addProbe("never ran")
             runBlocking { jobs.open() }

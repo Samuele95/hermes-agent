@@ -35,7 +35,7 @@ class TelegramSwitchDeviceTest {
     @Test
     fun theBotTurnsOnOnlyWithATokenAndRemovingItLeavesItOff() = runBlocking {
         assumeFalse("the phone holds a bot token; this test never touches it", app.secrets.contains("TELEGRAM_BOT_TOKEN"))
-        val telegram = (app.core.first { it !is CoreState.Starting } as CoreState.Ready).telegram
+        val telegram = (app.core.first { it !is CoreState.Starting } as CoreState.Ready).pages.telegram
         val config = File(app.filesDir, ".hermes/config.yaml")
         val original = config.takeIf { it.exists() }?.readBytes()
         val was = EmbeddedBridge.ask(BridgeCalls.TELEGRAM_STATUS)
