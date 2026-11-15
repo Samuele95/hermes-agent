@@ -48,9 +48,13 @@ object Methods {
     val SESSION_INTERRUPT = Method("session.interrupt", SessionInterruptParams.serializer(), SessionInterruptResult.serializer())
     val SESSION_LIST = Method("session.list", SessionListParams.serializer(), SessionListResult.serializer())
     val SESSION_MOST_RECENT = Method("session.most_recent", SessionMostRecentParams.serializer(), SessionMostRecentResult.serializer())
+    val SESSION_REDIRECT = Method("session.redirect", SessionCorrectionParams.serializer(), SessionCorrectionResult.serializer())
     val SESSION_RESUME = Method("session.resume", SessionResumeParams.serializer(), SessionResumeResult.serializer())
     val SESSION_SAVE = Method("session.save", SessionSaveParams.serializer(), SessionSaveResult.serializer())
+    val SESSION_STATUS = Method("session.status", SessionStatusParams.serializer(), SessionStatusResult.serializer())
+    val SESSION_STEER = Method("session.steer", SessionCorrectionParams.serializer(), SessionCorrectionResult.serializer())
     val SESSION_TITLE = Method("session.title", SessionTitleParams.serializer(), SessionTitleResult.serializer())
+    val SETUP_RUNTIME_CHECK = Method("setup.runtime_check", SetupRuntimeCheckParams.serializer(), SetupRuntimeCheckResult.serializer())
     val SETUP_STATUS = Method("setup.status", ProfileParams.serializer(), SetupStatusResult.serializer())
     val SKILLS_MANAGE = Method("skills.manage", SkillsManageParams.serializer(), SkillsManageResult.serializer())
 }
@@ -419,6 +423,13 @@ data class ContextFileSource(
     @SerialName("loaded") val loaded: Boolean,
     @SerialName("status") val status: String,
 )
+
+@Serializable
+enum class CorrectionStatus {
+    @SerialName("queued") QUEUED,
+    @SerialName("redirected") REDIRECTED,
+    @SerialName("rejected") REJECTED,
+}
 
 @Serializable
 enum class CronAction {
@@ -943,6 +954,19 @@ data class SessionContextBreakdownResult(
 )
 
 @Serializable
+data class SessionCorrectionParams(
+    @SerialName("session_id") val sessionId: String,
+    @SerialName("profile") val profile: String? = null,
+    @SerialName("text") val text: String,
+)
+
+@Serializable
+data class SessionCorrectionResult(
+    @SerialName("status") val status: CorrectionStatus,
+    @SerialName("text") val text: String,
+)
+
+@Serializable
 data class SessionCreateParams(
     @SerialName("profile") val profile: String? = null,
     @SerialName("cols") val cols: Long? = null,
@@ -1138,6 +1162,17 @@ data class SessionSaveResult(
 )
 
 @Serializable
+data class SessionStatusParams(
+    @SerialName("session_id") val sessionId: String,
+    @SerialName("profile") val profile: String? = null,
+)
+
+@Serializable
+data class SessionStatusResult(
+    @SerialName("output") val output: String,
+)
+
+@Serializable
 data class SessionTitleParams(
     @SerialName("session_id") val sessionId: String,
     @SerialName("profile") val profile: String? = null,
@@ -1162,6 +1197,24 @@ data class SessionTitleResult(
 @Serializable
 data class SessionUsagePayload(
     @SerialName("usage") val usage: Usage,
+)
+
+@Serializable
+data class SetupRuntimeCheckParams(
+    @SerialName("profile") val profile: String? = null,
+    @SerialName("provider") val provider: String? = null,
+)
+
+/** ``ok=False`` + ``error`` when the resolved model can't be served; ``free_tier_route`` says the selected route is the welcome host. */
+@Serializable
+data class SetupRuntimeCheckResult(
+    @SerialName("ok") val ok: Boolean,
+    @SerialName("provider") val provider: String? = null,
+    @SerialName("model") val model: String? = null,
+    @SerialName("source") val source: String? = null,
+    @SerialName("error") val error: String? = null,
+    @SerialName("free_tier_route") val freeTierRoute: Boolean? = null,
+    @SerialName("profile") val profile: String? = null,
 )
 
 /** ``provider_configured`` is the loose answer; the boot record's fields (``ready``, ``free_tier_account``, ``free_tier_route``, ``other_providers``, ``inference_provider``) ride along on the launch profile. An unknown ``profile`` answers ``ok=False`` + ``error``. */

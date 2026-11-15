@@ -30,9 +30,12 @@ import com.nousresearch.hermes.bridge.protocol.PingParams
 import com.nousresearch.hermes.bridge.protocol.PingResult
 import com.nousresearch.hermes.bridge.protocol.SessionCloseParams
 import com.nousresearch.hermes.bridge.protocol.SessionContextBreakdownParams
+import com.nousresearch.hermes.bridge.protocol.SessionCorrectionParams
 import com.nousresearch.hermes.bridge.protocol.SessionCreateParams
 import com.nousresearch.hermes.bridge.protocol.SessionDeleteParams
+import com.nousresearch.hermes.bridge.protocol.SessionStatusParams
 import com.nousresearch.hermes.bridge.protocol.SessionTitleParams
+import com.nousresearch.hermes.bridge.protocol.SetupRuntimeCheckParams
 import java.io.File
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -142,6 +145,53 @@ class EmbeddedPythonTest {
 
             assertTrue(core.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = created.sessionId)).closed)
             assertEquals(stored, core.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = stored)).deleted)
+        } finally {
+            watcher.cancel()
+            // A failed run leaves no session or row behind on the shared phone.
+            runCatching { core.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = created.sessionId)) }
+            runCatching { core.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = stored)) }
+        }
+    }
+
+    @Test
+    fun theCorrectionCheckAndStatusCallsAnswerOnThePhone() = runBlocking {
+        // Blank words are refused before any session lookup: no session and no model are involved.
+        val blank = assertThrows(CoreError::class.java) {
+            runBlocking { core.call(Methods.SESSION_STEER, SessionCorrectionParams(sessionId = "", text = "   ")) }
+        }
+        assertEquals(blank.message, 4002, blank.code)
+
+        // An unknown profile answers before any probe, so no resolver runs and nothing leaves the phone (D3).
+        val profile = "m1-no-such-profile-${System.nanoTime()}"
+        val check = withTimeout(10_000) { core.call(Methods.SETUP_RUNTIME_CHECK, SetupRuntimeCheckParams(profile = profile)) }
+        assertEquals(check.error, false, check.ok)
+        assertEquals(profile, check.profile)
+        assertTrue(check.error, check.error!!.contains("does not exist"))
+
+        // The session is closed only after its pre-warm settled (aSessionIsTitledClosedAndDeletedThroughTheGeneratedCalls).
+        val settled = Channel<String>(Channel.UNLIMITED)
+        val watcher = launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
+            core.events.collect { if (it.type == "session.info" || it.type == "error") it.sessionId?.let(settled::trySend) }
+        }
+        val created = core.call(Methods.SESSION_CREATE, SessionCreateParams(source = "android"))
+        val stored = created.storedSessionId
+        try {
+            withTimeout(120_000) { while (settled.receive() != created.sessionId) Unit }
+
+            val lines = core.call(Methods.SESSION_STATUS, SessionStatusParams(sessionId = created.sessionId)).output.lines()
+
+            assertEquals("$lines", "Hermes TUI Status", lines.first())
+            assertTrue("$lines", "Session ID: $stored" in lines)
+            assertTrue("$lines", "Agent Running: No" in lines)
+
+            assertTrue(core.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = created.sessionId)).closed)
+            // Without a turn or a title the core may not have written the row yet: then the delete answers 4007.
+            val delete = runCatching { core.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = stored)) }
+            when (val refused = delete.exceptionOrNull()) {
+                null -> assertEquals(stored, delete.getOrThrow().deleted)
+                is CoreError -> assertEquals(refused.message, 4007, refused.code)
+                else -> throw refused
+            }
         } finally {
             watcher.cancel()
             // A failed run leaves no session or row behind on the shared phone.

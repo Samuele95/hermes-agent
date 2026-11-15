@@ -3,11 +3,14 @@ package com.nousresearch.hermes.bridge
 import com.nousresearch.hermes.bridge.protocol.ApprovalChoice
 import com.nousresearch.hermes.bridge.protocol.ApprovalResult
 import com.nousresearch.hermes.bridge.protocol.ChangeSignalPayload
+import com.nousresearch.hermes.bridge.protocol.CorrectionStatus
 import com.nousresearch.hermes.bridge.protocol.Events
 import com.nousresearch.hermes.bridge.protocol.Methods
 import com.nousresearch.hermes.bridge.protocol.PingParams
 import com.nousresearch.hermes.bridge.protocol.PingResult
 import com.nousresearch.hermes.bridge.protocol.Requests
+import com.nousresearch.hermes.bridge.protocol.SessionCorrectionParams
+import com.nousresearch.hermes.bridge.protocol.SetupRuntimeCheckParams
 import com.nousresearch.hermes.bridge.protocol.StreamDeltaPayload
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
@@ -64,6 +67,34 @@ class FrameCoreGatewayTest {
 
         val error = call.await().exceptionOrNull() as CoreError
         assertEquals(-32601 to "unknown method: ping", error.code to error.message)
+    }
+
+    @Test
+    fun aSteerAndARedirectLeaveUnderTheirOwnNamesAndARefusalIsACoreError() = runTest(UnconfinedTestDispatcher()) {
+        val correction = Json.parseToJsonElement("""{"session_id":"r1","text":"shorter"}""")
+
+        val steer = async { gateway.call(Methods.SESSION_STEER, SessionCorrectionParams(sessionId = "r1", text = "shorter")) }
+        assertEquals("session.steer", sent.last().getValue("method").jsonPrimitive.content)
+        assertEquals(correction, sent.last().getValue("params"))
+        gateway.onFrame("""{"jsonrpc":"2.0","id":${lastId()},"result":{"status":"queued","text":"shorter"}}""")
+        assertEquals(CorrectionStatus.QUEUED, steer.await().status)
+
+        val redirect = async { gateway.call(Methods.SESSION_REDIRECT, SessionCorrectionParams(sessionId = "r1", text = "shorter")) }
+        assertEquals("session.redirect", sent.last().getValue("method").jsonPrimitive.content)
+        assertEquals(correction, sent.last().getValue("params"))
+        gateway.onFrame("""{"jsonrpc":"2.0","id":${lastId()},"result":{"status":"redirected","text":"shorter"}}""")
+        assertEquals(CorrectionStatus.REDIRECTED, redirect.await().status)
+
+        val refused = async { runCatching { gateway.call(Methods.SESSION_REDIRECT, SessionCorrectionParams(sessionId = "r1", text = "shorter")) } }
+        gateway.onFrame("""{"jsonrpc":"2.0","id":${lastId()},"error":{"code":4010,"message":"agent does not support active-turn redirect"}}""")
+        val refusal = refused.await().exceptionOrNull() as CoreError
+        assertEquals(4010 to "agent does not support active-turn redirect", refusal.code to refusal.message)
+
+        // A check past its budget cannot tell: an error, never a result with ok == false.
+        val check = async { runCatching { gateway.call(Methods.SETUP_RUNTIME_CHECK, SetupRuntimeCheckParams()) } }
+        gateway.onFrame("""{"jsonrpc":"2.0","id":${lastId()},"error":{"code":5097,"message":"readiness check still running"}}""")
+        val pending = check.await().exceptionOrNull() as CoreError
+        assertEquals(5097, pending.code)
     }
 
     @Test

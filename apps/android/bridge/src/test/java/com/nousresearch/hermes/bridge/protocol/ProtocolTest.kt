@@ -1,12 +1,14 @@
 package com.nousresearch.hermes.bridge.protocol
 
 import com.nousresearch.hermes.bridge.wire
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -201,5 +203,76 @@ class ProtocolTest {
     fun aChangeSignalHasNoFieldsAndToleratesNewOnes() {
         assertEquals(ChangeSignalPayload, wire.decodeFromString(Events.CRON_CHANGED.payload, "{}"))
         assertEquals(ChangeSignalPayload, wire.decodeFromString(Events.PLATFORMS_CHANGED.payload, """{"since":1}"""))
+    }
+
+    // A correction's status words are the core's; a check that cannot serve answers in words.
+
+    @Test
+    fun aCorrectionCarriesTheSessionAndTheWordsOnly() {
+        val correction = SessionCorrectionParams(sessionId = "r1", text = "use metric units")
+
+        assertEquals("""{"session_id":"r1","text":"use metric units"}""", wire.encodeToString(Methods.SESSION_STEER.params, correction))
+        assertEquals("""{"session_id":"r1","text":"use metric units"}""", wire.encodeToString(Methods.SESSION_REDIRECT.params, correction))
+    }
+
+    @Test
+    fun aCorrectionAnswersOneOfTheCoresThreeWords() {
+        val queued = wire.decodeFromString(Methods.SESSION_STEER.result, """{"status":"queued","text":"use metric units"}""")
+        val redirected = wire.decodeFromString(Methods.SESSION_REDIRECT.result, """{"status":"redirected","text":"use metric units"}""")
+        val rejected = wire.decodeFromString(Methods.SESSION_STEER.result, """{"status":"rejected","text":"use metric units"}""")
+
+        assertEquals(CorrectionStatus.QUEUED to "use metric units", queued.status to queued.text)
+        assertEquals(CorrectionStatus.REDIRECTED, redirected.status)
+        assertEquals(CorrectionStatus.REJECTED, rejected.status)
+        // A word the contract does not name is a decode failure, never a default status.
+        assertThrows(SerializationException::class.java) {
+            wire.decodeFromString(Methods.SESSION_REDIRECT.result, """{"status":"applied","text":"x"}""")
+        }
+    }
+
+    @Test
+    fun aRuntimeCheckWithoutAProviderAsksForTheSessionRoute() {
+        assertEquals("{}", wire.encodeToString(Methods.SETUP_RUNTIME_CHECK.params, SetupRuntimeCheckParams()))
+        assertEquals(
+            """{"provider":"openrouter"}""",
+            wire.encodeToString(Methods.SETUP_RUNTIME_CHECK.params, SetupRuntimeCheckParams(provider = "openrouter")),
+        )
+    }
+
+    @Test
+    fun aFailedCheckKeepsTheCoresWordsAndAPassedOneItsRoute() {
+        val failed = wire.decodeFromString(
+            Methods.SETUP_RUNTIME_CHECK.result,
+            """{"ok":false,"provider":"openrouter","model":"anthropic/claude-sonnet-4","source":"config",""" +
+                """"error":"No usable credentials found for openrouter."}""",
+        )
+        // `error_code` is the newer core's field: ignored, not modelled.
+        val passed = wire.decodeFromString(
+            Methods.SETUP_RUNTIME_CHECK.result,
+            """{"ok":true,"provider":"nous","model":"Hermes-4-405B","source":"pool","free_tier_route":true,"error_code":null}""",
+        )
+        val raised = wire.decodeFromString(Methods.SETUP_RUNTIME_CHECK.result, """{"ok":false,"error":"boom"}""")
+
+        assertEquals(false, failed.ok)
+        assertEquals("No usable credentials found for openrouter.", failed.error)
+        assertEquals("openrouter", failed.provider)
+        assertEquals(true, passed.ok)
+        assertEquals(true, passed.freeTierRoute)
+        assertNull(passed.error)
+        assertEquals(false, raised.ok)
+        assertNull(raised.provider)
+    }
+
+    @Test
+    fun aStatusIsOneRenderedText() {
+        assertEquals("""{"session_id":"r1"}""", wire.encodeToString(Methods.SESSION_STATUS.params, SessionStatusParams(sessionId = "r1")))
+
+        val output = wire.decodeFromString(
+            Methods.SESSION_STATUS.result,
+            """{"output":"Hermes TUI Status\n\nSession ID: 20261115_101500_ab12cd\nAgent Running: No"}""",
+        ).output
+
+        assertEquals("Hermes TUI Status", output.lines().first())
+        assertTrue(output, "Session ID: 20261115_101500_ab12cd" in output.lines())
     }
 }
