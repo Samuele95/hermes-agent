@@ -390,6 +390,17 @@
       "reply": {
         "skills": "[SkillEntry]"
       }
+    },
+    "session_export": {
+      "summary": "Writes the stored session's file into the app's cache (TMPDIR/exports/<title>-<id8>.json, replacing the previous export) as the core's GET /api/sessions/{id}/export streams it: the session row, then every message incl. inactive ones, paged by 500; a session with no stored row yet is refused in words and nothing is written.",
+      "params": {
+        "session_id": "string"
+      },
+      "reply": {
+        "path": "string",
+        "name": "string",
+        "bytes": "integer"
+      }
     }
   },
   "events": {

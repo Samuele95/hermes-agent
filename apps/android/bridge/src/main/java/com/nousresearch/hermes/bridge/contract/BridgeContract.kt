@@ -402,6 +402,18 @@ data class SkillsEnableReply(
     val skills: List<SkillEntry>,
 )
 
+@Serializable
+data class SessionExportParams(
+    @SerialName("session_id") val sessionId: String,
+)
+
+@Serializable
+data class SessionExportReply(
+    val path: String,
+    val name: String,
+    val bytes: Int,
+)
+
 /** Every call the app may make into its Python half. */
 object BridgeCalls {
     /** The interpreter facts the app shows, and the core's release date (hermes_cli.__release_date__): the core's version on a phone, where get_version_info() has no stamp and no git and answers 'unknown'. */
@@ -470,6 +482,8 @@ object BridgeCalls {
     val SKILLS_LIST = BridgeCall("skills_list", NoParams.serializer(), SkillsListReply.serializer())
     /** Turns the named skills on or off in config.yaml's global skills.disabled under the app's config lock (never .env), then answers the list re-read; the core's essential skills are never turned off: a request to turn off only those is refused in the core's words, and among others they stay on. */
     val SKILLS_ENABLE = BridgeCall("skills_enable", SkillsEnableParams.serializer(), SkillsEnableReply.serializer())
+    /** Writes the stored session's file into the app's cache (TMPDIR/exports/<title>-<id8>.json, replacing the previous export) as the core's GET /api/sessions/{id}/export streams it: the session row, then every message incl. inactive ones, paged by 500; a session with no stored row yet is refused in words and nothing is written. */
+    val SESSION_EXPORT = BridgeCall("session_export", SessionExportParams.serializer(), SessionExportReply.serializer())
 
     /** The calls that may wait on the network (`blocking` in the contract): EmbeddedPython runs them on their own thread. */
     val BLOCKING: Set<String> = setOf("probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check")

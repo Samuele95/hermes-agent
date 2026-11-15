@@ -420,3 +420,9 @@ def skills_enable(arg: str) -> str:
     from hermes_android import skills
 
     return skills.enable(arg)
+
+
+def session_export(arg: str) -> str:
+    from hermes_android import export
+
+    return export.export(arg)
