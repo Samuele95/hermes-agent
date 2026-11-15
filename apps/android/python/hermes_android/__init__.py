@@ -223,8 +223,14 @@ def gateway_state(_arg: str) -> str:
 
 
 def runtime_facts(_arg: str) -> str:
-    """The interpreter facts the app shows, as JSON (FTS5 backs session search; python.org's SQLite lacks it)."""
+    """The interpreter facts the app shows, as JSON (FTS5 backs session search; python.org's SQLite lacks it).
+
+    The core's version on a phone is its release date: get_version_info() answers "unknown" there, with no
+    install stamp and no git (F13, DC-M19).
+    """
     import sqlite3
+
+    from hermes_cli import __release_date__  # the core is importable only after prepare()
 
     try:
         sqlite3.connect(":memory:").execute("CREATE VIRTUAL TABLE probe USING fts5(text)")
@@ -232,7 +238,7 @@ def runtime_facts(_arg: str) -> str:
     except sqlite3.OperationalError:
         fts5 = False
     return json.dumps({"python": sys.version.split()[0], "sqlite": sqlite3.sqlite_version, "fts5": fts5,
-                       "executable": sys.executable})
+                       "executable": sys.executable, "core_release": __release_date__})
 
 
 def secrets_changed(_arg: str) -> str:

@@ -122,6 +122,7 @@ data class RuntimeFactsReply(
     val sqlite: String,
     val fts5: Boolean,
     val executable: String,
+    @SerialName("core_release") val coreRelease: String,
 )
 
 @Serializable
@@ -403,7 +404,7 @@ data class SkillsEnableReply(
 
 /** Every call the app may make into its Python half. */
 object BridgeCalls {
-    /** The interpreter facts the app shows. */
+    /** The interpreter facts the app shows, and the core's release date (hermes_cli.__release_date__): the core's version on a phone, where get_version_info() has no stamp and no git and answers 'unknown'. */
     val RUNTIME_FACTS = BridgeCall("runtime_facts", NoParams.serializer(), RuntimeFactsReply.serializer())
     /** The keystore changed: re-read its secrets; variables it no longer holds are revoked. */
     val SECRETS_CHANGED = BridgeCall("secrets_changed", NoParams.serializer(), NoReply.serializer())

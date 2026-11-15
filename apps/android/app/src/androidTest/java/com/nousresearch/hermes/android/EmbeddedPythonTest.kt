@@ -103,6 +103,8 @@ class EmbeddedPythonTest {
         assertEquals("3.14.7", facts.getString("python"))
         assertTrue("sqlite ${facts.getString("sqlite")} lacks FTS5", facts.getBoolean("fts5"))
         assertEquals("", facts.getString("executable"))
+        assertTrue(facts.getString("core_release"),
+                   Regex("""\d{4}\.\d{1,2}\.\d{1,2}""").matches(facts.getString("core_release")))
     }
 
     @Test

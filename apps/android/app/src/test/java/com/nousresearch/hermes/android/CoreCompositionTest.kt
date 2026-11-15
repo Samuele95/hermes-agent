@@ -72,7 +72,7 @@ class CoreCompositionTest {
         override val bridge = AppBridge { function, _ ->
             bridgeCalls += function
             when (function) {
-                "runtime_facts" -> """{"python":"3.14.7","sqlite":"3.53.4","fts5":true,"executable":""}"""
+                "runtime_facts" -> """{"python":"3.14.7","sqlite":"3.53.4","fts5":true,"executable":"","core_release":"2026.9.24"}"""
                 "cron_runs" -> """{"runs":[{"session_id":"cron_j1_20261113_093000","started_at":1794562200,"ended_at":1794562260,
                                   "messages":4,"preview":"Say hello.","active":false}]}"""
                 "telegram_status" -> """{"token":true,"allowed_user":"42","sdk":true,"enabled":true,"live":{"state":"connected",

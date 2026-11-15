@@ -77,13 +77,14 @@
   },
   "calls": {
     "runtime_facts": {
-      "summary": "The interpreter facts the app shows.",
+      "summary": "The interpreter facts the app shows, and the core's release date (hermes_cli.__release_date__): the core's version on a phone, where get_version_info() has no stamp and no git and answers 'unknown'.",
       "params": {},
       "reply": {
         "python": "string",
         "sqlite": "string",
         "fts5": "boolean",
-        "executable": "string"
+        "executable": "string",
+        "core_release": "string"
       }
     },
     "secrets_changed": {

@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -401,4 +402,28 @@ def test_runtime_facts_report_what_the_app_shows_about_its_interpreter(paths):
     facts = json.loads(hermes_android.runtime_facts(""))
 
     import sqlite3
-    assert facts == {"python": sys.version.split()[0], "sqlite": sqlite3.sqlite_version, "fts5": True, "executable": ""}
+
+    from hermes_cli import __release_date__
+    assert facts == {"python": sys.version.split()[0], "sqlite": sqlite3.sqlite_version, "fts5": True, "executable": "",
+                     "core_release": __release_date__}
+
+
+def test_the_core_release_is_the_cores_own_date_where_its_version_reads_unknown(paths, monkeypatch):
+    # The phone's conditions: the payload carries no install stamp and no .git, so get_version_info()
+    # answers "unknown" there; the core's release date is the version the app can name (F13, DC-M19).
+    hermes_android.prepare(paths)
+    from hermes_cli import __release_date__, version_info
+
+    monkeypatch.setattr(version_info, "_stamp_version_info", lambda: None)
+    monkeypatch.setattr(version_info, "_resolve_repo_dir", lambda: None)
+    version_info._reset_version_info_cache()
+    try:
+        assert version_info.get_version_info().base_version == "unknown"
+
+        facts = json.loads(hermes_android.call("runtime_facts", ""))  # through call: the contract check applies
+
+        assert facts["core_release"] == __release_date__
+        assert re.fullmatch(r"\d{4}\.\d{1,2}\.\d{1,2}", facts["core_release"])
+        assert "unknown" not in facts.values()
+    finally:
+        version_info._reset_version_info_cache()
