@@ -53,8 +53,9 @@ fun installRuntime(context: Context): HermesPaths {
  * the phone's Wi-Fi [subnet] for the endpoint search, [seen], the app's own observation of the always-on gateway:
  * the one value the chat, the jobs page and the bot's live state all judge it by (§3.1), and [queues], where the chat
  * keeps each session's queue of unsent messages (batch-3 F2); [packageInfo] the APK's version and [payloadJson] the
- * payload's manifest, which About reads at each open (F13). A field left out is today's default: names and
- * model ids kept in memory, no subnet, a stopped gateway, queues kept in memory. Its lambdas compare by identity, so two values are
+ * payload's manifest, which About reads at each open (F13), and [log], the platform's log for what the chat notes for
+ * diagnosis. A field left out is today's default: names and model ids kept in memory, no subnet, a stopped gateway,
+ * queues kept in memory, nothing logged. Its lambdas compare by identity, so two values are
  * never compared.
  */
 data class CoreDeps(val secrets: SecretStore, val turns: TurnHost, val notifier: Notifier,
@@ -64,7 +65,8 @@ data class CoreDeps(val secrets: SecretStore, val turns: TurnHost, val notifier:
                     val seen: () -> GatewaySeen = { GatewaySeen(GatewayStatus.STOPPED) },
                     val queues: QueueStore = QueueStore.inMemory(),
                     val packageInfo: AppPackage = AppPackage("", 0),
-                    val payloadJson: () -> String = { "{}" })
+                    val payloadJson: () -> String = { "{}" },
+                    val log: (String) -> Unit = {})
 
 /**
  * The chat process's composition root: starts [runtime]'s core and builds what the screens drive over it. The
@@ -85,7 +87,7 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps
     val chat = ChatSession(gateway, deps.turns, scope, keepSecret, deps.notifier, gatewaySeen = deps.seen,
                            runOwned = { bridge.runOwnership(it).owned }, queues = deps.queues,
                            providerFailed = { readiness.await().checkReadiness() },
-                           exporter = { bridge.exportSession(it) }).apply { start() }
+                           exporter = { bridge.exportSession(it) }, log = deps.log).apply { start() }
     val setup = ProviderSetup(gateway, deps.secrets, bridge, session = { chat.sessionId.value }, reopenChat = chat::open,
                               keyNames = deps.keyNames, subnet = deps.subnet, customModels = deps.customModels)
     readiness.complete(setup)

@@ -146,11 +146,14 @@ class ChatSessionTest {
     /** The chat's queues as its store kept them, by stored key (the file adapter's stand-in). */
     private val savedQueues = mutableMapOf<StoredSessionId, QueueUi>()
 
+    /** What the chat noted for diagnosis only, in order (the platform's log). */
+    private val logged = mutableListOf<String>()
+
     private fun TestScope.openChat() =
         ChatSession(core, host, backgroundScope, keepSecret = { name, value -> keepSecret(name, value) }, notifier = notifier,
                     gatewaySeen = { observed++; seen() }, runOwned = { ownedAsked += it.value; owned(it) },
                     queues = QueueStore.inMemory(savedQueues), providerFailed = { failures++ },
-                    exporter = { exported += it; exportFile })
+                    exporter = { exported += it; exportFile }, log = { logged += it })
 
     /** The agent schedules a job in [session] ([action] of the job tool, answered `success`), the core's own warning included. */
     private suspend fun scheduled(session: String, id: String, action: String = "create") {
@@ -2344,6 +2347,90 @@ class ChatSessionTest {
         core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")
 
         assertEquals(Json.parseToJsonElement("""{"session_id":"s1","text":"later","queued":true}"""), lastSubmit())
+    }
+
+    /** The line the chat logs when the core holds a drained item in its own queue (/architect #5). */
+    private val heldByTheCore = "prompt.submit queued:true in s1 answered queued: the core runs it after its own turn, no user_row_id"
+
+    @Test
+    fun aDrainedItemTheCoreQueuedIsLoggedAndLeftToTheCore() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        chat.queue("a")
+        chat.queue("b")
+        submit = { """{"status":"queued"}""" }  // the core's turn is still ending: it holds the item for its own next turn
+        val mark = core.calls.size
+
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")
+
+        assertEquals(listOf("prompt.submit" to "s1"), callsAfter(mark))  // sent once: no resend, no history read
+        assertEquals(Json.parseToJsonElement("""{"session_id":"s1","text":"a","queued":true}"""), lastSubmit())
+        assertEquals(listOf(heldByTheCore), logged)
+        assertEquals(Entry.User("a", stableId = 2), chat.state.value.entries.last())  // no row id yet
+        assertTrue(chat.state.value.submitted)
+        assertTrue(chat.state.value.entries.none { it is Entry.Notice })  // not a failure
+        assertEquals(listOf("b"), chat.items())
+        assertEquals(listOf("b"), saved("db1"))
+
+        // The core runs it: its turn's receipt names the row.
+        submit = { """{"status":"streaming","user_row_id":9}""" }
+        core.emit("message.start", "s1")
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete",
+            "persisted_turn":{"row_ids":[7,8],"complete":true,"user_row_id":7}}""")
+
+        assertTrue(chat.state.value.entries.toString(), Entry.User("a", 7, 2) in chat.state.value.entries)
+        assertEquals("b", lastSubmit().getValue("text").jsonPrimitive.content)  // the queue moved on once
+        assertEquals("true", lastSubmit().getValue("queued").jsonPrimitive.content)
+        assertEquals(1, logged.size)
+    }
+
+    @Test
+    fun aDrainedItemTheCoreRanIsNotLogged() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        chat.queue("a")
+        chat.queue("b")
+        submit = { """{"status":"streaming","user_row_id":41}""" }
+
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")
+
+        assertEquals(emptyList<String>(), logged)
+        assertEquals(Entry.User("a", 41, 2), chat.state.value.entries.last())
+    }
+
+    @Test
+    fun aPlainPromptTheCoreAnswersQueuedIsNotLoggedAsADrain() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        submit = { """{"status":"queued"}""" }
+
+        chat.send("hi")
+
+        assertFalse("queued" in lastSubmit())
+        assertEquals(emptyList<String>(), logged)  // V4: busy-mode routing, another race
+    }
+
+    @Test
+    fun aDrainedItemTheCoreQueuedIsRetriedByItsWords() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        chat.queue("a")
+        submit = { """{"status":"queued"}""" }
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")
+        // The core's turn for it, with no receipt (a compaction, a preflight return).
+        core.emit("message.start", "s1")
+        core.emit("message.complete", "s1", """{"text":"Again.","status":"complete"}""")
+        history = { """{"count":4,"messages":[{"role":"user","text":"hi","row_id":3},{"role":"assistant","text":"Done.","row_id":4},
+                       {"role":"user","text":"a","row_id":5},{"role":"assistant","text":"Again.","row_id":6}]}""" }
+        submit = { """{"status":"streaming","user_row_id":12}""" }
+        val mark = core.calls.size
+
+        chat.retry()
+
+        assertEquals(listOf("session.history" to "s1", "prompt.submit" to "s1"), callsAfter(mark))
+        assertEquals("5", lastSubmit().getValue("truncate_before_row_id").jsonPrimitive.content)
     }
 
     @Test

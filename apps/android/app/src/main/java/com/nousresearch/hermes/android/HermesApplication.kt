@@ -273,7 +273,7 @@ class HermesApplication : Application() {
                             customModels = PrefsCustomModels(getSharedPreferences("custom_models", MODE_PRIVATE)),
                             subnet = { wifiSubnet(this@HermesApplication) }, seen = seen,
                             queues = queueFiles(File(noBackupFilesDir, "queue")),  // app-private, never backed up
-                            packageInfo = app, payloadJson = { assets.payloadManifest() })
+                            packageInfo = app, payloadJson = { assets.payloadManifest() }, log = { Log.i(TAG, it) })
         val ready = composeCore(runtime, paths, deps, scope)
         return ready.copy(about = "${ready.about} · ready in ${SystemClock.elapsedRealtime() - began} ms")
     }

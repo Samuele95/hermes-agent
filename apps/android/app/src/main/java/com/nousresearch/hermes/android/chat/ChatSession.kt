@@ -18,6 +18,7 @@ import com.nousresearch.hermes.bridge.protocol.ConfigGetParams
 import com.nousresearch.hermes.bridge.protocol.Events
 import com.nousresearch.hermes.bridge.protocol.Methods
 import com.nousresearch.hermes.bridge.protocol.PromptSubmitParams
+import com.nousresearch.hermes.bridge.protocol.PromptSubmitStatus
 import com.nousresearch.hermes.bridge.protocol.SessionCloseParams
 import com.nousresearch.hermes.bridge.protocol.Requests
 import com.nousresearch.hermes.bridge.protocol.SessionCompressParams
@@ -66,6 +67,8 @@ import java.util.concurrent.atomic.AtomicLong
  * is checked again (F6).
  * [exporter] writes a stored session's file into the app's cache (the app's `session_export`, sessions-12 F8); without
  * one, nothing is exported.
+ * [log] hears what the chat notes for diagnosis only, never shown: a drained queue item the core put in its own queue
+ * (/architect #5); it must not throw.
  */
 class ChatSession(private val core: CoreGateway, private val turns: TurnHost, private val scope: CoroutineScope,
                   private val keepSecret: suspend (name: String, value: ByteArray) -> Unit,
@@ -74,7 +77,8 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
                   private val runOwned: suspend (StoredSessionId) -> Boolean? = { null },
                   private val queues: QueueStore = QueueStore.inMemory(),
                   private val providerFailed: suspend () -> Unit = {},
-                  private val exporter: suspend (StoredSessionId) -> ExportFile = { throw SetupRefusal(NOTHING_TO_EXPORT) }) {
+                  private val exporter: suspend (StoredSessionId) -> ExportFile = { throw SetupRefusal(NOTHING_TO_EXPORT) },
+                  private val log: (String) -> Unit = {}) {
     companion object {
         /** The session's source, which is also the agent's platform; "android" keeps the CLI toolsets. */
         const val SOURCE = "android"
@@ -602,13 +606,18 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
      * `prompt.submit` of [text] to [session], whose bubble is on its way; a refusal or a failure makes the chat idle again (V7).
      * A [queued] item goes with `queued: true`, so the core holds it for the next turn and never makes it a correction
      * (§0 coherence 1); one that does not go out leaves the chat idle after no completed turn, so [Live.settled] pauses
-     * the rest of the queue, with no retry (D8).
+     * the rest of the queue, with no retry (D8). A `queued` answer to one (the core's turn was still ending) is the core
+     * holding it for its own next turn: logged, no failure; its row binds when that turn completes.
      */
     private suspend fun submit(session: RuntimeSessionId, text: String, queued: Boolean = false) {
         try {
             val result = core.call(Methods.PROMPT_SUBMIT, PromptSubmitParams(sessionId = session.value, text = JsonPrimitive(text),
                                                                              queued = true.takeIf { queued }))
             result.userRowId?.let { bind(session, it) }
+            // A drained item that met the core's turn still ending (message.complete before running = False,
+            // prompt_turn.py:1193/1210) waits in the core's own queue, which runs it next: no row id yet (§3, V4).
+            if (queued && result.status == PromptSubmitStatus.QUEUED)
+                log("prompt.submit queued:true in ${session.value} answered queued: the core runs it after its own turn, no user_row_id")
         } catch (refused: CoreError) {
             unsent(session, refused.message ?: "The core refused the prompt (${refused.code}).")
         } catch (failed: Exception) {  // anything else: the message did not go out, and the user hears it

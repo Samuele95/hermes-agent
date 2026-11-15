@@ -49,8 +49,11 @@ class CoreCompositionTest {
     private var recent: String? = null
     private var resumeReply: () -> String = { """{"session_id":"s-last","message_count":0,"messages":[],"session_key":"db-last",
                                    "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}}}""" }
+    /** The core's answer to `prompt.submit`. */
+    private var submitReply = """{"status":"streaming"}"""
     private val core = FakeCoreGateway { method, _ ->
         when (method) {
+            "prompt.submit" -> submitReply
             "session.create" -> """{"session_id":"s1","stored_session_id":"db1","message_count":0,"messages":[],
                                    "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}}}"""
             "setup.status" -> """{"provider_configured":$configured}"""
@@ -159,6 +162,21 @@ class CoreCompositionTest {
             "error_surface":{"layer":"auth","code":"auth","retryable":false}}""")
 
         assertEquals(2, checks())
+    }
+
+    @Test
+    fun aDrainedItemTheComposedCoreQueuedReachesThePlatformsLog() = runTest(UnconfinedTestDispatcher()) {
+        val logged = mutableListOf<String>()
+        val ready = composeCore(runtime, paths, deps.copy(log = { logged += it }), backgroundScope)
+
+        ready.chat.send("hi")
+        core.emit("message.start", "s1")
+        ready.chat.queue("a")
+        submitReply = """{"status":"queued"}"""
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")
+
+        assertEquals(listOf("prompt.submit queued:true in s1 answered queued: the core runs it after its own turn, no user_row_id"),
+                     logged)
     }
 
     @Test
