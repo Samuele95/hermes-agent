@@ -64,9 +64,11 @@ class SettingsScreenTest {
     private var restarts = 0
     private val providerAsks = mutableListOf<String?>()
     private var providerConfirms = 0
+    private var skillsOpened = 0
     private val actions = SettingsActions(approvals = { chosen += it }, personality = { personalities += it }, edit = { edits += it },
                                           askRemove = { asks += it }, confirmRemove = { confirms++ }, restartGateway = { restarts++ },
-                                          askRemoveProvider = { providerAsks += it }, confirmRemoveProvider = { providerConfirms++ })
+                                          askRemoveProvider = { providerAsks += it }, confirmRemoveProvider = { providerConfirms++ },
+                                          openSkills = { skillsOpened++ })
 
     private fun show(state: SettingsUi) = compose.setContent { SettingsScreen(state, actions, onClose = {}) }
 
@@ -286,6 +288,18 @@ class SettingsScreenTest {
 
         state = state.copy(connected = listOf(NOUS), busy = true)
         compose.onNodeWithTag("provider-remove-nous").performScrollTo().assertIsNotEnabled()
+    }
+
+    @Test
+    fun theSkillsRowOpensTheSkillsPage() {
+        var state by mutableStateOf(SettingsUi(ApprovalMode.SMART))
+        compose.setContent { SettingsScreen(state, actions, onClose = {}) }
+
+        clickableUnder("settings-skills").performScrollTo().performClick()
+        assertEquals(1, skillsOpened)
+
+        state = state.copy(busy = true)
+        clickableUnder("settings-skills").performScrollTo().assertIsNotEnabled()
     }
 
     @Test

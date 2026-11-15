@@ -69,6 +69,7 @@ import com.nousresearch.hermes.android.settings.SettingsActions
 import com.nousresearch.hermes.android.settings.SettingsControl
 import com.nousresearch.hermes.android.settings.SettingsScreen
 import com.nousresearch.hermes.android.settings.SettingsUi
+import com.nousresearch.hermes.android.settings.SkillsScreen
 import com.nousresearch.hermes.android.setup.SetupScreen
 import com.nousresearch.hermes.android.setup.SshScreen
 import com.nousresearch.hermes.android.ui.Hermes
@@ -96,6 +97,11 @@ class MainActivity : ComponentActivity() {
                             val history by state.pages.history.state.collectAsState()
                             val context by state.pages.context.state.collectAsState()
                             val queue by state.chat.queueState.collectAsState()
+                            val skills by state.pages.skills.state.collectAsState()
+                            skills?.let {  // above Settings, which stays open beneath: Back returns to it (D4)
+                                SkillsScreen(it, onEnable = { names, on -> app.skills { enable(names, on) } }, onClose = state.pages.skills::close)
+                                return@Surface
+                            }
                             val settings by state.pages.settings.state.collectAsState()
                             settings?.let {
                                 SettingsPanel(it, app, state.pages.settings)
@@ -273,7 +279,8 @@ class MainActivity : ComponentActivity() {
                                            edit = { e -> app.settings { edit(e) } }, askRemove = settings::askRemove,
                                            confirmRemove = { app.settings { confirmRemove() } }, restartGateway = app::restartGateway,
                                            askRemoveProvider = settings::askRemoveProvider,
-                                           confirmRemoveProvider = { app.settings { confirmRemoveProvider() } }),
+                                           confirmRemoveProvider = { app.settings { confirmRemoveProvider() } },
+                                           openSkills = { app.skills { open() } }),
                        onClose = settings::close)
     }
 

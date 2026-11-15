@@ -51,12 +51,12 @@ import androidx.compose.material3.HorizontalDivider
 /** What the page hands over; each is one write or one ask (§2.4). */
 class SettingsActions(val approvals: (ApprovalMode) -> Unit, val personality: (String) -> Unit, val edit: (SettingsEdit) -> Unit,
                       val askRemove: (String?) -> Unit, val confirmRemove: () -> Unit, val restartGateway: () -> Unit,
-                      val askRemoveProvider: (String?) -> Unit, val confirmRemoveProvider: () -> Unit)
+                      val askRemoveProvider: (String?) -> Unit, val confirmRemoveProvider: () -> Unit, val openSkills: () -> Unit)
 
 /**
  * The app's settings kept in the core's config, in the order of §4: Chat (the personality), Command approvals (the
- * mode, the timeout, the always-allowed commands), Memory, and Providers (each connected one with Remove, which asks
- * first). It shows only what the core last answered: a part the
+ * mode, the timeout, the always-allowed commands), Memory, Providers (each connected one with Remove, which asks
+ * first), and Skills (a row that opens the skills page). It shows only what the core last answered: a part the
  * core could not read is absent (the mode keeps "none selected, still choosable"), and while one write runs every
  * control is off.
  */
@@ -108,6 +108,9 @@ fun SettingsScreen(state: SettingsUi, actions: SettingsActions, onClose: () -> U
             Hint(stringResource(R.string.settings_new_chats), Modifier.padding(top = 12.dp).testTag("settings-new-chats"))
         }
         state.connected?.let { Providers(it, enabled, actions) }
+        SectionCaption(stringResource(R.string.skills_title))
+        ListRow(stringResource(R.string.settings_skills_open), Modifier.testTag("settings-skills"), enabled = enabled,
+                trailing = { Chevron() }) { actions.openSkills() }
         state.error?.let { Hint(it, Modifier.padding(top = 12.dp).testTag("settings-error"), color = MaterialTheme.colorScheme.error) }
     }
     state.confirmRemove?.let { RemoveDialog(it, enabled = !state.busy, actions) }
