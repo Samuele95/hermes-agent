@@ -14,6 +14,7 @@
     <string name="chat_redirected">Redirected the current run</string>
     <string name="chat_steered">Steered the current run</string>
     <string name="chat_runs_next">Hermes will run this next</string>
+    <string name="chat_queue">Queue message</string>
     <string name="chat_new">New chat</string>
     <string name="chat_menu">Menu</string>
     <string name="chat_retry">Retry</string>
@@ -35,6 +36,17 @@
     <string name="context_focus">Focus (optional)</string>
     <string name="context_focus_hint">A topic the summary should keep</string>
     <string name="context_compressing">Compressing…</string>
+    <string name="queue_count">%1$d Queued</string>
+    <string name="queue_paused">%1$d Queued — paused</string>
+    <string name="queue_resume">Resume</string>
+    <string name="queue_edit">Edit</string>
+    <string name="queue_steer">Steer now</string>
+    <string name="queue_next">Send next</string>
+    <string name="queue_send">Send</string>
+    <string name="queue_delete">Delete</string>
+    <string name="queue_actions">Queued message actions</string>
+    <string name="queue_save">Save</string>
+    <string name="queue_cancel">Cancel</string>
     <string name="sessions_title">Sessions</string>
     <string name="sessions_today">Today</string>
     <string name="sessions_yesterday">Yesterday</string>

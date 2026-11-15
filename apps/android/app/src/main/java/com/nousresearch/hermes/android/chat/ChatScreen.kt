@@ -37,6 +37,7 @@ import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -101,14 +102,17 @@ class ChatPlaces(val setup: (() -> Unit)? = null, val terminal: (() -> Unit)? = 
  * compresses and closes it; [context] is that sheet while it is open. [places] are where the drawer, the top bar, the
  * model pill and a notice's shortcut lead. The transcript follows a streaming reply only while the reader is at its end;
  * Jump brings it back (chat-17). [onCopy] puts an answer, one of the user's messages or a code block on the clipboard
- * (chat-09, chat-10); without it nothing offers Copy.
+ * (chat-09, chat-10); without it nothing offers Copy. [queue] is the chat's queue of unsent messages, shown above the
+ * composer with each row's actions, and [queueActions] what they do and what the composer's Queue button adds to it
+ * (chat-19); without them the chat offers no queue.
  */
 @Composable
 fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifier, answers: PromptAnswers? = null,
                sessions: HistoryUi? = null, onSessions: (open: Boolean) -> Unit = {}, onPickSession: (StoredSessionId) -> Unit = {},
                sessionActions: SessionActions? = null, context: ContextUi? = null, contextActions: ContextActions? = null,
                places: ChatPlaces? = null, onStop: () -> Unit = {}, onRetry: (() -> Unit)? = null,
-               onCopy: ((String) -> Unit)? = null, about: String? = null) {
+               onCopy: ((String) -> Unit)? = null, about: String? = null, queue: QueueUi = QueueUi(),
+               queueActions: QueueActions? = null) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var picked by remember { mutableIntStateOf(0) }  // a conversation picked in the drawer is shown from its end (V5)
@@ -141,7 +145,9 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
             if (answers != null) chat.prompts.firstOrNull()?.let { PromptCard(it, answers) }
             // The agent's plan while it works through it (D1: a turn that ended leaves no stale plan pinned).
             chat.todos?.takeIf { chat.running && it.active }?.let { TodoStrip(it) }
-            Composer(chat, onSend, onStop, places?.setup, contextActions?.open)
+            // The messages that wait for a turn's end, in the order they go out (chat-19).
+            queueActions?.takeIf { queue.items.isNotEmpty() }?.let { QueuePanel(queue, chat.busy, chat.steerMode != null, it) }
+            Composer(chat, onSend, onStop, places?.setup, contextActions?.open, queueActions?.add)
             context?.let { ContextSheet(it, running = chat.busy, compressing = chat.compressing, onCompress = contextActions?.compress ?: {},
                                           onClose = contextActions?.close ?: {}) }
         }
@@ -410,10 +416,13 @@ private fun Problem(text: String, modifier: Modifier = Modifier) {
  * The desktop's composer: a rounded field, the model it will ask beneath, and Send — or Stop while a turn runs or is
  * about to; Send waits while the session compresses, or while it is a job's run the gateway still runs. While a turn
  * runs, Send stands beside Stop, named by the core's busy mode (redirect or steer the run; the field says the same),
- * and Stop stays the only interrupt; Stop alone in queue mode, before the turn starts, or while a question waits.
+ * and Stop stays the only interrupt; Send waits in queue mode, before the turn starts, or while a question waits.
+ * [onQueue] adds the draft to the chat's queue: its Queue button stands first, whenever a turn runs or is about to in a
+ * session the chat may write to (D12); in queue mode it is the only send control, and the field says "Queue message".
  */
 @Composable
-private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, onSetup: (() -> Unit)?, onContext: (() -> Unit)?) {
+private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, onSetup: (() -> Unit)?, onContext: (() -> Unit)?,
+                     onQueue: ((String) -> Unit)?) {
     var draft by rememberSaveable { mutableStateOf("") }
     val shape = RoundedCornerShape(22.dp)
     Column(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 10.dp)
@@ -424,7 +433,10 @@ private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, o
                                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         TextField(draft, { draft = it }, Modifier.fillMaxWidth().testTag("draft"), maxLines = 6,
                   textStyle = MaterialTheme.typography.bodyLarge,
-                  placeholder = { Text(stringResource(chat.busySend?.let(::label) ?: R.string.chat_hint)) },
+                  placeholder = {
+                      Text(stringResource(chat.busySend?.let(::label)
+                                              ?: if (chat.busy && chat.queueable && onQueue != null) R.string.chat_queue else R.string.chat_hint))
+                  },
                   colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent,
                                                     disabledContainerColor = Color.Transparent, focusedIndicatorColor = Color.Transparent,
                                                     unfocusedIndicatorColor = Color.Transparent))
@@ -442,6 +454,12 @@ private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, o
             }
             chat.meter?.let { ContextChip(it, onContext) }
             if (chat.busy) {
+                if (onQueue != null && chat.queueable) {
+                    FilledTonalIconButton({ onQueue(draft.trim()); draft = "" }, Modifier.size(36.dp).testTag("queue"), enabled = draft.isNotBlank()) {
+                        Icon(HermesIcons.Queue, stringResource(R.string.chat_queue), Modifier.size(18.dp))
+                    }
+                    Spacer(Modifier.width(8.dp))
+                }
                 chat.busySend?.let { mode ->
                     FilledIconButton({ onSend(draft.trim()); draft = "" }, Modifier.size(36.dp).testTag("send"), enabled = draft.isNotBlank()) {
                         Icon(HermesIcons.Send, stringResource(label(mode)), Modifier.size(18.dp))

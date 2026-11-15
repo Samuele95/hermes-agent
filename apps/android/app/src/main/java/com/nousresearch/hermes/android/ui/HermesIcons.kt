@@ -62,6 +62,7 @@ object HermesIcons {
     val Pause = icon("player-pause", "M6 6a1 1 0 0 1 1 -1h2a1 1 0 0 1 1 1v12a1 1 0 0 1 -1 1h-2a1 1 0 0 1 -1 -1l0 -12",
                      "M14 6a1 1 0 0 1 1 -1h2a1 1 0 0 1 1 1v12a1 1 0 0 1 -1 1h-2a1 1 0 0 1 -1 -1l0 -12")
     val Play = icon("player-play", "M7 4v16l13 -8l-13 -8")
+    val Queue = icon("stack-2", "M12 4l-8 4l8 4l8 -4l-8 -4", "M4 12l8 4l8 -4", "M4 16l8 4l8 -4")
     val Bolt = icon("bolt", "M13 3l0 7l6 0l-8 11l0 -7l-6 0l8 -11")
     val History = icon("history", "M12 8l0 4l2 2", "M3.05 11a9 9 0 1 1 .5 4m-.5 5v-5h5")
 }

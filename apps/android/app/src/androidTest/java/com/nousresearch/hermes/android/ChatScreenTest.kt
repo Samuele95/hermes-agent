@@ -11,6 +11,9 @@ import androidx.compose.ui.test.performTextClearance
 import androidx.test.platform.app.InstrumentationRegistry
 import com.nousresearch.hermes.android.chat.ChatPlaces
 import com.nousresearch.hermes.android.chat.ContextActions
+import com.nousresearch.hermes.android.chat.QueueActions
+import com.nousresearch.hermes.android.chat.QueueUi
+import com.nousresearch.hermes.android.chat.Queued
 import com.nousresearch.hermes.android.chat.ContextUi
 import com.nousresearch.hermes.bridge.protocol.ContextCategory
 import com.nousresearch.hermes.bridge.protocol.SessionContextBreakdownResult
@@ -190,6 +193,118 @@ class ChatScreenTest {
         chat = chat.copy(busyMode = BusyMode.QUEUE)  // the app's queue is M3's: Stop alone, as before
         compose.onNodeWithTag("send").assertDoesNotExist()
         compose.onNodeWithTag("stop").assertExists()
+    }
+
+    /** What the queue panel and the Queue button asked for, in order. */
+    private class QueueCalls {
+        val added = mutableListOf<String>()
+        val edits = mutableListOf<Long?>()
+        val saves = mutableListOf<Pair<Long, String>>()
+        val steered = mutableListOf<Long>()
+        val next = mutableListOf<Long>()
+        val deleted = mutableListOf<Long>()
+        var resumed = 0
+        val actions = QueueActions(add = { added += it }, edit = { edits += it }, save = { id, text -> saves += id to text },
+                                   steer = { steered += it }, next = { next += it }, delete = { deleted += it }, resume = { resumed++ })
+    }
+
+    private val twoQueued = QueueUi(listOf(Queued(0, "first"), Queued(1, "second")))
+
+    @Test
+    fun theQueueShowsAboveTheComposerAndEachRowOffersItsActions() {
+        val calls = QueueCalls()
+        var queue by mutableStateOf(QueueUi())
+        val chat = Chat(streaming = "Working", busyMode = BusyMode.INTERRUPT)
+        compose.setContent { ChatScreen(chat, onSend = {}, queue = queue, queueActions = calls.actions) }
+
+        compose.onNodeWithTag("queue-panel").assertDoesNotExist()  // an empty queue shows nothing
+
+        queue = twoQueued
+        compose.onNodeWithText("2 Queued").assertIsDisplayed()
+        compose.onAllNodesWithTag("queue-item").assertCountEquals(2)
+        assertTrue(compose.onNodeWithTag("queue-panel").getUnclippedBoundsInRoot().bottom <= compose.onNodeWithTag("draft").getUnclippedBoundsInRoot().top)
+
+        compose.onAllNodesWithTag("queue-more")[0].performClick()
+        listOf("Edit", "Steer now", "Send next", "Delete").forEach { compose.onNodeWithText(it).assertIsDisplayed() }
+        compose.onNodeWithText("Send next").performClick()
+        assertEquals(listOf(0L), calls.next)
+
+        compose.onAllNodesWithTag("queue-more")[1].performClick()
+        compose.onNodeWithText("Delete").performClick()
+        assertEquals(listOf(1L), calls.deleted)
+
+        compose.onAllNodesWithTag("queue-more")[0].performClick()
+        compose.onNodeWithText("Steer now").performClick()
+        assertEquals(listOf(0L), calls.steered)
+    }
+
+    @Test
+    fun aPausedQueueOffersResumeAndAnIdleRowSendsAtOnce() {
+        val calls = QueueCalls()
+        compose.setContent { ChatScreen(Chat(), onSend = {}, queue = twoQueued.copy(paused = true), queueActions = calls.actions) }
+
+        compose.onNodeWithText("2 Queued — paused").assertIsDisplayed()
+        compose.onNodeWithTag("queue-resume").performClick()
+        assertEquals(1, calls.resumed)
+
+        compose.onAllNodesWithTag("queue-more")[0].performClick()
+        compose.onNodeWithText("Send").assertIsDisplayed()
+        compose.onNodeWithText("Send next").assertDoesNotExist()
+        compose.onNodeWithText("Steer now").assertDoesNotExist()  // nothing runs: no correction can land
+    }
+
+    @Test
+    fun theQueueButtonQueuesTheDraftWhileATurnRuns() {
+        val calls = QueueCalls()
+        var chat by mutableStateOf(Chat(streaming = "Working", busyMode = BusyMode.QUEUE))
+        compose.setContent { ChatScreen(chat, onSend = {}, queueActions = calls.actions) }
+
+        compose.onNodeWithTag("queue").assertExists().assertIsNotEnabled()
+        compose.onNodeWithTag("send").assertDoesNotExist()  // queue mode: Queue is the only send control (D12)
+        compose.onNodeWithTag("stop").assertExists()
+        compose.onNodeWithText("Queue message", useUnmergedTree = true).assertExists()  // the field says it too
+
+        compose.onNodeWithTag("draft").performTextInput("later")
+        compose.onNodeWithTag("queue").assertIsEnabled()
+        compose.onNodeWithContentDescription("Queue message").assertExists()
+        compose.onNodeWithTag("queue").performClick()
+
+        assertEquals(listOf("later"), calls.added)
+        compose.onNodeWithTag("draft").assert(!hasText("later", substring = true))
+
+        chat = chat.copy(busyMode = BusyMode.INTERRUPT)  // Queue, then Send, then Stop, left to right
+        val queue = compose.onNodeWithTag("queue").getUnclippedBoundsInRoot()
+        val send = compose.onNodeWithTag("send").getUnclippedBoundsInRoot()
+        val stop = compose.onNodeWithTag("stop").getUnclippedBoundsInRoot()
+        assertTrue(queue.right <= send.left && send.right <= stop.left)
+
+        chat = Chat()
+        compose.onNodeWithTag("queue").assertDoesNotExist()
+    }
+
+    @Test
+    fun aQueuedMessageIsEditedInPlace() {
+        val calls = QueueCalls()
+        var queue by mutableStateOf(twoQueued)
+        compose.setContent { ChatScreen(Chat(streaming = "Working", busyMode = BusyMode.INTERRUPT), onSend = {}, queue = queue,
+                                        queueActions = calls.actions) }
+
+        compose.onAllNodesWithTag("queue-more")[0].performClick()
+        compose.onNodeWithText("Edit").performClick()
+        assertEquals(listOf<Long?>(0L), calls.edits)
+
+        queue = queue.copy(editing = 0)
+        compose.onNodeWithTag("queue-field").assert(hasText("first"))
+        compose.onNodeWithTag("queue-field").performTextClearance()
+        compose.onNodeWithTag("queue-field").performTextInput("first, shorter")
+        compose.onNodeWithTag("queue-save").performClick()
+        assertEquals(listOf(0L to "first, shorter"), calls.saves)
+
+        compose.onNodeWithTag("queue-field").performTextClearance()
+        compose.onNodeWithTag("queue-save").assertIsNotEnabled()  // a blank message cannot be saved
+
+        compose.onNodeWithTag("queue-cancel").performClick()
+        assertEquals(listOf<Long?>(0L, null), calls.edits)
     }
 
     @Test

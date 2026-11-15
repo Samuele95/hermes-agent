@@ -45,6 +45,7 @@ import com.nousresearch.hermes.android.chat.ChatPlaces
 import com.nousresearch.hermes.android.chat.ChatScreen
 import com.nousresearch.hermes.android.chat.ContextActions
 import com.nousresearch.hermes.android.chat.PromptAnswers
+import com.nousresearch.hermes.android.chat.QueueActions
 import com.nousresearch.hermes.android.chat.SessionActions
 import com.nousresearch.hermes.android.gateway.GatewayScreen
 import com.nousresearch.hermes.android.gateway.GatewayUi
@@ -88,6 +89,7 @@ class MainActivity : ComponentActivity() {
                             val ssh by state.ssh.state.collectAsState()
                             val history by state.history.state.collectAsState()
                             val context by state.context.state.collectAsState()
+                            val queue by state.chat.queueState.collectAsState()
                             val settings by state.settings.state.collectAsState()
                             settings?.let {
                                 SettingsScreen(it, onApprovals = { mode -> app.settings { choose(mode) } }, onClose = state.settings::close)
@@ -130,6 +132,10 @@ class MainActivity : ComponentActivity() {
                                                     jobs = { app.jobs { open() } })
                             val contextActions = ContextActions(open = { app.context { open() } }, compress = { focus -> app.context { compress(focus) } },
                                                                 close = state.context::close)
+                            val queueActions = QueueActions(add = { text -> app.chat { queue(text) } }, edit = { id -> app.chat { beginEdit(id) } },
+                                                            save = { id, text -> app.chat { editQueued(id, text) } },
+                                                            steer = { id -> app.chat { steerNow(id) } }, next = { id -> app.chat { sendNext(id) } },
+                                                            delete = { id -> app.chat { deleteQueued(id) } }, resume = { app.chat { resumeQueue() } })
                             ChatScreen(chat, about = state.about, answers = answers, places = places, onStop = { app.chat { cancel() } },
                                        onRetry = { app.chat { retry() } }, onCopy = { copy("Hermes", it) },
                                        // The drawer's sessions load as it opens; a tap continues one.
@@ -137,7 +143,7 @@ class MainActivity : ComponentActivity() {
                                        onPickSession = { id -> app.history { pick(id) } },
                                        sessionActions = SessionActions(edit = state.history::edit, saveTitle = { title -> app.history { saveTitle(title) } },
                                                                        askDelete = state.history::askDelete, confirmDelete = { app.history { confirmDelete() } }),
-                                       context = context, contextActions = contextActions,
+                                       context = context, contextActions = contextActions, queue = queue, queueActions = queueActions,
                                        onSend = { text ->
                                 if (Build.VERSION.SDK_INT >= 33 &&
                                     checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
