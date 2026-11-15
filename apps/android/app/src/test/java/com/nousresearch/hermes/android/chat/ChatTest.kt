@@ -454,4 +454,38 @@ class ChatTest {
         assertEquals(8L, built.nextId)
         assertEquals(8L, built.notice("x").entries.last().stableId)
     }
+
+    @Test
+    fun sendWhileATurnRunsFollowsTheModeOnlyWhileNothingWaits() {
+        val sent = Chat(busyMode = BusyMode.INTERRUPT).sent("hi")
+        assertEquals(null, sent.busySend)  // on its way, not started (D1): a second tap sends nothing
+
+        val running = sent.reduce(event("message.start"))
+        assertEquals(BusyMode.INTERRUPT, running.busySend)
+
+        assertEquals(null, running.copy(busyMode = BusyMode.QUEUE).busySend)  // the app's queue is M3's (D3)
+        assertEquals(null, running.copy(busyMode = null).busySend)            // not read, or the read failed
+        assertEquals(null, running.asked(Prompt.Approval("srq-1", "r1", "ls", "", listOf(ApprovalChoice.ONCE, ApprovalChoice.DENY))).busySend)  // D8
+        assertEquals(null, running.copy(runOwned = true).busySend)
+        assertEquals(null, running.copy(compressing = true).busySend)
+        assertEquals(null, running.reduce(event("message.complete", """{"text":"Hello","status":"complete"}""")).busySend)
+    }
+
+    @Test
+    fun aCompletionBindsItsRowToThePromptNotTheCorrection() {
+        val corrected = Chat().sent("hi").reduce(event("message.start")).correcting("use metric", BusyMode.INTERRUPT)
+        val id = corrected.entries.last().stableId
+
+        val done = corrected.reduce(event("message.complete",
+            """{"text":"Hello","persisted_turn":{"row_ids":[7,8],"complete":true,"user_row_id":7}}"""))
+
+        assertEquals(Entry.User("hi", rowId = 7, stableId = 0), done.entries.first())
+        assertEquals(Entry.User("use metric", stableId = id, mode = BusyMode.INTERRUPT), done.entries.single { it.stableId == id })
+        assertEquals("hi", done.retryTarget()!!.text)  // Retry runs the prompt again, never the correction
+
+        val prompted = done.prompted(id)
+        assertEquals(Entry.User("use metric", stableId = id), prompted.entries.last())  // a prompt after the turn it missed
+        assertTrue(prompted.submitted)
+        assertEquals(done.entries.size, prompted.entries.size)
+    }
 }

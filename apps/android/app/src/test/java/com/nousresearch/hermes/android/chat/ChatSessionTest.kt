@@ -37,6 +37,9 @@ import org.junit.Assert.assertFalse
 import com.nousresearch.hermes.android.SetupRefusal
 import com.nousresearch.hermes.android.gateway.GatewaySeen
 import com.nousresearch.hermes.android.gateway.GatewayStatus
+import com.nousresearch.hermes.bridge.CoreGateway
+import com.nousresearch.hermes.bridge.protocol.Method
+import kotlinx.coroutines.CompletableDeferred
 import org.junit.Test
 
 /** One chat: a core session, the prompts the user sends to it, and the turns it runs. */
@@ -64,6 +67,11 @@ class ChatSessionTest {
     private var resume: () -> String = { """{"session_id":"s-resumed","message_count":2,"session_key":"db-old-tip",
                                    "messages":[{"role":"user","text":"what's on my calendar?"},{"role":"assistant","text":"Two meetings."}],
                                    "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT},"model":"kimi-k2"}}""" }
+    /** The core's `display.busy_input_mode`, as `config.get busy` answers it; and its answers to the two corrections. */
+    private var busyWord = "interrupt"
+    private var busy: () -> String = { """{"value":"$busyWord"}""" }
+    private var steer: (JsonObject) -> String = { p -> """{"status":"queued","text":${p.getValue("text")}}""" }
+    private var redirect: (JsonObject) -> String = { p -> """{"status":"redirected","text":${p.getValue("text")}}""" }
     private val core = FakeCoreGateway { method, params ->
         when (method) {
             "session.create" -> { created(); """{"session_id":"s${++sessions}","stored_session_id":"db$sessions","message_count":0,"messages":[],"info":{$contract}}""" }
@@ -75,7 +83,9 @@ class ChatSessionTest {
                                                  {"id":"db-empty","message_count":0,"started_at":2.0}]}"""
             "session.resume" -> resume()
             "session.most_recent" -> mostRecent()
-            "config.get" -> config()
+            "config.get" -> if (params["key"]?.jsonPrimitive?.content == "busy") busy() else config()
+            "session.steer" -> steer(params)
+            "session.redirect" -> redirect(params)
             "session.history" -> history()
             "session.compress" -> compressReply(params)
             "session.context_breakdown" -> breakdownReply()
@@ -2020,5 +2030,220 @@ class ChatSessionTest {
             "summary":{"headline":"Compressed: 4 → 2 messages","token_line":"Approx request size: ~9,000 → ~2,100 tokens"},
             "usage":{"context_used":2100,"context_max":8192,"context_percent":26},"info":{"stored_session_id":"db-rotated"},
             "messages":[{"role":"user","text":"latest","row_id":9},{"role":"assistant","text":"ok"}]}"""
+    }
+
+    // A send while a turn runs (chat-18, batch-3 F1): the core's busy mode says how it goes; only Stop interrupts.
+
+    private fun busyReads() = core.calls.count { it.first == "config.get" && it.second["key"]?.jsonPrimitive?.content == "busy" }
+
+    /** [core], with each `session.steer` held until [answered] completes: the answer arrives when the test says. */
+    private fun gated(answered: CompletableDeferred<Unit>) = object : CoreGateway by core {
+        override suspend fun <P, R> call(method: Method<P, R>, params: P): R {
+            if (method.name == "session.steer") answered.await()
+            return core.call(method, params)
+        }
+    }
+
+    @Test
+    fun theBusyModeIsReadOnceAsATurnBegins() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        assertEquals(0, busyReads())  // before the turn began
+        assertEquals(null, chat.state.value.busyMode)
+
+        core.emit("message.start", "s1")
+        core.emit("message.delta", "s1", """{"text":"Hel"}""")
+        assertEquals(1, busyReads())
+        assertEquals(BusyMode.INTERRUPT, chat.state.value.busyMode)
+
+        core.emit("message.complete", "s1", """{"text":"Hello","status":"complete"}""")
+        busyWord = "steer"
+        chat.send("again")
+        core.emit("message.start", "s1")
+        assertEquals(2, busyReads())  // each turn reads it again
+        assertEquals(BusyMode.STEER, chat.state.value.busyMode)
+
+        core.emit("message.complete", "s1", """{"text":"Hi","status":"complete"}""")
+        busy = { throw CoreError(5000, "x") }
+        chat.send("once more")
+        core.emit("message.start", "s1")
+        assertEquals(null, chat.state.value.busyMode)  // cannot tell is not a mode: Stop alone
+    }
+
+    @Test
+    fun aBusySendRedirectsTheRunningTurnAndNeverInterruptsIt() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        val mark = core.calls.size
+
+        chat.send("use metric units")
+
+        assertEquals(listOf("session.redirect"), callsAfter(mark).map { it.first })  // no session.interrupt, no prompt.submit
+        assertEquals(Json.parseToJsonElement("""{"session_id":"s1","text":"use metric units"}"""), core.calls.last().second)
+        assertEquals(Entry.User("use metric units", stableId = 1, mode = BusyMode.INTERRUPT, correction = Correction.REDIRECTED),
+                     chat.state.value.entries.last())
+        assertTrue(chat.state.value.running)
+        assertFalse(chat.state.value.submitted)
+        assertEquals(listOf("begin:s1"), turns)
+    }
+
+    @Test
+    fun aBusySendSteersWhenTheCoreSaysSteer() = runTest(UnconfinedTestDispatcher()) {
+        busyWord = "steer"
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        val mark = core.calls.size
+
+        chat.send("use metric units")
+
+        assertEquals(listOf("session.steer" to "s1"), callsAfter(mark))
+        // The core's `queued` from a steer is the words injected, never "queued for later" (§5).
+        assertEquals(Entry.User("use metric units", stableId = 1, mode = BusyMode.STEER, correction = Correction.STEERED),
+                     chat.state.value.entries.last())
+    }
+
+    @Test
+    fun aRedirectTheCoreQueuedRunsNext() = runTest(UnconfinedTestDispatcher()) {
+        redirect = { p -> """{"status":"queued","text":${p.getValue("text")}}""" }  // the agent was compressing
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+
+        chat.send("use metric units")
+
+        assertEquals(Correction.QUEUED_BY_CORE, (chat.state.value.entries.last() as Entry.User).correction)
+        assertEquals(emptyList<Entry.Notice>(), chat.state.value.entries.filterIsInstance<Entry.Notice>())  // not a problem (D5)
+    }
+
+    @Test
+    fun queueModeAndAWaitingQuestionSendNothingWhileATurnRuns() = runTest(UnconfinedTestDispatcher()) {
+        busyWord = "queue"
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        val mark = core.calls.size
+        val shown = chat.state.value.entries
+
+        chat.send("later")  // the app's queue is M3's: today's behaviour (D3)
+
+        assertEquals(emptyList<Pair<String, String?>>(), callsAfter(mark))
+        assertEquals(shown, chat.state.value.entries)
+
+        busyWord = "interrupt"
+        chat.open()
+        chat.send("hi")
+        core.emit("message.start", "s2")
+        core.ask("srq-1", "approval", """{"session_id":"s2","request_id":"r1","command":"rm -rf build"}""")
+        val asked = core.calls.size
+        val waiting = chat.state.value.entries
+
+        chat.send("later")  // the turn is parked on the user: a correction cannot reach the model (D8)
+
+        assertEquals(emptyList<Pair<String, String?>>(), callsAfter(asked))
+        assertEquals(waiting, chat.state.value.entries)
+    }
+
+    @Test
+    fun aRejectedCorrectionGoesOutOnceAsAPromptAfterTheTurnEnds() = runTest(UnconfinedTestDispatcher()) {
+        busyWord = "steer"
+        steer = { p -> """{"status":"rejected","text":${p.getValue("text")}}""" }  // the turn ended in the core meanwhile
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+
+        chat.send("use metric units")  // answered before the turn's end reached the app (D6)
+
+        assertEquals(1, submits().size)
+        assertEquals(Entry.User("use metric units", stableId = 1, mode = BusyMode.STEER), chat.state.value.entries.last())
+
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")
+
+        assertEquals(2, submits().size)
+        assertEquals("use metric units", lastSubmit().getValue("text").jsonPrimitive.content)
+        val entries = chat.state.value.entries
+        assertEquals(Entry.User("use metric units", stableId = 1), entries.single { it.stableId == 1L })
+        assertTrue(chat.state.value.submitted)
+        assertTrue(entries.indexOfFirst { it is Entry.Reply } < entries.indexOfFirst { it.stableId == 1L })  // the old turn's answer first
+        assertTrue("finished:Done." in notices)  // the finished turn is still its reply's
+
+        core.emit("message.complete", "s1", """{"text":"Metric.","status":"complete"}""")
+        assertEquals(2, submits().size)  // once
+    }
+
+    @Test
+    fun aRejectedCorrectionAfterTheTurnEndedGoesOutAtOnce() = runTest(UnconfinedTestDispatcher()) {
+        busyWord = "steer"
+        steer = { p -> """{"status":"rejected","text":${p.getValue("text")}}""" }
+        val answered = CompletableDeferred<Unit>()
+        val chat = ChatSession(gated(answered), host, backgroundScope, keepSecret = { _, _ -> }).apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+
+        val correcting = launch { chat.send("use metric units") }
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")  // the turn's end first
+        answered.complete(Unit)
+        correcting.join()
+
+        assertEquals(2, submits().size)
+        assertEquals("use metric units", lastSubmit().getValue("text").jsonPrimitive.content)
+        assertEquals(Entry.User("use metric units", stableId = 1), chat.state.value.entries.last())
+        assertTrue(chat.state.value.submitted)
+    }
+
+    @Test
+    fun aRejectedCorrectionAfterStopIsNotSent() = runTest(UnconfinedTestDispatcher()) {
+        busyWord = "steer"
+        steer = { p -> """{"status":"rejected","text":${p.getValue("text")}}""" }
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        chat.send("use metric units")
+
+        core.emit("message.complete", "s1", """{"text":"","status":"interrupted"}""")  // the user pressed Stop
+
+        assertEquals(1, submits().size)
+        val entries = chat.state.value.entries
+        assertEquals(ChatSession.CORRECTION_NOT_SENT, (entries.last() as Entry.Notice).text)
+        assertEquals(Entry.User("use metric units", stableId = 1, mode = BusyMode.STEER), entries.single { it.stableId == 1L })
+        assertFalse(chat.state.value.busy)
+    }
+
+    @Test
+    fun aCorrectionTheAgentCannotTakeKeepsItsWordsAndTheCoresReason() = runTest(UnconfinedTestDispatcher()) {
+        redirect = { throw CoreError(4010, "agent does not support active-turn redirect") }
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        val mark = core.calls.size
+
+        chat.send("use metric units")
+
+        assertEquals(listOf(Entry.User("use metric units", stableId = 1, mode = BusyMode.INTERRUPT),
+                            Entry.Notice("agent does not support active-turn redirect", stableId = 2)),
+                     chat.state.value.entries.takeLast(2))
+        assertTrue(chat.state.value.running)
+        assertEquals(listOf("session.redirect"), callsAfter(mark).map { it.first })  // no session.interrupt, no prompt.submit
+    }
+
+    @Test
+    fun aCorrectionAnsweredAfterTheChatMovedOnChangesNothingThere() = runTest(UnconfinedTestDispatcher()) {
+        busyWord = "steer"
+        steer = { p -> """{"status":"rejected","text":${p.getValue("text")}}""" }
+        val answered = CompletableDeferred<Unit>()
+        val chat = ChatSession(gated(answered), host, backgroundScope, keepSecret = { _, _ -> }).apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        val correcting = launch { chat.send("use metric units") }
+
+        chat.open()
+        val moved = chat.state.value
+        answered.complete(Unit)
+        correcting.join()
+
+        assertEquals(moved.entries, chat.state.value.entries)
+        assertFalse(chat.state.value.submitted)
+        assertEquals(1, submits().size)
     }
 }

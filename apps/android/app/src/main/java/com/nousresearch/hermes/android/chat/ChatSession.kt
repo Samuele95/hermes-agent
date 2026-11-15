@@ -22,6 +22,7 @@ import com.nousresearch.hermes.bridge.protocol.Requests
 import com.nousresearch.hermes.bridge.protocol.SessionCompressParams
 import com.nousresearch.hermes.bridge.protocol.SessionContextBreakdownParams
 import com.nousresearch.hermes.bridge.protocol.SessionContextBreakdownResult
+import com.nousresearch.hermes.bridge.protocol.SessionCorrectionParams
 import com.nousresearch.hermes.bridge.protocol.SessionCreateParams
 import com.nousresearch.hermes.bridge.protocol.SessionDeleteParams
 import com.nousresearch.hermes.bridge.protocol.SessionHistoryParams
@@ -31,6 +32,7 @@ import com.nousresearch.hermes.bridge.protocol.SessionListParams
 import com.nousresearch.hermes.bridge.protocol.SessionMostRecentParams
 import com.nousresearch.hermes.bridge.protocol.SessionTitleParams
 import com.nousresearch.hermes.bridge.protocol.TranscriptMessage
+import com.nousresearch.hermes.bridge.protocol.TurnStatus
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -80,6 +82,8 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         const val JOBS_NEED_GATEWAY = "Scheduled jobs run only while the gateway is on — drawer → Gateway."
         /** Said when a send is refused because the gateway's scheduler still owns the job's run (/architect #4). */
         const val RUN_STILL_OWNED = "This job is still running in the background. You can read it here; write once it has finished."
+        /** Said when the core turned a correction away because its turn had ended, and that turn was stopped or failed (D6). */
+        const val CORRECTION_NOT_SENT = "The run ended before Hermes took this, so it was not sent."
     }
 
     /**
@@ -87,11 +91,23 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
      * behind the transcript's question cards. Events, questions and session switches arrive on different threads;
      * each change is one [change] of this one value, so none of them can see or leave a half-made state.
      * [jobsNoticed]: the chat has said [JOBS_NEED_GATEWAY] in this session.
+     * [resend]: the id of a correction the core turned away (`rejected`) before this chat saw its turn end; it waits
+     * for that end, in this session only (D6).
      */
     private data class Live(val ref: SessionRef? = null, val chat: Chat = Chat(), val waiting: Map<String, InTurnPrompt> = emptyMap(),
-                            val jobsNoticed: Boolean = false) {
+                            val jobsNoticed: Boolean = false, val resend: Long? = null) {
         /** The requests the core withdrew (their cards are gone from the transcript) let go too. */
         fun withdrawn(): Live = copy(waiting = waiting.filterKeys { id -> chat.prompts.any { it.id == id } })
+
+        /**
+         * A waiting [resend], once its turn has ended: a prompt after a turn that completed, else (stopped, failed)
+         * [CORRECTION_NOT_SENT]; either way it waits no longer (D6, inv. 1).
+         */
+        fun resettled(): Live {
+            val id = resend ?: return this
+            if (chat.busy) return this
+            return copy(chat = if (chat.endedComplete) chat.prompted(id) else chat.notice(CORRECTION_NOT_SENT), resend = null)
+        }
     }
 
     private val lock = Any()
@@ -364,8 +380,20 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         val wanted = now.ref?.runtime?.value?.takeIf { now.chat.running }
         if (wanted == activeTurn) return@synchronized
         activeTurn?.let(turns::end)
-        wanted?.let(turns::begin)
+        wanted?.let { turns.begin(it); readBusyMode(RuntimeSessionId(it)) }
         activeTurn = wanted
+    }
+
+    /**
+     * The core's `display.busy_input_mode`, read once as [session]'s turn begins (D2): the composer's label and the
+     * send both use what was read. A failed read leaves no mode, so Stop stands alone; one answered after the chat
+     * left [session] is dropped.
+     */
+    private fun readBusyMode(session: RuntimeSessionId) {
+        scope.launch {
+            val mode = orElse(null) { BusyMode.of(core.call(Methods.CONFIG_GET, ConfigGetParams(key = "busy")).value) }
+            change { now -> if (now.ref?.runtime == session) now.copy(chat = now.chat.copy(busyMode = mode)) else now }
+        }
     }
 
     /** Closes [runtime], attached aside by [rename], at once: a lazy mount builds no agent, so nothing settles (D2). Best-effort (B3's D5). */
@@ -403,28 +431,81 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     }
 
     /**
-     * Sends [text] to the chat's session; nothing while a turn runs or is about to (Stop stands where Send was); refused
-     * while the session compresses.
+     * Sends [text] to the chat's session; refused while the session compresses. While a turn runs, the core's busy
+     * mode says how ([Chat.busySend]): the words redirect or steer the turn, which never hard-interrupts it (inv. 1);
+     * nothing goes out before the turn started, in queue mode or while a question waits (Stop stands alone).
      */
     suspend fun send(text: String) {
         var session: RuntimeSessionId? = null
+        var correction: Pair<Long, BusyMode>? = null  // the bubble's id and the mode it goes out by
         change { now ->  // the session and the bubble decided in one change (EJ-78)
             val ref = checkNotNull(now.ref) { "open() the chat first" }
             if (now.chat.compressing) throw SetupRefusal(STILL_COMPRESSING)  // invariant 6 (V4)
+            val busySend = now.chat.busySend
             when {
                 now.chat.runOwned -> now.copy(chat = now.chat.notice(RUN_STILL_OWNED))  // viewing only: nothing goes out (V5)
+                busySend != null -> {
+                    session = ref.runtime; correction = now.chat.nextId to busySend
+                    now.copy(chat = now.chat.correcting(text, busySend))  // the user's words at once (inv. 2)
+                }
                 now.chat.busy -> now
                 else -> { session = ref.runtime; now.copy(chat = now.chat.sent(text)) }
             }
         }
         val to = session ?: return  // V5: a second tap before the turn started
+        correction?.let { (id, mode) -> return correct(to, id, text, mode) }
+        submit(to, text)
+    }
+
+    /** `prompt.submit` of [text] to [session], whose bubble is on its way; a refusal or a failure makes the chat idle again (V7). */
+    private suspend fun submit(session: RuntimeSessionId, text: String) {
         try {
-            val result = core.call(Methods.PROMPT_SUBMIT, PromptSubmitParams(sessionId = to.value, text = JsonPrimitive(text)))
-            result.userRowId?.let { bind(to, it) }
+            val result = core.call(Methods.PROMPT_SUBMIT, PromptSubmitParams(sessionId = session.value, text = JsonPrimitive(text)))
+            result.userRowId?.let { bind(session, it) }
         } catch (refused: CoreError) {
-            unsent(to, refused.message ?: "The core refused the prompt (${refused.code}).")
+            unsent(session, refused.message ?: "The core refused the prompt (${refused.code}).")
         } catch (failed: Exception) {  // anything else: the message did not go out, and the user hears it
-            unsent(to, forUser(failed))
+            unsent(session, forUser(failed))
+        }
+    }
+
+    /**
+     * The correction [id] ([text]) to [session]'s running turn by [mode]: `session.steer` or `session.redirect`, the
+     * core's answer under its bubble. A refusal or a failure keeps the bubble and says why (D4): the turn runs on.
+     * `rejected` (the turn ended meanwhile) is an answer, not an error (EJ-69): the words go out once as a prompt
+     * after a turn that completed, now or at its end (D6); after one stopped or failed, the chat says they were not sent.
+     */
+    private suspend fun correct(session: RuntimeSessionId, id: Long, text: String, mode: BusyMode) {
+        val method = when (mode) {
+            BusyMode.STEER -> Methods.SESSION_STEER
+            BusyMode.INTERRUPT -> Methods.SESSION_REDIRECT
+            BusyMode.QUEUE -> error("queue mode never corrects")  // Chat.busySend leaves it out (D3)
+        }
+        val answer = try {
+            core.call(method, SessionCorrectionParams(sessionId = session.value, text = text))
+        } catch (refused: CoreError) {  // 4010: the agent cannot take corrections; 4001, 5000
+            say(refused.message ?: "Hermes refused the correction (${refused.code}).")
+            return
+        } catch (failed: Exception) {
+            if (failed is CancellationException) throw failed
+            say(forUser(failed))
+            return
+        }
+        when (val outcome = Correction.of(mode, answer.status)) {
+            Correction.REDIRECTED, Correction.STEERED, Correction.QUEUED_BY_CORE ->
+                change { now -> if (now.ref?.runtime == session) now.copy(chat = now.chat.corrected(id, outcome)) else now }
+            Correction.REFUSED -> {
+                var resend = false
+                change { now ->  // decided with the turn's state in one change, so the words go out once (inv. 1)
+                    when {
+                        now.ref?.runtime != session -> now  // that transcript is gone
+                        now.chat.busy -> now.copy(resend = id)  // the answer outran the turn's end: it decides (D6)
+                        now.chat.endedComplete -> { resend = true; now.copy(chat = now.chat.prompted(id)) }
+                        else -> now.copy(chat = now.chat.notice(CORRECTION_NOT_SENT))
+                    }
+                }
+                if (resend) submit(session, text)
+            }
         }
     }
 
@@ -593,15 +674,25 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         if (event.type == Events.CRON_CHANGED.name) return recheckRun()  // global: no session id (V4)
         val session = RuntimeSessionId(event.sessionId ?: return)
         if (event.type == Events.SESSION_INFO.name || event.type == Events.ERROR.name) leftSessions.settled(session)
+        var reply: Entry.Reply? = null  // the reduced transcript's last entry, before a waiting correction settles after it
         val (before, after) = change { now ->
-            if (now.ref?.runtime != session) now else now.copy(ref = now.ref.seen(event), chat = now.chat.reduce(event)).withdrawn()
+            if (now.ref?.runtime != session) now
+            else now.copy(ref = now.ref.seen(event), chat = now.chat.reduce(event)).withdrawn()
+                .also { reply = it.chat.entries.lastOrNull() as? Entry.Reply }.resettled()
         }
         if (before === after) return
+        // A correction the core turned away, now a prompt after the turn that completed: it goes out once (D6).
+        val resent = before.resend?.takeIf { after.resend == null && after.chat.submitted }
+        resent?.let { id -> (after.chat.entries.firstOrNull { it.stableId == id } as? Entry.User)?.text }
+            ?.let { text -> scope.launch { submit(session, text) } }
         if (before.chat.running != after.chat.running) syncTurn()
-        if (before.chat.running && !after.chat.running) notifier.turnFinished(after.chat.entries.lastOrNull() as? Entry.Reply)
+        if (before.chat.running && !after.chat.running) notifier.turnFinished(reply)
         // Withdrawn by the core: the turn no longer waits for them.
         if (after.waiting.size < before.waiting.size && after.chat.prompts.isEmpty()) notifier.promptsSettled()
         // After the reducer, never in it (FP): the reducer stays a function of (Chat, event).
         if (schedulesAJob(event)) noticeJobs(session)
     }
 }
+
+/** The newest entry is the answer of a turn that completed: not stopped, not failed (D6). */
+private val Chat.endedComplete: Boolean get() = (entries.lastOrNull() as? Entry.Reply)?.status == TurnStatus.COMPLETE

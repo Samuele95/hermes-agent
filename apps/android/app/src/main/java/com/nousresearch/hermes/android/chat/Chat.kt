@@ -17,8 +17,13 @@ sealed interface Entry {
      */
     val stableId: Long
 
-    /** The user's words; [rowId] is the core's durable row for them once the core names it (null: unproven, never "none"). */
-    data class User(val text: String, val rowId: Long? = null, override val stableId: Long) : Entry
+    /**
+     * The user's words; [rowId] is the core's durable row for them once the core names it (null: unproven, never "none").
+     * [mode]: the busy mode they were sent by while a turn ran, a correction (null: a prompt); [correction]: the core's
+     * answer to it once it came.
+     */
+    data class User(val text: String, val rowId: Long? = null, override val stableId: Long, val mode: BusyMode? = null,
+                    val correction: Correction? = null) : Entry
 
     /** The agent's commentary between tool calls, sealed as its own segment while its turn runs on (not its answer). */
     data class Interim(val text: String, override val stableId: Long) : Entry
@@ -52,18 +57,44 @@ data class Retry(val index: Int, val text: String, val rowId: Long?)
  * `ChatSession` sets and clears it (/architect #4).
  * [nextId]: the id the next entry takes. It only grows: a rewind keeps it, a transcript the core answers is keyed on
  * from it, and a session switch carries it, so no id is given twice (/improve 20261113T221531Z #8).
+ * [busyMode]: the core's `display.busy_input_mode` as last read in this session, once per turn; null: not read yet, or
+ * the read failed (batch-3 F1).
  */
 data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? = null, val activity: String? = null,
                 val prompts: List<Prompt> = emptyList(), val reasoning: String? = null, val model: String? = null,
                 val todos: TodoList? = null, val meter: ContextMeter? = null, val submitted: Boolean = false,
                 val compressing: Boolean = false, val runOwned: Boolean = false,
-                val nextId: Long = entries.maxOfOrNull { it.stableId + 1 } ?: 0) {
+                val nextId: Long = entries.maxOfOrNull { it.stableId + 1 } ?: 0, val busyMode: BusyMode? = null) {
     val running: Boolean get() = streaming != null
 
     /** A turn runs or is about to: from the prompt's send to the turn's end (GoF-State; improve #4). */
     val busy: Boolean get() = running || submitted
 
+    /**
+     * What Send does now while a turn runs: the core's mode, once the turn has started (D1), while it waits on no
+     * question (D8), is not a job's run, does not compress, and the mode is not the app's queue (D3); null otherwise:
+     * Stop alone. The one rule the send and the composer both read.
+     */
+    val busySend: BusyMode? get() =
+        busyMode.takeIf { running && it != BusyMode.QUEUE && prompts.isEmpty() && !compressing && !runOwned }
+
     fun sent(text: String): Chat = adding { Entry.User(text, stableId = it) }.copy(submitted = true)
+
+    /** A correction sent by [mode] while the turn runs: the user's words at once, nothing submitted (inv. 2). */
+    fun correcting(text: String, mode: BusyMode): Chat = adding { Entry.User(text, stableId = it, mode = mode) }
+
+    /** The correction [id] takes the core's [outcome]; no such entry leaves the chat as it is. */
+    fun corrected(id: Long, outcome: Correction): Chat =
+        copy(entries = entries.map { if (it is Entry.User && it.stableId == id) it.copy(correction = outcome) else it })
+
+    /**
+     * The correction [id], which the core turned away because its turn had ended, goes out as a prompt: the newest
+     * entry, after the turn it missed, keeping its id, and on its way; no such entry leaves the chat as it is.
+     */
+    fun prompted(id: Long): Chat {
+        val user = entries.firstOrNull { it.stableId == id } as? Entry.User ?: return this
+        return copy(entries = entries.filterNot { it.stableId == id } + user.copy(mode = null, correction = null), submitted = true)
+    }
 
     /** The prompt did not go out (refused, or never reached the core): the chat is idle again. */
     fun unsent(): Chat = copy(submitted = false)
@@ -74,9 +105,12 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
 
     fun settled(id: String): Chat = copy(prompts = prompts.filterNot { it.id == id })
 
-    /** The newest prompt takes the row id the core named for it; one already named, or an id shown elsewhere, stays (D2). */
+    /**
+     * The newest prompt takes the row id the core named for it; one already named, or an id shown elsewhere, stays (D2).
+     * A correction is not a prompt: the turn's row is its prompt's.
+     */
     fun boundUser(rowId: Long): Chat {
-        val i = entries.indexOfLast { it is Entry.User }
+        val i = entries.indexOfLast(::isPrompt)
         val user = entries.getOrNull(i) as? Entry.User ?: return this
         if (user.rowId != null || entries.any { it is Entry.User && it.rowId == rowId }) return this
         return copy(entries = entries.toMutableList().apply { set(i, user.copy(rowId = rowId)) })
@@ -85,7 +119,7 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
     /** The last prompt, when nothing runs, is about to, or compresses, and something answered it (D3); null otherwise. */
     fun retryTarget(): Retry? {
         if (busy || compressing || runOwned) return null
-        val i = entries.indexOfLast { it is Entry.User }
+        val i = entries.indexOfLast(::isPrompt)
         val user = entries.getOrNull(i) as? Entry.User ?: return null
         return Retry(i, user.text, user.rowId).takeIf { i < entries.lastIndex && user.text.isNotBlank() }
     }
@@ -144,6 +178,9 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
             .copy(streaming = null, activity = null, reasoning = null, submitted = false).measured(done.usage)
         return done.persistedTurn?.userRowId?.let(ended::boundUser) ?: ended
     }
+
+    /** [entry] is a prompt the user sent, not a correction sent while a turn ran. */
+    private fun isPrompt(entry: Entry): Boolean = entry is Entry.User && entry.mode == null
 
     /** This chat with one more entry, made with the next id: the one way the reducer adds a row (/improve 20261113T221531Z #8). */
     private inline fun adding(entry: (id: Long) -> Entry): Chat = copy(entries = entries + entry(nextId), nextId = nextId + 1)
