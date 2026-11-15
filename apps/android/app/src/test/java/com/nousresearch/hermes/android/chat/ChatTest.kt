@@ -1,5 +1,6 @@
 package com.nousresearch.hermes.android.chat
 
+import com.nousresearch.hermes.android.entry.IncomingText
 import com.nousresearch.hermes.bridge.protocol.ClarifyQuestion
 import com.nousresearch.hermes.bridge.protocol.ApprovalChoice
 import com.nousresearch.hermes.bridge.CoreEvent
@@ -516,5 +517,15 @@ class ChatTest {
         assertEquals(corrected.entries.filterNot { it.stableId == id }, without.entries)
         assertEquals(corrected.nextId, without.nextId)
         assertEquals(corrected, corrected.without(99))
+    }
+
+    @Test
+    fun anOfferOutlivesEveryEventOfATurn() {
+        val offer = IncomingText("from Chrome")
+        val after = Chat(offer = offer).sent("hi").after(event("message.start"), event("message.delta", """{"text":"Hel"}"""),
+                                                         event("message.complete", """{"text":"Hello","status":"complete"}"""),
+                                                         event("error", """{"message":"boom"}"""))
+
+        assertEquals(offer, after.offer)  // the reducer never touches it: only the composer takes it (inv. 6)
     }
 }

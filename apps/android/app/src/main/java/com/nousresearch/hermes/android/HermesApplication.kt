@@ -11,6 +11,7 @@ import com.nousresearch.hermes.android.chat.ChatSession
 import com.nousresearch.hermes.android.chat.ContextPanel
 import com.nousresearch.hermes.android.chat.SessionHistory
 import com.nousresearch.hermes.android.chat.queueFiles
+import com.nousresearch.hermes.android.entry.IncomingText
 import com.nousresearch.hermes.android.gateway.GatewayControl
 import com.nousresearch.hermes.android.gateway.GatewaySeen
 import com.nousresearch.hermes.android.gateway.PrefsGatewaySettings
@@ -69,6 +70,8 @@ class HermesApplication : Application() {
                                        CoroutineExceptionHandler { _, failed -> Log.w(TAG, "uncaught ${failed.javaClass.name}") })
     private val state = MutableStateFlow<CoreState>(CoreState.Starting)
     private var started = false
+    /** Words shared before the core was Ready (guarded by `this`): delivered once it is (F9). */
+    private var pendingOffer: IncomingText? = null
 
     /** Activities of the app on screen (started, not yet stopped): while there is one, the chat shows what it has to say. */
     private val onScreen = AtomicInteger()
@@ -151,12 +154,18 @@ class HermesApplication : Application() {
                 if (!started) {
                     started = true
                     scope.launch {
-                        state.value = try {
+                        val next = try {
                             start()
                         } catch (failed: Exception) {  // the trace goes to the log; the screen gets the failure rule's words
                             Log.w(TAG, "the core did not start", failed)
                             CoreState.Failed(forUser(failed))
                         }
+                        // The state flips and the pending offer is taken under one lock: a share never falls between them.
+                        val offer = synchronized(this@HermesApplication) {
+                            state.value = next
+                            pendingOffer.also { pendingOffer = null }
+                        }
+                        offer?.let { (next as? CoreState.Ready)?.chat?.offer(it) }
                     }
                 }
             }
@@ -165,6 +174,15 @@ class HermesApplication : Application() {
 
     fun send(text: String) {
         chat { send(text) }
+    }
+
+    /**
+     * Words another app shared become the chat's offer, a draft it never sends (bet 8). A core not yet ready keeps the
+     * offer pending (F9); the newest wins.
+     */
+    fun offer(text: IncomingText) {
+        val chat = synchronized(this) { (state.value as? CoreState.Ready)?.chat.also { if (it == null) pendingOffer = text } }
+        chat?.offer(text)
     }
 
     /** Runs one chat action on the app's scope, so it outlives the activity that asked for it. */

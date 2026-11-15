@@ -10,6 +10,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextClearance
 import androidx.test.platform.app.InstrumentationRegistry
 import com.nousresearch.hermes.android.chat.ChatPlaces
+import com.nousresearch.hermes.android.entry.IncomingText
 import com.nousresearch.hermes.android.chat.ContextActions
 import com.nousresearch.hermes.android.chat.QueueActions
 import com.nousresearch.hermes.android.chat.QueueUi
@@ -23,6 +24,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.height
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.hasAnyDescendant
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -935,5 +937,49 @@ class ChatScreenTest {
         compose.onNodeWithText("First thought", substring = true).assertDoesNotExist()  // the earlier one as it was left
         compose.onAllNodesWithTag("reasoning-toggle")[1].performClick()
         compose.onNodeWithText("Counted again", substring = true).assertExists()        // and it opens on its own tap
+    }
+
+    @Test
+    fun aSharedTextLandsInTheDraftUnsentWithNewChatOneTapAway() {
+        val offer = IncomingText("from Chrome")
+        val sent = mutableListOf<String>()
+        val taken = mutableListOf<IncomingText>()
+        var newChats = 0
+        compose.setContent {
+            ChatScreen(Chat(offer = offer), onSend = { sent += it }, onOfferTaken = { taken += it },
+                       places = ChatPlaces(newChat = { newChats++ }))
+        }
+
+        compose.onNodeWithTag("draft").assert(hasText("from Chrome"))
+        compose.runOnIdle { assertEquals(listOf(offer), taken) }  // taken once
+        assertEquals(emptyList<String>(), sent)  // bet 8: never sent unseen
+        compose.onNodeWithTag("offer").assertIsDisplayed()
+
+        compose.onNodeWithTag("offer-new-chat").performClick()
+        assertEquals(1, newChats)
+        compose.onNodeWithTag("draft").assert(hasText("from Chrome"))  // the words move with the user
+
+        compose.onNodeWithTag("send").performClick()
+        assertEquals(listOf("from Chrome"), sent)
+        compose.onNodeWithTag("offer").assertDoesNotExist()  // the strip leaves with the words
+    }
+
+    @Test
+    fun aSharedTextJoinsTheWordsTheUserTyped() {
+        var chat by mutableStateOf(Chat())
+        compose.setContent { ChatScreen(chat, onSend = {}) }
+
+        compose.onNodeWithTag("draft").performTextInput("my words")
+        chat = Chat(offer = IncomingText("shared"))
+
+        compose.onNodeWithTag("draft").assert(hasText("my words\n\nshared"))  // D6: the user's own words are never lost
+    }
+
+    @Test
+    fun aCutSharedTextSaysSo() {
+        compose.setContent { ChatScreen(Chat(offer = IncomingText("x", cut = true)), onSend = {}) }
+
+        val words = InstrumentationRegistry.getInstrumentation().targetContext.getString(R.string.offer_cut)
+        compose.onNodeWithTag("offer").assert(hasAnyDescendant(hasText(words)))
     }
 }

@@ -47,6 +47,7 @@ import com.nousresearch.hermes.android.chat.ContextActions
 import com.nousresearch.hermes.android.chat.PromptAnswers
 import com.nousresearch.hermes.android.chat.QueueActions
 import com.nousresearch.hermes.android.chat.SessionActions
+import com.nousresearch.hermes.android.entry.IncomingText
 import com.nousresearch.hermes.android.gateway.GatewayScreen
 import com.nousresearch.hermes.android.gateway.GatewayUi
 import com.nousresearch.hermes.android.gateway.TelegramActions
@@ -144,6 +145,7 @@ class MainActivity : ComponentActivity() {
                                        sessionActions = SessionActions(edit = state.history::edit, saveTitle = { title -> app.history { saveTitle(title) } },
                                                                        askDelete = state.history::askDelete, confirmDelete = { app.history { confirmDelete() } }),
                                        context = context, contextActions = contextActions, queue = queue, queueActions = queueActions,
+                                       onOfferTaken = state.chat::offerTaken,
                                        onSend = { text ->
                                 if (Build.VERSION.SDK_INT >= 33 &&
                                     checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -156,6 +158,23 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        if (savedInstanceState == null) take(intent)  // a recreated activity offers nothing again (D10)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        take(intent)
+    }
+
+    /**
+     * An intent in: shared text becomes the chat's offer (F9); the shortcut's and tile's action arrives in commit 2.
+     * One replayed from Recents offers nothing, or the same words would land twice (D10).
+     */
+    private fun take(intent: Intent?) {
+        if (intent == null || intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
+        IncomingText.of(intent.action, intent.type, intent.getCharSequenceExtra(Intent.EXTRA_TEXT),
+                        intent.getStringExtra(Intent.EXTRA_SUBJECT))?.let((application as HermesApplication)::offer)
     }
 
     override fun onStart() {

@@ -1,5 +1,6 @@
 package com.nousresearch.hermes.android.chat
 
+import com.nousresearch.hermes.android.entry.IncomingText
 import com.nousresearch.hermes.bridge.CoreEvent
 import com.nousresearch.hermes.bridge.protocol.Events
 import com.nousresearch.hermes.bridge.protocol.MessageCompletePayload
@@ -59,12 +60,15 @@ data class Retry(val index: Int, val text: String, val rowId: Long?)
  * from it, and a session switch carries it, so no id is given twice (/improve 20261113T221531Z #8).
  * [busyMode]: the core's `display.busy_input_mode` as last read in this session, once per turn; null: not read yet, or
  * the read failed (batch-3 F1).
+ * [offer]: words another app shared, waiting for the composer to take them as its draft; the chat never sends them
+ * (inv. 6, bet 8).
  */
 data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? = null, val activity: String? = null,
                 val prompts: List<Prompt> = emptyList(), val reasoning: String? = null, val model: String? = null,
                 val todos: TodoList? = null, val meter: ContextMeter? = null, val submitted: Boolean = false,
                 val compressing: Boolean = false, val runOwned: Boolean = false,
-                val nextId: Long = entries.maxOfOrNull { it.stableId + 1 } ?: 0, val busyMode: BusyMode? = null) {
+                val nextId: Long = entries.maxOfOrNull { it.stableId + 1 } ?: 0, val busyMode: BusyMode? = null,
+                val offer: IncomingText? = null) {
     val running: Boolean get() = streaming != null
 
     /** A turn runs or is about to: from the prompt's send to the turn's end (GoF-State; improve #4). */

@@ -1,6 +1,7 @@
 package com.nousresearch.hermes.android.chat
 
 import com.nousresearch.hermes.android.SetupRefusal
+import com.nousresearch.hermes.android.entry.IncomingText
 import com.nousresearch.hermes.android.forUser
 import com.nousresearch.hermes.android.gateway.GatewaySeen
 import com.nousresearch.hermes.android.gateway.GatewayStatus
@@ -422,13 +423,14 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
      * Makes [ref] the chat's session, showing [chat] with the cards of the [open] requests it can show; the previous
      * session's turn and questions are let go, and the session itself is closed in the core if it was idle: the
      * returned value is that close's outcome. [transcript] is shown keyed on after every id the chat showed before (V5);
-     * [queue] is the session's own (a new session's is empty), its ids never below one the chat gave (inv. 4).
+     * [queue] is the session's own (a new session's is empty), its ids never below one the chat gave (inv. 4). An offer
+     * not yet taken follows the chat (D7).
      */
     private fun switchTo(ref: SessionRef, chat: Chat, reportedContract: JsonElement?, open: List<InTurnPrompt> = emptyList(),
                          transcript: List<TranscriptMessage> = emptyList(), queue: QueueUi = QueueUi()): Deferred<LeftSessions.Outcome>? {
         val notice = contractNotice(reportedContract)
         val (before, after) = change { now ->
-            val shown = chat.copy(nextId = now.chat.nextId).restored(transcript)
+            val shown = chat.copy(nextId = now.chat.nextId, offer = now.chat.offer).restored(transcript)
             val opened = open.mapNotNull { raw -> prompt(raw, ref.runtime)?.let { it to raw } }
             // The same session resumed: questions it asked after the core's snapshot are still its own.
             val kept = if (now.ref?.runtime == ref.runtime) now.chat.prompts.filter { p -> opened.none { it.first.id == p.id } }
@@ -513,6 +515,20 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     } catch (failed: Exception) {
         if (failed is CancellationException) throw failed  // not a failure: the caller's scope is ending
         fallback
+    }
+
+    /**
+     * Words another app shared land in the chat as its offer, a newer one in place of one not taken. "An offer
+     * (`IncomingText`) lands in the chat as a draft; the composer consumes it once; it is never sent by `ChatSession`"
+     * (inv. 6, bet 8): admitted with or without a session, busy or not, because it sends nothing.
+     */
+    fun offer(text: IncomingText) {
+        change { now -> now.copy(chat = now.chat.copy(offer = text)) }
+    }
+
+    /** The composer took [taken] as its draft: the offer leaves, unless a newer one has replaced it meanwhile (D3, EJ-78). */
+    fun offerTaken(taken: IncomingText) {
+        change { now -> if (now.chat.offer == taken) now.copy(chat = now.chat.copy(offer = null)) else now }
     }
 
     /**

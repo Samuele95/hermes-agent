@@ -46,6 +46,7 @@ import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.rememberDrawerState
@@ -78,6 +79,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nousresearch.hermes.android.R
+import com.nousresearch.hermes.android.entry.IncomingText
 import com.nousresearch.hermes.android.ui.CodeFont
 import com.nousresearch.hermes.android.ui.Hermes
 import com.nousresearch.hermes.android.ui.HermesIcons
@@ -104,7 +106,8 @@ class ChatPlaces(val setup: (() -> Unit)? = null, val terminal: (() -> Unit)? = 
  * Jump brings it back (chat-17). [onCopy] puts an answer, one of the user's messages or a code block on the clipboard
  * (chat-09, chat-10); without it nothing offers Copy. [queue] is the chat's queue of unsent messages, shown above the
  * composer with each row's actions, and [queueActions] what they do and what the composer's Queue button adds to it
- * (chat-19); without them the chat offers no queue.
+ * (chat-19); without them the chat offers no queue. [chat]'s offer is taken into the composer's draft once and handed
+ * back to [onOfferTaken]; the strip above the field offers [places]' New chat.
  */
 @Composable
 fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifier, answers: PromptAnswers? = null,
@@ -112,7 +115,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
                sessionActions: SessionActions? = null, context: ContextUi? = null, contextActions: ContextActions? = null,
                places: ChatPlaces? = null, onStop: () -> Unit = {}, onRetry: (() -> Unit)? = null,
                onCopy: ((String) -> Unit)? = null, about: String? = null, queue: QueueUi = QueueUi(),
-               queueActions: QueueActions? = null) {
+               queueActions: QueueActions? = null, onOfferTaken: (IncomingText) -> Unit = {}) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var picked by remember { mutableIntStateOf(0) }  // a conversation picked in the drawer is shown from its end (V5)
@@ -147,7 +150,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
             chat.todos?.takeIf { chat.running && it.active }?.let { TodoStrip(it) }
             // The messages that wait for a turn's end, in the order they go out (chat-19).
             queueActions?.takeIf { queue.items.isNotEmpty() }?.let { QueuePanel(queue, chat.busy, chat.steerMode != null, it) }
-            Composer(chat, onSend, onStop, places?.setup, contextActions?.open, queueActions?.add)
+            Composer(chat, onSend, onStop, places?.setup, contextActions?.open, queueActions?.add, chat.offer, onOfferTaken, places?.newChat)
             context?.let { ContextSheet(it, running = chat.busy, compressing = chat.compressing, onCompress = contextActions?.compress ?: {},
                                           onClose = contextActions?.close ?: {}) }
         }
@@ -419,15 +422,36 @@ private fun Problem(text: String, modifier: Modifier = Modifier) {
  * and Stop stays the only interrupt; Send waits in queue mode, before the turn starts, or while a question waits.
  * [onQueue] adds the draft to the chat's queue: its Queue button stands first, whenever a turn runs or is about to in a
  * session the chat may write to (D12); in queue mode it is the only send control, and the field says "Queue message".
+ * An [offer] another app shared joins the draft once, after the user's own words (D6), and goes back to [onOfferTaken];
+ * a strip says nothing is sent until Send, with [onNewChat] beside it, while those words are in the field (bet 8).
  */
 @Composable
 private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, onSetup: (() -> Unit)?, onContext: (() -> Unit)?,
-                     onQueue: ((String) -> Unit)?) {
+                     onQueue: ((String) -> Unit)?, offer: IncomingText?, onOfferTaken: (IncomingText) -> Unit, onNewChat: (() -> Unit)?) {
     var draft by rememberSaveable { mutableStateOf("") }
+    var shared by rememberSaveable { mutableStateOf(false) }  // the draft holds words another app shared
+    var cut by rememberSaveable { mutableStateOf(false) }
+    // Keyed on the value: once per offer; the cleared null runs nothing.
+    LaunchedEffect(offer) {
+        offer?.let {
+            draft = if (draft.isBlank()) it.draft else draft.trimEnd() + "\n\n" + it.draft
+            shared = true
+            cut = it.cut
+            onOfferTaken(it)
+        }
+    }
     val shape = RoundedCornerShape(22.dp)
     Column(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 10.dp)
                .background(MaterialTheme.colorScheme.surfaceContainer, shape).border(1.dp, Hermes.colors.stroke, shape)) {
         // A job's run the gateway still runs is read here, not written (/architect #4): the draft stays, Send waits.
+        // Another app's words are a draft, never a prompt: the user reads them before anything goes out (DC-M7).
+        if (shared && draft.isNotBlank()) {
+            Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 4.dp).testTag("offer"), verticalAlignment = Alignment.CenterVertically) {
+                Text(stringResource(if (cut) R.string.offer_cut else R.string.offer_shared), Modifier.weight(1f),
+                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (onNewChat != null) TextButton(onNewChat, Modifier.testTag("offer-new-chat")) { Text(stringResource(R.string.chat_new)) }
+            }
+        }
         if (chat.runOwned) Text(stringResource(R.string.chat_run_owned),
                                 Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 10.dp).testTag("run-owned"),
                                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -455,13 +479,13 @@ private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, o
             chat.meter?.let { ContextChip(it, onContext) }
             if (chat.busy) {
                 if (onQueue != null && chat.queueable) {
-                    FilledTonalIconButton({ onQueue(draft.trim()); draft = "" }, Modifier.size(36.dp).testTag("queue"), enabled = draft.isNotBlank()) {
+                    FilledTonalIconButton({ onQueue(draft.trim()); draft = ""; shared = false }, Modifier.size(36.dp).testTag("queue"), enabled = draft.isNotBlank()) {
                         Icon(HermesIcons.Queue, stringResource(R.string.chat_queue), Modifier.size(18.dp))
                     }
                     Spacer(Modifier.width(8.dp))
                 }
                 chat.busySend?.let { mode ->
-                    FilledIconButton({ onSend(draft.trim()); draft = "" }, Modifier.size(36.dp).testTag("send"), enabled = draft.isNotBlank()) {
+                    FilledIconButton({ onSend(draft.trim()); draft = ""; shared = false }, Modifier.size(36.dp).testTag("send"), enabled = draft.isNotBlank()) {
                         Icon(HermesIcons.Send, stringResource(label(mode)), Modifier.size(18.dp))
                     }
                     Spacer(Modifier.width(8.dp))
@@ -472,7 +496,7 @@ private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, o
                     Icon(HermesIcons.Stop, stringResource(R.string.chat_stop), Modifier.size(14.dp))
                 }
             } else {
-                FilledIconButton({ onSend(draft.trim()); draft = "" }, Modifier.size(36.dp).testTag("send"), enabled = draft.isNotBlank() && !chat.compressing && !chat.runOwned) {
+                FilledIconButton({ onSend(draft.trim()); draft = ""; shared = false }, Modifier.size(36.dp).testTag("send"), enabled = draft.isNotBlank() && !chat.compressing && !chat.runOwned) {
                     Icon(HermesIcons.Send, stringResource(R.string.chat_send), Modifier.size(18.dp))
                 }
             }

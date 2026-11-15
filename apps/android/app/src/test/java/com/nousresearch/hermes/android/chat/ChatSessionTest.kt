@@ -1,6 +1,8 @@
 package com.nousresearch.hermes.android.chat
 
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertNull
+import com.nousresearch.hermes.android.entry.IncomingText
 import org.junit.Assert.assertArrayEquals
 import com.nousresearch.hermes.bridge.protocol.ApprovalChoice
 import com.nousresearch.hermes.android.turn.TurnHost
@@ -2702,5 +2704,56 @@ class ChatSessionTest {
         assertEquals(listOf("use metric units"), chat.items())
         assertTrue(chat.queueState.value.paused)  // it reached an idle chat: it waits for Resume, never stranded
         assertEquals(1, submits().size)
+    }
+
+    @Test
+    fun anOfferIsADraftAndIsNeverSent() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        val offer = IncomingText("Read this", "A page")
+
+        chat.offer(offer)
+
+        assertEquals(offer, chat.state.value.offer)
+        assertEquals(emptyList<Entry>(), chat.state.value.entries)
+        assertTrue(core.calls.none { it.first == "prompt.submit" })  // inv. 6: an offer is a draft, never a send
+
+        // While a turn runs, a newer offer neither corrects the turn nor queues itself.
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        chat.offer(IncomingText("more words"))
+
+        assertEquals(IncomingText("more words"), chat.state.value.offer)
+        assertEquals(1, core.calls.count { it.first == "prompt.submit" })  // the user's own "hi" alone
+        assertTrue(core.calls.none { it.first == "session.steer" || it.first == "session.redirect" })
+        assertEquals(emptyList<Queued>(), chat.queueState.value.items)
+    }
+
+    @Test
+    fun anOfferTakenIsGoneButANewerOneStays() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        val a = IncomingText("a")
+        val b = IncomingText("b")
+
+        chat.offer(a)
+        chat.offerTaken(a)
+        assertNull(chat.state.value.offer)
+
+        // A second share landing between the take and the clear is not lost (D3).
+        chat.offer(a)
+        chat.offer(b)
+        chat.offerTaken(a)
+        assertEquals(b, chat.state.value.offer)
+    }
+
+    @Test
+    fun anUntakenOfferFollowsTheChatIntoANewSession() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        val offer = IncomingText("shared")
+
+        chat.offer(offer)
+        chat.open()
+
+        assertEquals(runtime("s2"), chat.sessionId)
+        assertEquals(offer, chat.state.value.offer)  // D7: New chat moves the words, they are not left behind
     }
 }
