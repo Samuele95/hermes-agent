@@ -13,6 +13,7 @@ import com.nousresearch.hermes.android.gateway.GatewayStatus
 import com.nousresearch.hermes.android.gateway.PlatformState
 import com.nousresearch.hermes.android.jobs.JobId
 import com.nousresearch.hermes.android.jobs.JobsWarning
+import com.nousresearch.hermes.android.settings.SettingsControlTest
 import com.nousresearch.hermes.android.setup.Readiness
 import com.nousresearch.hermes.android.turn.TurnHost
 import com.nousresearch.hermes.bridge.AppBridge
@@ -73,6 +74,7 @@ class CoreCompositionTest {
                 "telegram_status" -> """{"token":true,"allowed_user":"42","sdk":true,"enabled":true,"live":{"state":"connected",
                                         "error_message":null,"writer_pid":7,"updated_at":"2026-11-13T00:00:00+00:00"}}"""
                 "cron_warm_delivery_targets" -> { coreCallsAtWarm = core.calls.map { it.first }; "{}" }
+                "settings_read" -> SettingsControlTest.DEFAULT_READ
                 else -> "{}"
             }
         }
@@ -248,6 +250,19 @@ class CoreCompositionTest {
         assertNotNull(ready.pages.jobs.state.value)
         assertNotNull(ready.pages.jobs.state.value!!.runs!!.error)
         assertEquals(RuntimeSessionId("s1"), ready.chat.sessionId)
+    }
+
+    @Test
+    fun theSettingsPageIsClosedUntilOpenedAndReadsThroughTheComposedBridge() = runTest(UnconfinedTestDispatcher()) {
+        val ready = composeCore(runtime, paths, deps, backgroundScope)
+
+        assertNull(ready.pages.settings.state.value)
+        assertFalse("composing reads no settings", "settings_read" in bridgeCalls)
+
+        ready.pages.settings.open()
+
+        assertTrue(bridgeCalls.toString(), "settings_read" in bridgeCalls)
+        assertEquals(300, ready.pages.settings.state.value?.config?.approvalTimeoutS)
     }
 
     @Test

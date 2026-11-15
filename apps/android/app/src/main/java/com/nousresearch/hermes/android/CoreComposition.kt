@@ -89,7 +89,8 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps
     scope.launch { setup.followReadiness() }
     scope.launch { setup.checkReadiness() }
     return CoreState.Ready(gateway, chat, setup,
-                           Pages(SettingsControl(gateway), JobsControl(gateway, bridge, deps.seen, continueInChat = chat::resume),
+                           Pages(SettingsControl(gateway, bridge, deps.seen),
+                                 JobsControl(gateway, bridge, deps.seen, continueInChat = chat::resume),
                                  TelegramSetup(deps.secrets, bridge, deps.seen), SshSetup(deps.secrets, bridge), history, context),
                            "Python ${facts.python} · SQLite ${facts.sqlite} $fts")
 }
