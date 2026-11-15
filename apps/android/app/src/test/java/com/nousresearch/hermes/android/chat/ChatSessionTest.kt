@@ -131,9 +131,13 @@ class ChatSessionTest {
     private var owned: suspend (StoredSessionId) -> Boolean? = { null }
     private val ownedAsked = mutableListOf<String>()
 
+    /** The chat's queues as its store kept them, by stored key (the file adapter's stand-in). */
+    private val savedQueues = mutableMapOf<StoredSessionId, QueueUi>()
+
     private fun TestScope.openChat() =
         ChatSession(core, host, backgroundScope, keepSecret = { name, value -> keepSecret(name, value) }, notifier = notifier,
-                    gatewaySeen = { observed++; seen() }, runOwned = { ownedAsked += it.value; owned(it) })
+                    gatewaySeen = { observed++; seen() }, runOwned = { ownedAsked += it.value; owned(it) },
+                    queues = QueueStore.inMemory(savedQueues))
 
     /** The agent schedules a job in [session] ([action] of the job tool, answered `success`), the core's own warning included. */
     private suspend fun scheduled(session: String, id: String, action: String = "create") {
@@ -2211,20 +2215,28 @@ class ChatSessionTest {
     }
 
     @Test
-    fun aCorrectionTheAgentCannotTakeKeepsItsWordsAndTheCoresReason() = runTest(UnconfinedTestDispatcher()) {
+    fun aCorrectionTheAgentCannotTakeWaitsInTheQueue() = runTest(UnconfinedTestDispatcher()) {
         redirect = { throw CoreError(4010, "agent does not support active-turn redirect") }
         val chat = openChat().apply { open() }
         chat.send("hi")
         core.emit("message.start", "s1")
+        chat.queue("x")
         val mark = core.calls.size
 
         chat.send("use metric units")
 
-        assertEquals(listOf(Entry.User("use metric units", stableId = 1, mode = BusyMode.INTERRUPT),
-                            Entry.Notice("agent does not support active-turn redirect", stableId = 2)),
-                     chat.state.value.entries.takeLast(2))
+        assertTrue(chat.state.value.entries.none { it is Entry.User && it.text == "use metric units" })  // its words in one place (D10)
+        assertEquals(ChatSession.CORRECTION_QUEUED, (chat.state.value.entries.last() as Entry.Notice).text)
+        assertEquals(listOf("use metric units", "x"), chat.items())
         assertTrue(chat.state.value.running)
         assertEquals(listOf("session.redirect"), callsAfter(mark).map { it.first })  // no session.interrupt, no prompt.submit
+
+        chat.steerNow(chat.idOf("x"))
+
+        assertEquals(listOf("x", "use metric units"), chat.items())  // back at the head
+        assertTrue(chat.state.value.entries.none { it is Entry.User && it.text == "x" })
+        assertEquals(listOf("session.redirect", "session.redirect"), callsAfter(mark).map { it.first })
+        assertTrue(chat.state.value.running)
     }
 
     @Test
@@ -2245,5 +2257,364 @@ class ChatSessionTest {
         assertEquals(moved.entries, chat.state.value.entries)
         assertFalse(chat.state.value.submitted)
         assertEquals(1, submits().size)
+    }
+
+    // The chat's queue (chat-19, batch-3 F2): the app's, per stored session, persisted; one item per finished turn, with
+    // `queued: true`; Stop or a failed turn pauses it.
+
+    private fun ChatSession.items() = queueState.value.items.map { it.text }
+
+    private fun ChatSession.idOf(text: String) = queueState.value.items.first { it.text == text }.id
+
+    /** The texts the store keeps for [key]; null: no entry (an empty queue is none). */
+    private fun saved(key: String) = savedQueues[stored(key)]?.items?.map { it.text }
+
+    /** A turn of the chat's session [session] starts and ends with [status]. */
+    private suspend fun turn(session: String = "s1", status: String = "complete") {
+        core.emit("message.start", session)
+        core.emit("message.complete", session, """{"text":"Done.","status":"$status"}""")
+    }
+
+    @Test
+    fun aFinishedTurnSendsTheQueuesHeadWithTheQueuedFlag() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        val mark = core.calls.size
+
+        chat.queue("a")
+        chat.queue("b")
+        chat.queue("c")
+
+        assertEquals(emptyList<Pair<String, String?>>(), callsAfter(mark))  // the queue is the app's: nothing goes out
+        assertEquals(listOf("a", "b", "c"), saved("db1"))
+
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")
+
+        assertEquals(listOf("prompt.submit" to "s1"), callsAfter(mark))  // exactly one item
+        assertEquals(Json.parseToJsonElement("""{"session_id":"s1","text":"a","queued":true}"""), lastSubmit())
+        assertEquals(listOf("b", "c"), chat.items())
+        assertEquals(Entry.User("a", stableId = 2), chat.state.value.entries.last())
+        assertTrue(chat.state.value.submitted)
+        assertEquals(listOf("b", "c"), saved("db1"))
+
+        turn()
+        assertEquals("b", lastSubmit().getValue("text").jsonPrimitive.content)
+        assertEquals(listOf("c"), chat.items())
+        assertEquals(listOf("c"), saved("db1"))
+
+        turn()
+        assertEquals("c", lastSubmit().getValue("text").jsonPrimitive.content)
+        assertEquals(emptyList<String>(), chat.items())
+        assertEquals(null, saved("db1"))
+
+        turn()
+        assertEquals(4, submits().size)  // hi, a, b, c: the fourth turn's end sends nothing more
+        assertFalse(chat.state.value.busy)
+    }
+
+    @Test
+    fun queueModeSendsGoIntoTheQueue() = runTest(UnconfinedTestDispatcher()) {
+        busyWord = "queue"
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        val mark = core.calls.size
+        val shown = chat.state.value.entries
+
+        chat.send("later")
+
+        assertEquals(emptyList<Pair<String, String?>>(), callsAfter(mark))
+        assertEquals(shown, chat.state.value.entries)
+        assertEquals(listOf("later"), chat.items())
+
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")
+
+        assertEquals(Json.parseToJsonElement("""{"session_id":"s1","text":"later","queued":true}"""), lastSubmit())
+    }
+
+    @Test
+    fun stopPausesTheQueueEvenWhenTheTurnThenCompletes() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        chat.queue("a")
+        val mark = core.calls.size
+
+        chat.cancel()
+
+        assertEquals(listOf("session.interrupt" to "s1"), callsAfter(mark))
+        assertTrue(chat.queueState.value.paused)
+
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")  // the turn finished anyway
+
+        assertEquals(1, submits().size)
+        assertEquals(listOf("a"), chat.items())
+        assertTrue(chat.queueState.value.paused)
+        assertEquals(QueueUi(listOf(Queued(0, "a")), paused = true), savedQueues[stored("db1")])
+    }
+
+    @Test
+    fun aStoppedOrFailedTurnPausesTheQueue() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat()
+        val ends = listOf<suspend (String) -> Unit>(
+            { s -> core.emit("message.complete", s, """{"text":"","status":"interrupted"}""") },
+            { s -> core.emit("message.complete", s, """{"text":"","status":"error","error":"boom"}""") },
+            { s -> core.emit("error", s, """{"message":"boom"}""") })
+        for ((i, end) in ends.withIndex()) {
+            chat.open()
+            val session = "s${i + 1}"
+            chat.send("hi")
+            core.emit("message.start", session)
+            chat.queue("a")
+            val sent = submits().size
+
+            end(session)
+
+            assertEquals(sent, submits().size)
+            assertEquals(listOf("a"), chat.items())
+            assertTrue("$i", chat.queueState.value.paused)
+        }
+
+        chat.open()  // Stop before message.start: the core ends that prompt with an `error` alone (D1)
+        chat.send("hi")
+        chat.queue("a")
+        val sent = submits().size
+        chat.cancel()
+        core.emit("error", "s4", """{"message":"interrupted"}""")
+
+        assertEquals(sent, submits().size)
+        assertEquals(listOf("a"), chat.items())
+        assertTrue(chat.queueState.value.paused)
+        assertFalse(chat.state.value.busy)
+    }
+
+    @Test
+    fun resumeSendsTheHeadAtOnceWhenIdleAndAtTheTurnsEndWhenBusy() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        chat.queue("a")
+        chat.queue("b")
+        core.emit("message.complete", "s1", """{"text":"","status":"interrupted"}""")
+        assertTrue(chat.queueState.value.paused)
+        val mark = core.calls.size
+
+        chat.resumeQueue()  // paused and idle: the head goes out at once
+
+        assertEquals(listOf("prompt.submit" to "s1"), callsAfter(mark))
+        assertEquals(Json.parseToJsonElement("""{"session_id":"s1","text":"a","queued":true}"""), lastSubmit())
+        assertEquals(QueueUi(listOf(Queued(1, "b"))), chat.queueState.value)
+
+        turn(status = "interrupted")  // paused again
+        chat.send("x")
+        core.emit("message.start", "s1")
+        assertTrue(chat.queueState.value.paused)
+        val running = submits().size
+
+        chat.resumeQueue()  // while a turn runs: not paused, nothing sent yet
+
+        assertEquals(running, submits().size)
+        assertFalse(chat.queueState.value.paused)
+
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")
+
+        assertEquals(running + 1, submits().size)
+        assertEquals(Json.parseToJsonElement("""{"session_id":"s1","text":"b","queued":true}"""), lastSubmit())
+    }
+
+    @Test
+    fun sendNextMovesAnItemToTheFrontWithoutInterrupting() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        listOf("a", "b", "c").forEach { chat.queue(it) }
+        val mark = core.calls.size
+
+        chat.sendNext(chat.idOf("c"))
+
+        assertEquals(emptyList<Pair<String, String?>>(), callsAfter(mark))  // no session.interrupt: only Stop interrupts (inv. 1)
+        assertEquals(listOf("c", "a", "b"), chat.items())
+        assertFalse(chat.queueState.value.paused)
+
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")
+        assertEquals("c", lastSubmit().getValue("text").jsonPrimitive.content)
+
+        turn(status = "interrupted")
+        assertTrue(chat.queueState.value.paused)
+        val idle = submits().size
+
+        chat.sendNext(chat.idOf("b"))  // idle: Send sends it now
+
+        assertEquals(idle + 1, submits().size)
+        assertEquals(Json.parseToJsonElement("""{"session_id":"s1","text":"b","queued":true}"""), lastSubmit())
+        assertEquals(listOf("a"), chat.items())
+        assertTrue(core.calls.none { it.first == "session.interrupt" })
+    }
+
+    @Test
+    fun steerNowCorrectsTheRunWithAnItemAndTakesItOffTheQueue() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        chat.queue("a")
+        chat.queue("b")
+        var mark = core.calls.size
+
+        chat.steerNow(chat.idOf("a"))
+
+        assertEquals(listOf("session.redirect" to "s1"), callsAfter(mark))
+        assertEquals("a", lastOf("session.redirect").getValue("text").jsonPrimitive.content)
+        assertEquals(listOf("b"), chat.items())
+        assertEquals(Entry.User("a", stableId = 1, mode = BusyMode.INTERRUPT, correction = Correction.REDIRECTED),
+                     chat.state.value.entries.last())
+
+        busyWord = "steer"
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")  // b goes out
+        core.emit("message.start", "s1")
+        chat.queue("d")
+        mark = core.calls.size
+
+        chat.steerNow(chat.idOf("d"))
+
+        assertEquals(listOf("session.steer" to "s1"), callsAfter(mark))
+        assertEquals(emptyList<String>(), chat.items())
+
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")
+        chat.send("e")  // on its way, not started: a correction cannot land yet
+        chat.queue("f")
+        mark = core.calls.size
+
+        chat.steerNow(chat.idOf("f"))
+
+        assertEquals(emptyList<Pair<String, String?>>(), callsAfter(mark))
+        assertEquals(listOf("f"), chat.items())
+    }
+
+    @Test
+    fun anActionOnAnItemAlreadySentChangesNothingAndAnEditedItemWaits() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        chat.queue("a")
+        chat.queue("b")
+        val aId = chat.idOf("a")
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")
+        assertEquals("a", lastSubmit().getValue("text").jsonPrimitive.content)
+
+        chat.deleteQueued(aId)
+        chat.editQueued(aId, "x")
+        chat.sendNext(aId)
+
+        assertEquals(listOf("b"), chat.items())
+        assertEquals(2, submits().size)
+
+        val bId = chat.idOf("b")
+        chat.beginEdit(bId)
+        chat.queue("c")
+        turn()  // a's turn ends: the edited b waits, c goes out
+
+        assertEquals("c", lastSubmit().getValue("text").jsonPrimitive.content)
+        assertEquals(listOf("b"), chat.items())
+        assertEquals(bId, chat.queueState.value.editing)
+
+        chat.editQueued(bId, "B2")
+
+        assertEquals(listOf("B2"), chat.items())
+        assertEquals(null, chat.queueState.value.editing)
+
+        turn()
+        assertEquals("B2", lastSubmit().getValue("text").jsonPrimitive.content)
+        assertEquals(4, submits().size)
+    }
+
+    @Test
+    fun eachSessionKeepsItsOwnQueue() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        chat.queue("a")
+
+        chat.open()
+
+        assertEquals(QueueUi(), chat.queueState.value)  // a new chat's queue is empty
+
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")
+
+        assertEquals(1, submits().size)  // the chat is not on s1: its queue waits for the user's return (DC-M5)
+
+        resume = { """{"session_id":"s-back","message_count":0,"messages":[],"session_key":"db1",
+                      "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}}}""" }
+        chat.resume(stored("db1"))
+
+        assertEquals(listOf("a"), chat.items())
+        assertTrue(chat.queueState.value.paused)  // its turn did not end in this chat (D6)
+        assertEquals(1, submits().size)
+    }
+
+    @Test
+    fun theQueueOutlivesTheProcess() = runTest(UnconfinedTestDispatcher()) {
+        val before = openChat().apply { open() }
+        before.send("hi")
+        core.emit("message.start", "s1")
+        before.queue("a")
+        before.queue("b")
+
+        mostRecent = { """{"session_id":"db1"}""" }
+        resume = { """{"session_id":"s9","message_count":0,"messages":[],"session_key":"db1",
+                      "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}}}""" }
+        val after = ChatSession(core, host, backgroundScope, keepSecret = { _, _ -> }, queues = QueueStore.inMemory(savedQueues))
+        after.start()
+
+        assertEquals(listOf("a", "b"), after.items())
+        assertTrue(after.queueState.value.paused)
+        val mark = core.calls.size
+
+        after.resumeQueue()
+
+        assertEquals(listOf("prompt.submit" to "s9"), callsAfter(mark))
+        assertEquals(Json.parseToJsonElement("""{"session_id":"s9","text":"a","queued":true}"""), lastSubmit())
+        assertEquals(listOf("b"), after.items())
+    }
+
+    @Test
+    fun theQueueFollowsItsSessionsKeyAndGoesWithItsRow() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        chat.queue("a")
+        assertEquals(listOf("a"), saved("db1"))
+
+        core.emit("session.info", "s1", """{"stored_session_id":"db1b"}""")  // a compression rotated the key (D11)
+
+        assertEquals(null, saved("db1"))
+        assertEquals(listOf("a"), saved("db1b"))
+
+        core.emit("message.complete", "s1", """{"text":"","status":"interrupted"}""")
+        assertEquals(QueueUi(listOf(Queued(0, "a")), paused = true), savedQueues[stored("db1b")])
+        chat.open()
+
+        chat.delete(stored("db1b"))
+
+        assertEquals("db1b", lastOf("session.delete").getValue("session_id").jsonPrimitive.content)
+        assertFalse(stored("db1b") in savedQueues)
+    }
+
+    @Test
+    fun aDrainedMessageTheCoreRefusesPausesTheRest() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        chat.queue("a")
+        chat.queue("b")
+        submit = { throw CoreError(4009, "session busy") }
+
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")
+
+        assertEquals(listOf(Entry.User("a", stableId = 2), Entry.Notice("session busy", stableId = 3)), chat.state.value.entries.takeLast(2))
+        assertFalse(chat.state.value.busy)
+        assertEquals(listOf("b"), chat.items())
+        assertTrue(chat.queueState.value.paused)  // no retry (D8)
+        assertEquals(2, submits().size)
     }
 }

@@ -78,7 +78,25 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
     val busySend: BusyMode? get() =
         busyMode.takeIf { running && it != BusyMode.QUEUE && prompts.isEmpty() && !compressing && !runOwned }
 
+    /**
+     * A message can go into the chat's queue now: a turn runs or is about to, in a session the chat may write to and
+     * that does not compress. The one rule the Queue button and the queue both read (D12).
+     */
+    val queueable: Boolean get() = busy && !runOwned && !compressing
+
+    /**
+     * How Steer now corrects the running turn with a queued message: steering in the core's steer mode, else
+     * redirecting (queue mode included: "redirect the live turn now"); null where a correction cannot land, as for
+     * [busySend]: before the turn started, while a question waits, in a job's run, while compressing, mode unread (D3).
+     */
+    val steerMode: BusyMode? get() =
+        busyMode?.takeIf { running && prompts.isEmpty() && !compressing && !runOwned }
+            ?.let { if (it == BusyMode.STEER) BusyMode.STEER else BusyMode.INTERRUPT }
+
     fun sent(text: String): Chat = adding { Entry.User(text, stableId = it) }.copy(submitted = true)
+
+    /** The entry [id] leaves the transcript (a correction now waiting in the queue, D10); none leaves the chat as it is. */
+    fun without(id: Long): Chat = if (entries.none { it.stableId == id }) this else copy(entries = entries.filterNot { it.stableId == id })
 
     /** A correction sent by [mode] while the turn runs: the user's words at once, nothing submitted (inv. 2). */
     fun correcting(text: String, mode: BusyMode): Chat = adding { Entry.User(text, stableId = it, mode = mode) }

@@ -45,3 +45,52 @@ enum class Correction {
         }
     }
 }
+
+/**
+ * A message the user queued for a later turn: it goes to the core only when it is sent. [id] is the queue's own, given
+ * once and kept through an edit, so a row is keyed by it as a transcript row is by `Entry.stableId`.
+ */
+data class Queued(val id: Long, val text: String)
+
+/**
+ * The chat's queue of unsent messages, owned by `ChatSession` (batch-3 F2): [items] in the order they go out, one per
+ * finished turn; [paused] after Stop or a turn that did not complete, until Resume; [editing] the item being edited,
+ * which waits. A queue with no items is never paused (D5): every step below keeps that.
+ */
+data class QueueUi(val items: List<Queued> = emptyList(), val paused: Boolean = false, val editing: Long? = null)
+
+/** This queue as every step leaves it: an empty one is not paused (D5). */
+private fun QueueUi.kept(): QueueUi = if (paused && items.isEmpty()) copy(paused = false) else this
+
+/** [text] at the tail, as item [id]. */
+fun QueueUi.added(text: String, id: Long): QueueUi = copy(items = items + Queued(id, text)).kept()
+
+/**
+ * The item that goes out next and the queue without it; null while paused, or when nothing but the edited item is
+ * left. The edited item is skipped, never lost (`use-composer-queue.ts:379-386`).
+ */
+fun QueueUi.next(): Pair<Queued, QueueUi>? {
+    if (paused) return null
+    val head = items.firstOrNull { it.id != editing } ?: return null
+    return head to copy(items = items.filterNot { it.id == head.id }).kept()
+}
+
+/** Item [id] at the front; one not listed leaves the queue as it is (inv. 4). */
+fun QueueUi.moved(id: Long): QueueUi {
+    val item = items.firstOrNull { it.id == id } ?: return this
+    return copy(items = listOf(item) + items.filterNot { it.id == id }).kept()
+}
+
+/** Item [id]'s words replaced by [text]; its edit ends. One not listed keeps the items and ends the edit only if it was that one. */
+fun QueueUi.edited(id: Long, text: String): QueueUi =
+    copy(items = items.map { if (it.id == id) it.copy(text = text) else it }, editing = editing.takeIf { it != id }).kept()
+
+/** Item [id] gone, its edit ended if it was being edited; one not listed leaves the queue as it is (inv. 4). */
+fun QueueUi.removed(id: Long): QueueUi =
+    if (items.none { it.id == id }) this else copy(items = items.filterNot { it.id == id }, editing = editing.takeIf { it != id }).kept()
+
+/**
+ * The queue as loaded for a session: no edit, and paused when it has items and the session is not [inTurn]: the turn
+ * it waited for did not end in this chat, so nothing runs unseen (D6, DC-M6).
+ */
+fun QueueUi.resumed(inTurn: Boolean): QueueUi = copy(paused = paused || (items.isNotEmpty() && !inTurn), editing = null).kept()

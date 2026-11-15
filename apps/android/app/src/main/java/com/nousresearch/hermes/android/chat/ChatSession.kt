@@ -59,12 +59,14 @@ import java.util.concurrent.atomic.AtomicLong
  * [gatewaySeen] is the app's observation of the always-on gateway: a job the agent schedules while it will not fire is said once (D39 F11).
  * [runOwned] asks whether the gateway's scheduler still owns a job's run (the app's `cron_run_owned`); while it does,
  * the chat shows the run and sends nothing into it.
+ * [queues] keeps each stored session's queue of unsent messages across process deaths (batch-3 F2, DC-M5).
  */
 class ChatSession(private val core: CoreGateway, private val turns: TurnHost, private val scope: CoroutineScope,
                   private val keepSecret: suspend (name: String, value: ByteArray) -> Unit,
                   private val notifier: Notifier = Notifier.None,
                   private val gatewaySeen: () -> GatewaySeen = { GatewaySeen(GatewayStatus.RUNNING) },
-                  private val runOwned: suspend (StoredSessionId) -> Boolean? = { null }) {
+                  private val runOwned: suspend (StoredSessionId) -> Boolean? = { null },
+                  private val queues: QueueStore = QueueStore.inMemory()) {
     companion object {
         /** The session's source, which is also the agent's platform; "android" keeps the CLI toolsets. */
         const val SOURCE = "android"
@@ -84,6 +86,8 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         const val RUN_STILL_OWNED = "This job is still running in the background. You can read it here; write once it has finished."
         /** Said when the core turned a correction away because its turn had ended, and that turn was stopped or failed (D6). */
         const val CORRECTION_NOT_SENT = "The run ended before Hermes took this, so it was not sent."
+        /** Said when the agent cannot take corrections (4010): the words wait at the queue's head instead (DC-M4, D10). */
+        const val CORRECTION_QUEUED = "Hermes cannot take a correction in this run, so it waits in the queue for the next turn."
     }
 
     /**
@@ -93,9 +97,28 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
      * [jobsNoticed]: the chat has said [JOBS_NEED_GATEWAY] in this session.
      * [resend]: the id of a correction the core turned away (`rejected`) before this chat saw its turn end; it waits
      * for that end, in this session only (D6).
+     * [queue]: the session's queue of unsent messages (§2.4); [nextQueued] the id the next queued item takes. It only
+     * grows in this process, so a tap on a stale row never meets a new item (inv. 4).
      */
     private data class Live(val ref: SessionRef? = null, val chat: Chat = Chat(), val waiting: Map<String, InTurnPrompt> = emptyMap(),
-                            val jobsNoticed: Boolean = false, val resend: Long? = null) {
+                            val jobsNoticed: Boolean = false, val resend: Long? = null, val queue: QueueUi = QueueUi(),
+                            val nextQueued: Long = 0) {
+        /** [text] at the queue's tail. */
+        fun queued(text: String): Live = copy(queue = queue.added(text, nextQueued), nextQueued = nextQueued + 1)
+
+        /** Stop or a turn that did not complete: the items listed wait for Resume; an empty queue stays unpaused (D5, DC-M6). */
+        fun paused(): Live = copy(queue = queue.copy(paused = queue.items.isNotEmpty()))
+
+        /**
+         * The queue's head on its way, when nothing runs or is about to, in a session the chat may write to: its bubble
+         * and its leaving the queue in one value, with its words to send; else this and null (inv. 3, inv. 4).
+         */
+        fun draining(): Pair<Live, String?> {
+            if (chat.busy || chat.compressing || chat.runOwned) return this to null
+            val (item, rest) = queue.next() ?: return this to null
+            return copy(chat = chat.sent(item.text), queue = rest) to item.text
+        }
+
         /** The requests the core withdrew (their cards are gone from the transcript) let go too. */
         fun withdrawn(): Live = copy(waiting = waiting.filterKeys { id -> chat.prompts.any { it.id == id } })
 
@@ -115,18 +138,58 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     private var live = Live()  // guarded by lock
     private val shown = MutableStateFlow(Chat())
     val state: StateFlow<Chat> = shown.asStateFlow()
+    private val shownQueue = MutableStateFlow(QueueUi())
+    /** The chat's queue of unsent messages, in its session; it lives beside the transcript, not in it (§2.4). */
+    val queueState: StateFlow<QueueUi> = shownQueue.asStateFlow()
+    /** The queues to write, newest per stored key (guarded by [lock]); [flush] writes them, one writer at a time. */
+    private val unsaved = mutableMapOf<StoredSessionId, QueueUi>()
+    private val saving = Mutex()
     /** Open/resume and the close of a left session, one at a time: a resume of the left session cannot race its close (D3). */
     private val switching = Mutex()
     /** The sessions this chat left and their closes (B3-D2/D3/D5; improve #5). */
     private val leftSessions = LeftSessions(scope, switching, stillHere = { synchronized(lock) { live.ref?.runtime } == it },
                                             close = { core.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = it.value)) })
 
-    /** Replaces the live value by [next] of it, atomically; returns the value before and after. Pure and quick inside. */
-    private inline fun change(next: (Live) -> Live): Pair<Live, Live> = synchronized(lock) {
-        val before = live
-        live = next(before)
-        shown.value = live.chat
-        before to live
+    /**
+     * Replaces the live value by [next] of it, atomically; returns the value before and after. Pure and quick inside.
+     * A queue it changed is written after, off the lock: one small write per queue change (§6).
+     */
+    private inline fun change(next: (Live) -> Live): Pair<Live, Live> {
+        val (before, after, toSave) = synchronized(lock) {
+            val before = live
+            live = next(before)
+            shown.value = live.chat
+            shownQueue.value = live.queue
+            Triple(before, live, recordQueue(before, live))
+        }
+        if (toSave) scope.launch { flush() }
+        return before to after
+    }
+
+    /**
+     * What [change] must write of the queue (under [lock]): in one session only, never on a switch, whose queue was just
+     * loaded. A rotated stored key takes its queue along (D11); otherwise items or pause that changed. True: recorded.
+     */
+    private fun recordQueue(before: Live, after: Live): Boolean {
+        val was = before.ref ?: return false
+        val now = after.ref ?: return false
+        if (was.runtime != now.runtime) return false
+        if (was.stored != now.stored) {
+            unsaved[was.stored] = QueueUi()
+            unsaved[now.stored] = after.queue
+            return true
+        }
+        if (before.queue.items == after.queue.items && before.queue.paused == after.queue.paused) return false
+        unsaved[now.stored] = after.queue
+        return true
+    }
+
+    /** Writes the queues [change] recorded, serially, the newest per key; a failed write loses only persistence. */
+    private suspend fun flush() {
+        saving.withLock {
+            synchronized(lock) { unsaved.toMap().also { unsaved.clear() } }
+                .forEach { (key, queue) -> orElse(Unit) { queues.save(key, queue) } }
+        }
     }
 
     private fun say(notice: String) {
@@ -262,6 +325,8 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
             if (synchronized(lock) { live.ref?.stored } == stored) throw SetupRefusal(NOT_CLOSED)  // W8: back on it meanwhile
             deleteRow(stored)
         }
+        synchronized(lock) { unsaved[stored] = QueueUi() }  // its queue goes with its row (§8, D11)
+        flush()
     }
 
     /** `session.delete` of [stored]: gone already is done (4007); a session still live in a turn is refused (4023). */
@@ -326,8 +391,11 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         // A job's run is asked once, as it opens, whether the gateway's scheduler still owns it (V2, V3); a failed read
         // cannot tell, which keeps today's rule (V6).
         val owned = if (isCronRun(key)) orElse(null) { runOwned(key) } else null
+        // Its queue as last written (a write still pending lands first); paused unless its turn still runs (D6).
+        flush()
+        val queue = orElse(QueueUi()) { queues.load(key) }.resumed(inTurn)
         return switchTo(SessionRef(RuntimeSessionId(resumed.sessionId), key), chat.copy(runOwned = refusesSend(owned)),
-                        resumed.info.desktopContract, open, transcript = resumed.messages)
+                        resumed.info.desktopContract, open, transcript = resumed.messages, queue = queue)
     }
 
     /** Invariant 6: no switch while the core compresses the chat's session; [switching] is held, so none is admitted meanwhile. */
@@ -338,10 +406,11 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     /**
      * Makes [ref] the chat's session, showing [chat] with the cards of the [open] requests it can show; the previous
      * session's turn and questions are let go, and the session itself is closed in the core if it was idle: the
-     * returned value is that close's outcome. [transcript] is shown keyed on after every id the chat showed before (V5).
+     * returned value is that close's outcome. [transcript] is shown keyed on after every id the chat showed before (V5);
+     * [queue] is the session's own (a new session's is empty), its ids never below one the chat gave (inv. 4).
      */
     private fun switchTo(ref: SessionRef, chat: Chat, reportedContract: JsonElement?, open: List<InTurnPrompt> = emptyList(),
-                         transcript: List<TranscriptMessage> = emptyList()): Deferred<LeftSessions.Outcome>? {
+                         transcript: List<TranscriptMessage> = emptyList(), queue: QueueUi = QueueUi()): Deferred<LeftSessions.Outcome>? {
         val notice = contractNotice(reportedContract)
         val (before, after) = change { now ->
             val shown = chat.copy(nextId = now.chat.nextId).restored(transcript)
@@ -351,7 +420,8 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
                        .mapNotNull { p -> now.waiting[p.id]?.let { p to it } } else emptyList()
             val cards = opened + kept
             Live(ref, cards.fold(notice?.let(shown::notice) ?: shown) { shownChat, (p, _) -> shownChat.asked(p) },
-                 cards.associate { (p, raw) -> p.id to raw })
+                 cards.associate { (p, raw) -> p.id to raw }, queue = queue,
+                 nextQueued = maxOf(now.nextQueued, (queue.items.maxOfOrNull { it.id } ?: -1) + 1))
         }
         // Invariant 3, decided from the one atomic swap (EJ-78): an idle session the chat left is closed; a busy one (a turn
         // running or about to) runs on.
@@ -433,7 +503,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     /**
      * Sends [text] to the chat's session; refused while the session compresses. While a turn runs, the core's busy
      * mode says how ([Chat.busySend]): the words redirect or steer the turn, which never hard-interrupts it (inv. 1);
-     * nothing goes out before the turn started, in queue mode or while a question waits (Stop stands alone).
+     * in queue mode they go into the chat's queue; nothing goes out before the turn started or while a question waits.
      */
     suspend fun send(text: String) {
         var session: RuntimeSessionId? = null
@@ -448,6 +518,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
                     session = ref.runtime; correction = now.chat.nextId to busySend
                     now.copy(chat = now.chat.correcting(text, busySend))  // the user's words at once (inv. 2)
                 }
+                now.chat.running && now.chat.busyMode == BusyMode.QUEUE && now.chat.queueable -> now.queued(text)  // the app's queue (M2's D3)
                 now.chat.busy -> now
                 else -> { session = ref.runtime; now.copy(chat = now.chat.sent(text)) }
             }
@@ -457,15 +528,20 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         submit(to, text)
     }
 
-    /** `prompt.submit` of [text] to [session], whose bubble is on its way; a refusal or a failure makes the chat idle again (V7). */
-    private suspend fun submit(session: RuntimeSessionId, text: String) {
+    /**
+     * `prompt.submit` of [text] to [session], whose bubble is on its way; a refusal or a failure makes the chat idle again (V7).
+     * A [queued] item goes with `queued: true`, so the core holds it for the next turn and never makes it a correction
+     * (§0 coherence 1); one that does not go out pauses the rest of the queue, with no retry (D8).
+     */
+    private suspend fun submit(session: RuntimeSessionId, text: String, queued: Boolean = false) {
         try {
-            val result = core.call(Methods.PROMPT_SUBMIT, PromptSubmitParams(sessionId = session.value, text = JsonPrimitive(text)))
+            val result = core.call(Methods.PROMPT_SUBMIT, PromptSubmitParams(sessionId = session.value, text = JsonPrimitive(text),
+                                                                             queued = true.takeIf { queued }))
             result.userRowId?.let { bind(session, it) }
         } catch (refused: CoreError) {
-            unsent(session, refused.message ?: "The core refused the prompt (${refused.code}).")
+            unsent(session, refused.message ?: "The core refused the prompt (${refused.code}).", pause = queued)
         } catch (failed: Exception) {  // anything else: the message did not go out, and the user hears it
-            unsent(session, forUser(failed))
+            unsent(session, forUser(failed), pause = queued)
         }
     }
 
@@ -484,6 +560,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         val answer = try {
             core.call(method, SessionCorrectionParams(sessionId = session.value, text = text))
         } catch (refused: CoreError) {  // 4010: the agent cannot take corrections; 4001, 5000
+            if (refused.code == 4010) return requeued(session, id, text)
             say(refused.message ?: "Hermes refused the correction (${refused.code}).")
             return
         } catch (failed: Exception) {
@@ -509,9 +586,24 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         }
     }
 
-    /** [session]'s prompt did not go out: idle again if the chat is still there; [words] said either way (V7). */
-    private fun unsent(session: RuntimeSessionId, words: String) {
-        change { now -> now.copy(chat = (if (now.ref?.runtime == session) now.chat.unsent() else now.chat).notice(words)) }
+    /**
+     * The correction [id] ([text]) the agent cannot take (4010) leaves the transcript for the queue's head, so it goes
+     * next and its words are in one place (DC-M4, D10); a chat that left [session] changes nothing.
+     */
+    private fun requeued(session: RuntimeSessionId, id: Long, text: String) {
+        change { now ->
+            if (now.ref?.runtime != session) now
+            else now.copy(chat = now.chat.without(id).notice(CORRECTION_QUEUED)).queued(text)
+                .let { it.copy(queue = it.queue.moved(now.nextQueued)) }
+        }
+    }
+
+    /** [session]'s prompt did not go out: idle again if the chat is still there, its queue paused on [pause]; [words] said either way (V7). */
+    private fun unsent(session: RuntimeSessionId, words: String, pause: Boolean = false) {
+        change { now ->
+            if (now.ref?.runtime != session) now.copy(chat = now.chat.notice(words))
+            else now.copy(chat = now.chat.unsent().notice(words)).let { if (pause) it.paused() else it }
+        }
     }
 
     /** The core named the row of [session]'s newest prompt; only while the chat is still on that session. */
@@ -622,16 +714,91 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     /**
      * Stops the running turn, as the desktop's Stop does: the core interrupts it and ends it with an `interrupted`
      * completion, which ends the turn here too; or the turn about to start, which the core ends with an `error`.
-     * Nothing runs, nothing is asked.
+     * Nothing runs, nothing is asked; the queue pauses first, so nothing queued runs after a Stop (DC-M6).
      */
     suspend fun cancel() {
         // The session seen busy, read with its state (EJ-78): Stop before the turn started cancels it too (V6).
-        val session = synchronized(lock) { live.ref?.runtime?.takeIf { live.chat.busy } } ?: return
+        var seen: RuntimeSessionId? = null
+        change { now -> now.ref?.runtime?.takeIf { now.chat.busy }?.let { seen = it; now.paused() } ?: now }
+        val session = seen ?: return
         try {
             core.call(Methods.SESSION_INTERRUPT, SessionInterruptParams(sessionId = session.value))
         } catch (failed: Exception) {
             say(forUser(failed))
         }
+    }
+
+    /**
+     * Puts [text] at the tail of the chat's queue while a turn runs or is about to ([Chat.queueable]); nothing goes to
+     * the core until a turn ends (§0 coherence 1). A blank text, an idle chat or one with no session queues nothing.
+     */
+    suspend fun queue(text: String) {
+        val words = text.trim().ifEmpty { return }
+        change { now -> if (now.ref != null && now.chat.queueable) now.queued(words) else now }
+    }
+
+    /** Queued item [id] is being edited, so it waits; null, or an item no longer listed, ends the edit (D4). */
+    fun beginEdit(id: Long?) {
+        change { now -> now.copy(queue = now.queue.copy(editing = id?.takeIf { i -> now.queue.items.any { it.id == i } })) }
+    }
+
+    /** Queued item [id] takes the words [text] and its edit ends; a blank text, or an item already sent, changes nothing (inv. 4). */
+    fun editQueued(id: Long, text: String) {
+        val words = text.trim().ifEmpty { return }
+        change { now -> now.copy(queue = now.queue.edited(id, words)) }
+    }
+
+    /** Queued item [id] leaves the queue unsent; one already sent changes nothing (inv. 4). */
+    fun deleteQueued(id: Long) {
+        change { now -> now.copy(queue = now.queue.removed(id)) }
+    }
+
+    /**
+     * Queued item [id] goes next, and a pause lifts: while a turn runs it moves to the front, never interrupting (inv. 1,
+     * D2); while nothing runs it goes out now. One already sent, or the one being edited, changes nothing (inv. 4).
+     */
+    fun sendNext(id: Long) {
+        drainAfter { queue -> queue.takeIf { id != it.editing && it.items.any { item -> item.id == id } }?.moved(id)?.copy(paused = false) }
+    }
+
+    /** Resume after a pause: the head goes out now when nothing runs, else at the next finished turn (`index.tsx:1323-1331`). */
+    fun resumeQueue() {
+        drainAfter { it.copy(paused = false) }
+    }
+
+    /**
+     * One change of the queue by [step] (null: none), then its head out at once if nothing runs or is about to, with
+     * `queued: true`; decided in the same change, so it is never both sent and still listed (EJ-78).
+     */
+    private fun drainAfter(step: (QueueUi) -> QueueUi?) {
+        var drained: Pair<RuntimeSessionId, String>? = null
+        change { now ->
+            val ref = now.ref ?: return@change now
+            val queue = step(now.queue) ?: return@change now
+            now.copy(queue = queue).draining().let { (next, text) -> text?.let { drained = ref.runtime to it }; next }
+        }
+        drained?.let { (session, text) -> scope.launch { submit(session, text, queued = true) } }
+    }
+
+    /**
+     * Queued item [id] corrects the running turn now, as a busy Send does ([Chat.steerMode]: steered in the core's steer
+     * mode, else redirected, D3): it leaves the queue and becomes the correction's bubble. Only where a correction can
+     * land, and not the item being edited; otherwise nothing (D9: a `rejected` answer follows M2's rule).
+     */
+    suspend fun steerNow(id: Long) {
+        var steer: Triple<RuntimeSessionId, Long, Pair<String, BusyMode>>? = null  // the session, the bubble, the words and mode
+        change { now ->
+            val ref = now.ref
+            val item = now.queue.items.firstOrNull { it.id == id }
+            val mode = now.chat.steerMode
+            if (ref == null || item == null || now.queue.editing == id || mode == null) now
+            else {
+                steer = Triple(ref.runtime, now.chat.nextId, item.text to mode)
+                now.copy(chat = now.chat.correcting(item.text, mode), queue = now.queue.removed(id).copy(paused = false))
+            }
+        }
+        val (session, bubble, words) = steer ?: return
+        correct(session, bubble, words.first, words.second)
     }
 
     fun approve(prompt: Prompt.Approval, choice: ApprovalChoice) =
@@ -675,16 +842,26 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         val session = RuntimeSessionId(event.sessionId ?: return)
         if (event.type == Events.SESSION_INFO.name || event.type == Events.ERROR.name) leftSessions.settled(session)
         var reply: Entry.Reply? = null  // the reduced transcript's last entry, before a waiting correction settles after it
+        var drained: String? = null  // the queue's head, sent as this turn ends
         val (before, after) = change { now ->
             if (now.ref?.runtime != session) now
             else now.copy(ref = now.ref.seen(event), chat = now.chat.reduce(event)).withdrawn()
                 .also { reply = it.chat.entries.lastOrNull() as? Entry.Reply }.resettled()
+                .let { next ->
+                    // The turn's end is busy going false, with or without a running edge (D1); decided here, once (inv. 3).
+                    when {
+                        !now.chat.busy || next.chat.busy -> next  // not this turn's end, or a resend took it (D6)
+                        next.chat.endedComplete -> next.draining().also { drained = it.second }.first
+                        else -> next.paused()  // stopped, failed, an error frame
+                    }
+                }
         }
         if (before === after) return
         // A correction the core turned away, now a prompt after the turn that completed: it goes out once (D6).
         val resent = before.resend?.takeIf { after.resend == null && after.chat.submitted }
         resent?.let { id -> (after.chat.entries.firstOrNull { it.stableId == id } as? Entry.User)?.text }
             ?.let { text -> scope.launch { submit(session, text) } }
+        drained?.let { text -> scope.launch { submit(session, text, queued = true) } }
         if (before.chat.running != after.chat.running) syncTurn()
         if (before.chat.running && !after.chat.running) notifier.turnFinished(reply)
         // Withdrawn by the core: the turn no longer waits for them.

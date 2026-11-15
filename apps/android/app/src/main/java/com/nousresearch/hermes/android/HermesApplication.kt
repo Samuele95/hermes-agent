@@ -10,6 +10,7 @@ import android.util.Log
 import com.nousresearch.hermes.android.chat.ChatSession
 import com.nousresearch.hermes.android.chat.ContextPanel
 import com.nousresearch.hermes.android.chat.SessionHistory
+import com.nousresearch.hermes.android.chat.queueFiles
 import com.nousresearch.hermes.android.gateway.GatewayControl
 import com.nousresearch.hermes.android.gateway.GatewaySeen
 import com.nousresearch.hermes.android.gateway.PrefsGatewaySettings
@@ -214,7 +215,8 @@ class HermesApplication : Application() {
         val paths = withContext(Dispatchers.IO) { installRuntime(this@HermesApplication) }
         val deps = CoreDeps(secrets, ForegroundTurnHost(this), notifier,
                             keyNames = PrefsKeyNames(getSharedPreferences("provider_keys", MODE_PRIVATE)),
-                            subnet = { wifiSubnet(this@HermesApplication) }, seen = seen)
+                            subnet = { wifiSubnet(this@HermesApplication) }, seen = seen,
+                            queues = queueFiles(File(noBackupFilesDir, "queue")))  // app-private, never backed up
         val ready = composeCore(runtime, paths, deps, scope)
         return ready.copy(about = "${ready.about} · ready in ${SystemClock.elapsedRealtime() - began} ms")
     }

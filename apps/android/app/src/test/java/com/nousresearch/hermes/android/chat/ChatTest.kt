@@ -488,4 +488,33 @@ class ChatTest {
         assertTrue(prompted.submitted)
         assertEquals(done.entries.size, prompted.entries.size)
     }
+
+    @Test
+    fun theQueueAndSteerNowAreOfferedOnlyWhereTheyCanLand() {
+        val idle = Chat(busyMode = BusyMode.INTERRUPT)
+        val sent = idle.sent("hi")
+        val running = sent.reduce(event("message.start"))
+
+        assertFalse(idle.queueable)
+        assertTrue(sent.queueable)     // on its way: the next prompt can wait for it (D12)
+        assertTrue(running.queueable)
+        assertFalse(running.copy(runOwned = true).queueable)
+        assertFalse(running.copy(compressing = true).queueable)
+
+        assertEquals(null, sent.steerMode)  // before message.start a correction cannot land (D3)
+        assertEquals(null, running.asked(Prompt.Approval("srq-1", "r1", "ls", "", listOf(ApprovalChoice.ONCE, ApprovalChoice.DENY))).steerMode)
+        assertEquals(null, running.copy(busyMode = null).steerMode)
+        assertEquals(null, running.copy(runOwned = true).steerMode)
+        assertEquals(null, running.copy(compressing = true).steerMode)
+        assertEquals(BusyMode.STEER, running.copy(busyMode = BusyMode.STEER).steerMode)
+        assertEquals(BusyMode.INTERRUPT, running.steerMode)
+        assertEquals(BusyMode.INTERRUPT, running.copy(busyMode = BusyMode.QUEUE).steerMode)  // queue mode redirects
+
+        val corrected = running.correcting("use metric", BusyMode.INTERRUPT).notice("x")
+        val id = corrected.entries[1].stableId
+        val without = corrected.without(id)
+        assertEquals(corrected.entries.filterNot { it.stableId == id }, without.entries)
+        assertEquals(corrected.nextId, without.nextId)
+        assertEquals(corrected, corrected.without(99))
+    }
 }
