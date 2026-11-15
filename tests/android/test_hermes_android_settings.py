@@ -248,3 +248,106 @@ def test_a_write_waits_for_the_apps_config_lock(home):
     raw = _raw()
     assert "a" in raw["providers"]
     assert raw["approvals"]["timeout"] == 120
+
+
+UNREADABLE = {"error": "The always-allowed list could not be read; nothing was changed."}
+
+
+@pytest.fixture
+def calls(monkeypatch):
+    """Each ``save_permanent_allowlist`` call's argument, recorded, then the core's own function run on it."""
+    from tools import approval
+
+    original, seen = approval.save_permanent_allowlist, []
+
+    def spy(patterns):
+        seen.append(set(patterns))
+        return original(patterns)
+
+    monkeypatch.setattr(approval, "save_permanent_allowlist", spy)
+    return seen
+
+
+def test_removing_from_a_bare_string_allowlist_leaves_the_file_as_it_was(home, approval_state):
+    # No spy: if the guard fails, the core's reconcile runs for real and splits the string into its characters.
+    (home / "config.yaml").write_text("approvals:\n  timeout: 300\ncommand_allowlist: git status\n", encoding="utf-8")
+    approval_state.load_permanent_allowlist()
+    before = (home / "config.yaml").read_bytes()
+
+    assert _write(allowlist_remove=["git status"]) == UNREADABLE
+
+    assert (home / "config.yaml").read_bytes() == before
+    assert _raw()["command_allowlist"] == "git status"
+
+
+@pytest.mark.parametrize("block", [
+    "command_allowlist: git status\n",
+    "command_allowlist: \"['git status']\"\n",  # the core recovers it as a list, yet set() would split it
+    "command_allowlist:\n  git: status\n",
+    "command_allowlist: false\n",
+    "command_allowlist:\n- git status\n- 3\n",
+], ids=["bare-string", "legacy-string", "mapping", "false", "non-string-entry"])
+def test_an_unreadable_allowlist_is_never_reconciled(home, approval_state, calls, block):
+    (home / "config.yaml").write_text(block, encoding="utf-8")
+    approval_state.load_permanent_allowlist()
+    before = (home / "config.yaml").read_bytes()
+
+    assert _write(allowlist_remove=["git status"]) == UNREADABLE
+
+    assert (home / "config.yaml").read_bytes() == before
+    assert calls == []
+
+
+def test_a_mixed_edit_with_an_unreadable_allowlist_writes_nothing(home, approval_state, calls):
+    (home / "config.yaml").write_text("approvals:\n  timeout: 300\ncommand_allowlist: git status\n", encoding="utf-8")
+    approval_state.load_permanent_allowlist()
+    before = (home / "config.yaml").read_bytes()
+
+    assert _write(approvals_timeout_s=120, allowlist_remove=["git status"]) == UNREADABLE
+
+    assert (home / "config.yaml").read_bytes() == before
+    assert _raw()["approvals"]["timeout"] == 300
+    assert calls == []
+
+
+def test_a_list_turned_unreadable_after_the_lock_is_not_reconciled(home, approval_state, calls, monkeypatch):
+    from hermes_android import _config
+
+    (home / "config.yaml").write_text("command_allowlist:\n- git status\n- docker *\n", encoding="utf-8")
+    approval_state.load_permanent_allowlist()
+    real_mutate = _config.mutate
+
+    def mutate_then_hand_edit(fn):
+        result = real_mutate(fn)
+        # A hand edit landing between the lock's release and the reconcile.
+        (home / "config.yaml").write_text("command_allowlist: git status\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(_config, "mutate", mutate_then_hand_edit)
+
+    assert _write(allowlist_remove=["docker *"]) == UNREADABLE
+
+    assert calls == []
+    assert (home / "config.yaml").read_text(encoding="utf-8") == "command_allowlist: git status\n"
+
+
+def test_a_null_allowlist_reads_as_empty_and_the_removal_still_reconciles(home, approval_state, calls):
+    (home / "config.yaml").write_text("command_allowlist:\n- docker *\n", encoding="utf-8")
+    approval_state.load_permanent_allowlist()
+    assert approval_state._is_permanently_approved("docker *"), "the standing approval never took"
+    (home / "config.yaml").write_text("command_allowlist:\n", encoding="utf-8")  # hand-emptied: YAML null
+
+    assert _write(allowlist_remove=["docker *"]) == {"applied": False}
+
+    assert len(calls) == 1
+    assert not approval_state._is_permanently_approved("docker *")
+    assert _raw()["command_allowlist"] == []
+
+
+def test_a_list_of_strings_is_still_removed_and_reconciled_once(home, approval_state, calls):
+    (home / "config.yaml").write_text("command_allowlist:\n- git status\n- ls *\n", encoding="utf-8")
+
+    assert _write(allowlist_remove=["ls *"]) == {"applied": True}
+
+    assert calls == [set()]
+    assert _raw()["command_allowlist"] == ["git status"]

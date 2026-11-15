@@ -361,7 +361,7 @@
       }
     },
     "settings_write": {
-      "summary": "Changes only the given settings in config.yaml under the app's config lock (null leaves a field as it is; never .env); allowlist_remove takes those patterns out and makes this process stop honouring them at once, the gateway at its next start. applied says whether config.yaml changed; a timeout below 1 or a negative limit is refused in words.",
+      "summary": "Changes only the given settings in config.yaml under the app's config lock (null leaves a field as it is; never .env); allowlist_remove takes those patterns out and makes this process stop honouring them at once, the gateway at its next start. applied says whether config.yaml changed; a timeout below 1, a negative limit, or a removal while command_allowlist on disk is not a list of strings is refused in words, with nothing written and nothing reconciled.",
       "params": {
         "approvals_timeout_s": "integer?",
         "memory_enabled": "boolean?",

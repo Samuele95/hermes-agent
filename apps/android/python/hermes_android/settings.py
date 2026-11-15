@@ -11,7 +11,8 @@ The always-allowed commands live twice: in config.yaml and in each process's gov
 under the lock and then, after the lock, calls the core's only public reconciling function,
 ``tools.approval.save_permanent_allowlist(set())``, which makes this process stop honouring the removed patterns
 (DC-M16); it does its own load and save, so it never runs inside the mutate. The ``:gateway`` process keeps its own set
-and follows at its next start (Dv31).
+and follows at its next start (Dv31). The reconcile never runs while ``command_allowlist`` is not a list of strings,
+because the core would rewrite it, a bare string as its characters (architect #1).
 
 The core is importable only after ``prepare()``, so the core imports sit inside the functions.
 """
@@ -23,6 +24,7 @@ import json
 from hermes_android import _config
 
 TIMEOUT_S = 300  # tools/approval_context.py's fallback
+UNREADABLE = "The always-allowed list could not be read; nothing was changed."
 LIMITS = {"memory_char_limit": 2200, "user_char_limit": 1375}  # agent/agent_init.py's defaults
 SWITCHES = ("memory_enabled", "user_profile_enabled")
 _MISSING = object()
@@ -50,15 +52,20 @@ def read(_arg: str) -> str:
 
 def write(arg: str) -> str:
     """Changes only the edit's non-null fields and takes ``allowlist_remove`` out of the allowlist; ``applied`` says
-    whether config.yaml changed (D2). A refused value writes nothing, the reconcile included."""
+    whether config.yaml changed (D2). A refused value writes nothing, the reconcile included. A removal while the
+    allowlist on disk is not a list of strings is refused the same way: no write, no reconcile."""
     edit = json.loads(arg)
     timeout = edit["approvals_timeout_s"]
     if timeout is not None and timeout < 1:
         return json.dumps({"error": "The approval timeout must be at least 1 second."})
     if any(edit[key] is not None and edit[key] < 0 for key in LIMITS):
         return json.dumps({"error": "A memory size limit cannot be negative."})
+    if edit["allowlist_remove"] and _unreadable():
+        return json.dumps({"error": UNREADABLE})
     changed = _config.mutate(lambda cfg: _apply(cfg, edit))
     if edit["allowlist_remove"]:  # after the lock, even when the file no longer held them (D3, D4)
+        if _unreadable():  # checked again: a hand edit can land after the lock, and the core's set() splits a string
+            return json.dumps({"error": UNREADABLE})
         from tools.approval import save_permanent_allowlist
 
         save_permanent_allowlist(set())
@@ -106,3 +113,12 @@ def _patterns(cfg: dict) -> list[str] | None:
     if isinstance(patterns, list) and all(isinstance(pattern, str) for pattern in patterns):
         return list(patterns)
     return None
+
+
+def _unreadable() -> bool:
+    """Whether config.yaml's command_allowlist is there but not a list of strings, from a fresh load: the core's
+    save_permanent_allowlist would then rewrite it (a bare string as its characters). Null reads as [] (D1)."""
+    from hermes_cli.config import load_config
+
+    cfg = load_config()
+    return cfg.get("command_allowlist") is not None and _patterns(cfg) is None

@@ -292,6 +292,25 @@ class SettingsControlTest {
     }
 
     @Test
+    fun aRefusedRemovalShowsItsWordsKeepsTheListAndMarksNoNextStart() = runTest {
+        seenNow = GatewaySeen(GatewayStatus.RUNNING, pid = 7)
+        settings.open()
+        writeAnswer = """{"error":"The always-allowed list could not be read; nothing was changed."}"""
+
+        settings.askRemove("docker *")
+        settings.confirmRemove()
+
+        val ui = settings.state.value!!
+        assertEquals("The always-allowed list could not be read; nothing was changed.", ui.error)
+        assertEquals(CFG, ui.config)
+        assertNull(ui.confirmRemove)
+        assertFalse(ui.busy)
+        assertFalse("a refused removal changed nothing the gateway holds", ui.nextStart)
+        assertEquals(1, reads())  // a refusal re-reads nothing
+        assertEquals(1, writes().size)
+    }
+
+    @Test
     fun whileAWriteRunsNothingElseIsSent() = runTest {
         settings.open()
         core.calls.clear()
