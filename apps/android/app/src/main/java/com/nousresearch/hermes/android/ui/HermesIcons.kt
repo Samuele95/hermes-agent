@@ -50,6 +50,7 @@ object HermesIcons {
     val Trash = icon("trash", "M4 7h16", "M10 11v6", "M14 11v6", "M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12",
                      "M9 7v-3a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3")
     val Close = icon("x", "M18 6l-12 12", "M6 6l12 12")
+    val CreditCard = icon("credit-card", "M3 8a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3h-12a3 3 0 0 1-3-3z", "M3 10h18", "M7 15h.01", "M11 15h2")
     val Alert = icon("alert-circle", "M3 12a9 9 0 1 0 18 0a9 9 0 0 0-18 0", "M12 8v4", "M12 16h.01")
     val Retry = icon("refresh", "M20 11a8.1 8.1 0 0 0-15.5-2m-.5-4v4h4", "M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4")
     val Checklist = icon("list-check", "M3.5 5.5l1.5 1.5l2.5-2.5", "M3.5 11.5l1.5 1.5l2.5-2.5", "M3.5 17.5l1.5 1.5l2.5-2.5",

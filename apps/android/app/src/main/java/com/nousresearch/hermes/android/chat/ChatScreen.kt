@@ -111,7 +111,8 @@ class ChatPlaces(val setup: (() -> Unit)? = null, val terminal: (() -> Unit)? = 
  * composer with each row's actions, and [queueActions] what they do and what the composer's Queue button adds to it
  * (chat-19); without them the chat offers no queue. [chat]'s offer is taken into the composer's draft once and handed
  * back to [onOfferTaken]; the strip above the field offers [places]' New chat. [readiness] marks the model pill (F6);
- * while it is not ready a tap shows the core's words, with setup and [onCheckReadiness].
+ * while it is not ready a tap shows the core's words, with setup and [onCheckReadiness]. [chat]'s billing wall shows above
+ * the composer until dismissed ([onDismissWall]); its action opens the core's page through [onOpenUrl], else setup (models-23).
  */
 @Composable
 fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifier, answers: PromptAnswers? = null,
@@ -120,7 +121,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
                places: ChatPlaces? = null, onStop: () -> Unit = {}, onRetry: (() -> Unit)? = null,
                onCopy: ((String) -> Unit)? = null, about: String? = null, queue: QueueUi = QueueUi(),
                queueActions: QueueActions? = null, onOfferTaken: (IncomingText) -> Unit = {}, readiness: Readiness? = null,
-               onCheckReadiness: (() -> Unit)? = null) {
+               onCheckReadiness: (() -> Unit)? = null, onOpenUrl: ((String) -> Unit)? = null, onDismissWall: () -> Unit = {}) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var picked by remember { mutableIntStateOf(0) }  // a conversation picked in the drawer is shown from its end (V5)
@@ -149,6 +150,8 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
             TopBar(onMenu = if (hasDrawer) ({ scope.launch { drawer.open() } }) else null, places?.newChat)
             if (chat.entries.isEmpty() && !chat.running && chat.prompts.isEmpty()) Intro(Modifier.weight(1f))
             else Transcript(chat, onRetry, onCopy, picked, places?.gateway, Modifier.weight(1f))
+            // The billing wall tops the stack above the composer: a blocker outranks the rest (D7); the composer stays usable.
+            chat.wall?.let { BillingBanner(it, onOpenUrl, places?.setup, onDismissWall) }
             // One question at a time, the oldest first: the turn waits on it.
             if (answers != null) chat.prompts.firstOrNull()?.let { PromptCard(it, answers) }
             // The agent's plan while it works through it (D1: a turn that ended leaves no stale plan pinned).

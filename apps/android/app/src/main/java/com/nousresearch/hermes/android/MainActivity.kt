@@ -148,7 +148,7 @@ class MainActivity : ComponentActivity() {
                                        sessionActions = SessionActions(edit = state.history::edit, saveTitle = { title -> app.history { saveTitle(title) } },
                                                                        askDelete = state.history::askDelete, confirmDelete = { app.history { confirmDelete() } }),
                                        context = context, contextActions = contextActions, queue = queue, queueActions = queueActions,
-                                       onOfferTaken = state.chat::offerTaken,
+                                       onOfferTaken = state.chat::offerTaken, onOpenUrl = ::openInBrowser, onDismissWall = state.chat::dismissWall,
                                        readiness = readiness, onCheckReadiness = { app.setup { checkReadiness() } },
                                        onSend = { text ->
                                 if (Build.VERSION.SDK_INT >= 33 &&

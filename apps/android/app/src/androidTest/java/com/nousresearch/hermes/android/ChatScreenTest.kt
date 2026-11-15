@@ -46,6 +46,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import com.nousresearch.hermes.android.setup.Readiness
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.nousresearch.hermes.android.chat.BillingWall
 import com.nousresearch.hermes.android.chat.BusyMode
 import com.nousresearch.hermes.android.chat.Chat
 import com.nousresearch.hermes.android.chat.Correction
@@ -1058,5 +1059,73 @@ class ChatScreenTest {
 
         assertEquals(1, opened)
         compose.onNodeWithTag("readiness-words").assertDoesNotExist()
+    }
+
+    // The out-of-credits wall above the composer: one way to act and Dismiss, the composer still usable (models-23).
+
+    private fun words(id: Int, vararg args: Any): String = InstrumentationRegistry.getInstrumentation().targetContext.getString(id, *args)
+
+    private val deepseekWords = "DeepSeek reported that billing, credits, or account entitlement is exhausted for deepseek-v4-pro."
+
+    @Test
+    fun aProvidersWallOffersItsBillingPageAndDismiss() {
+        val opened = mutableListOf<String>()
+        var setups = 0
+        var dismissed = 0
+        var chat by mutableStateOf(Chat(model = "kimi-k2", wall = BillingWall("deepseek", "DeepSeek", false,
+                                                                               "https://platform.deepseek.com/top_up", deepseekWords)))
+        compose.setContent {
+            ChatScreen(chat, onSend = {}, places = ChatPlaces(setup = { setups++ }), onOpenUrl = { opened += it },
+                       onDismissWall = { dismissed++ })
+        }
+
+        compose.onNodeWithTag("billing-title", useUnmergedTree = true).assertTextEquals(words(R.string.billing_title_provider, "DeepSeek"))
+        compose.onNodeWithTag("billing-message", useUnmergedTree = true).assertTextEquals(deepseekWords)
+        compose.onNodeWithTag("billing-action").assertTextEquals(words(R.string.billing_add)).performClick()
+        assertEquals(listOf("https://platform.deepseek.com/top_up"), opened)
+        assertEquals(0, setups)
+
+        compose.onNodeWithTag("draft").performTextInput("hi")
+        compose.onNodeWithTag("send").assertIsEnabled()  // the wall never stops the composer
+
+        compose.onNodeWithContentDescription(words(R.string.billing_dismiss)).assertExists()  // TalkBack reads "Dismiss"
+        compose.onNodeWithTag("billing-dismiss").performClick()
+        assertEquals(1, dismissed)
+
+        chat = chat.copy(wall = null)
+        compose.onNodeWithTag("billing-wall").assertDoesNotExist()
+    }
+
+    @Test
+    fun aNousWallOpensThePortalsBilling() {
+        val opened = mutableListOf<String>()
+        compose.setContent {
+            ChatScreen(Chat(wall = BillingWall("nous", "Nous Portal", true, "https://portal.nousresearch.com/billing", BillingWall.FALLBACK)),
+                       onSend = {}, places = ChatPlaces(setup = {}), onOpenUrl = { opened += it })
+        }
+
+        compose.onNodeWithTag("billing-title", useUnmergedTree = true).assertTextEquals("Out of Nous credits")
+        compose.onNodeWithTag("billing-message", useUnmergedTree = true).assertTextEquals(BillingWall.FALLBACK)
+        compose.onNodeWithTag("billing-action").assertTextEquals("Open billing").performClick()
+        assertEquals(listOf("https://portal.nousresearch.com/billing"), opened)
+    }
+
+    @Test
+    fun aWallWithoutAPageOpensProviderSetup() {
+        val opened = mutableListOf<String>()
+        var setups = 0
+        var places by mutableStateOf<ChatPlaces?>(ChatPlaces(setup = { setups++ }))
+        compose.setContent {
+            ChatScreen(Chat(wall = BillingWall("acme", "Acme", false, null, "Out.")), onSend = {}, places = places,
+                       onOpenUrl = { opened += it })
+        }
+
+        compose.onNodeWithTag("billing-action").assertTextEquals(words(R.string.setup_title)).performClick()
+        assertEquals(1, setups)
+        assertEquals(emptyList<String>(), opened)
+
+        places = null  // nowhere to act: no button, Dismiss still there
+        compose.onNodeWithTag("billing-action").assertDoesNotExist()
+        compose.onNodeWithTag("billing-dismiss").assertExists()
     }
 }

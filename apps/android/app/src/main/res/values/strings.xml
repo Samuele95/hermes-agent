@@ -12,6 +12,11 @@
     <string name="chat_ready_unknown">unknown</string>
     <string name="chat_ready_unknown_words">Hermes could not tell whether the provider will answer: the check did not finish.</string>
     <string name="chat_ready_check">Check again</string>
+    <string name="billing_title_nous">Out of Nous credits</string>
+    <string name="billing_title_provider">Out of credits — %1$s</string>
+    <string name="billing_add">Add credits</string>
+    <string name="billing_open">Open billing</string>
+    <string name="billing_dismiss">Dismiss</string>
     <string name="chat_terminal">Terminal</string>
     <string name="chat_gateway">Gateway</string>
     <string name="chat_thinking">Thinking</string>
