@@ -72,6 +72,8 @@ class HermesApplication : Application() {
     private var started = false
     /** Words shared before the core was Ready (guarded by `this`): delivered once it is (F9). */
     private var pendingOffer: IncomingText? = null
+    /** A New chat asked for (the shortcut, the tile) before the core was Ready (guarded by `this`; D12). */
+    private var pendingNewChat = false
 
     /** Activities of the app on screen (started, not yet stopped): while there is one, the chat shows what it has to say. */
     private val onScreen = AtomicInteger()
@@ -160,11 +162,12 @@ class HermesApplication : Application() {
                             Log.w(TAG, "the core did not start", failed)
                             CoreState.Failed(forUser(failed))
                         }
-                        // The state flips and the pending offer is taken under one lock: a share never falls between them.
-                        val offer = synchronized(this@HermesApplication) {
+                        // The state flips and what waits (a New chat, an offer) is taken under one lock: neither falls between them.
+                        val (fresh, offer) = synchronized(this@HermesApplication) {
                             state.value = next
-                            pendingOffer.also { pendingOffer = null }
+                            (pendingNewChat to pendingOffer).also { pendingNewChat = false; pendingOffer = null }
                         }
+                        if (fresh) chat { open() }  // the offer lands in it or follows it into it (D7)
                         offer?.let { (next as? CoreState.Ready)?.chat?.offer(it) }
                     }
                 }
@@ -174,6 +177,12 @@ class HermesApplication : Application() {
 
     fun send(text: String) {
         chat { send(text) }
+    }
+
+    /** The shortcut's and the tile's New chat: a new conversation, once the core is Ready if it is not yet (D12). */
+    fun newChat() {
+        val ready = synchronized(this) { (state.value as? CoreState.Ready).also { if (it == null) pendingNewChat = true } }
+        if (ready != null) chat { open() }
     }
 
     /**

@@ -17,6 +17,8 @@
     <string name="chat_queue">Queue message</string>
     <string name="chat_new">New chat</string>
     <string name="offer_shared">Shared from another app. Nothing is sent until you tap Send.</string>
+    <string name="shortcut_new_chat_long">Start a new chat</string>
+    <string name="tile_label">Ask Hermes</string>
     <string name="offer_cut">Shared from another app, cut to its first 20 000 characters. Nothing is sent until you tap Send.</string>
     <string name="chat_menu">Menu</string>
     <string name="chat_retry">Retry</string>

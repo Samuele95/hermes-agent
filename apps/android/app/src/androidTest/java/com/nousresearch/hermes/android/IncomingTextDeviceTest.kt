@@ -93,4 +93,14 @@ class IncomingTextDeviceTest {
         assertFalse(drafted("replayed-from-recents"))
         assertNull(chat().state.value.offer)
     }
+
+    @Test
+    fun theNewChatActionOfTheShortcutAndTheTileOpensANewChat() {
+        val chat = chat()
+        val before = chat.sessionId
+
+        shell("am start -W -a com.nousresearch.hermes.android.NEW_CHAT -n $component")  // the intent the shortcut and the tile start
+
+        compose.waitUntil(30_000) { chat.sessionId != before && chat.state.value.entries.isEmpty() }
+    }
 }

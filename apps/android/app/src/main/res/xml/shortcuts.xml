@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Long-press on the launcher icon: "New chat" opens Hermes on a new conversation (chat-42); no permission. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="new_chat"
+        android:enabled="true"
+        android:icon="@drawable/ic_new_chat"
+        android:shortcutShortLabel="@string/chat_new"
+        android:shortcutLongLabel="@string/shortcut_new_chat_long">
+        <intent
+            android:action="com.nousresearch.hermes.android.NEW_CHAT"
+            android:targetPackage="com.nousresearch.hermes"
+            android:targetClass="com.nousresearch.hermes.android.MainActivity" />
+    </shortcut>
+</shortcuts>

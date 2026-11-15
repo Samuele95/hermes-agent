@@ -48,6 +48,7 @@ import com.nousresearch.hermes.android.chat.PromptAnswers
 import com.nousresearch.hermes.android.chat.QueueActions
 import com.nousresearch.hermes.android.chat.SessionActions
 import com.nousresearch.hermes.android.entry.IncomingText
+import com.nousresearch.hermes.android.entry.NEW_CHAT
 import com.nousresearch.hermes.android.gateway.GatewayScreen
 import com.nousresearch.hermes.android.gateway.GatewayUi
 import com.nousresearch.hermes.android.gateway.TelegramActions
@@ -168,11 +169,12 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * An intent in: shared text becomes the chat's offer (F9); the shortcut's and tile's action arrives in commit 2.
-     * One replayed from Recents offers nothing, or the same words would land twice (D10).
+     * An intent in: shared text becomes the chat's offer (F9); the shortcut's and the tile's [NEW_CHAT] opens a new chat
+     * (D2). One replayed from Recents does neither, or the same words would land twice (D10).
      */
     private fun take(intent: Intent?) {
         if (intent == null || intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
+        if (intent.action == NEW_CHAT) return (application as HermesApplication).newChat()
         IncomingText.of(intent.action, intent.type, intent.getCharSequenceExtra(Intent.EXTRA_TEXT),
                         intent.getStringExtra(Intent.EXTRA_SUBJECT))?.let((application as HermesApplication)::offer)
     }
