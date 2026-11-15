@@ -31,6 +31,46 @@ class SessionExportTest {
         assertEquals(ExportUi(), export.state.value)
     }
 
+    /** A handoff that started no activity (a stopped activity, or Android's block) keeps the file (architect #2). */
+    @Test
+    fun aRefusedHandoffKeepsTheFileAndAdmitsNoOtherExport() = runTest {
+        export.export(null)
+        val offered = mutableListOf<ExportFile>()
+
+        export.handOff(f) { offered += it; false }
+
+        assertEquals(listOf(f), offered)
+        assertEquals(ExportUi(file = f), export.state.value)
+        export.export(StoredSessionId("db-other"))
+        assertEquals(listOf<StoredSessionId?>(null), asked)
+    }
+
+    @Test
+    fun aRetriedHandoffThatStartsTheSheetClears() = runTest {
+        export.export(null)
+        export.handOff(f) { false }
+
+        export.handOff(f) { true }  // the next start
+
+        assertEquals(ExportUi(), export.state.value)
+    }
+
+    /** The start after the sheet (the sheet stops the activity) offers nothing again, nor an older file over a waiting one. */
+    @Test
+    fun aFileNoLongerWaitingIsNotOffered() = runTest {
+        val old = f.copy(path = "/c/exports/old-20261114.json", name = "old-20261114.json")
+        export.export(null)
+        var offers = 0
+
+        export.handOff(old) { offers++; true }
+        assertEquals(ExportUi(file = f), export.state.value)
+        export.handOff(f) { true }
+        export.handOff(f) { offers++; true }
+
+        assertEquals(0, offers)
+        assertEquals(ExportUi(), export.state.value)
+    }
+
     @Test
     fun aRefusalShowsItsWordsAndNoFile() = runTest {
         answer = { throw CoreError(0, "Nothing to export yet: Hermes has not saved this conversation.") }

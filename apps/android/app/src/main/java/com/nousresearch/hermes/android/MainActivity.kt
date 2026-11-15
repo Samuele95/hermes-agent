@@ -41,11 +41,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import com.nousresearch.hermes.android.chat.ChatPlaces
 import com.nousresearch.hermes.android.chat.ChatScreen
 import com.nousresearch.hermes.android.chat.ContextActions
 import com.nousresearch.hermes.android.chat.ExportActions
-import com.nousresearch.hermes.android.chat.ExportFile
 import com.nousresearch.hermes.android.chat.StatusActions
 import com.nousresearch.hermes.android.chat.PromptAnswers
 import com.nousresearch.hermes.android.chat.QueueActions
@@ -103,8 +104,13 @@ class MainActivity : ComponentActivity() {
                             val skills by state.pages.skills.state.collectAsState()
                             val exported by state.pages.export.state.collectAsState()
                             val status by state.pages.status.state.collectAsState()
-                            // Whichever page shows: a finished export goes to the share sheet once, then waits no longer (D8).
-                            LaunchedEffect(exported.file) { exported.file?.let { file -> shareFile(file); state.pages.export.shared(file) } }
+                            // Whichever page shows: a finished export goes to the share sheet each time the activity is started, until one
+                            // opened it (D8, architect #2); no key changes at a stop, so the lifecycle, not a key, brings the retry.
+                            val waiting = exported.file
+                            LaunchedEffect(waiting) {
+                                waiting ?: return@LaunchedEffect
+                                lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { state.pages.export.handOff(waiting) { shareExport(it) } }
+                            }
                             skills?.let {  // above Settings, which stays open beneath: Back returns to it (D4)
                                 SkillsScreen(it, onEnable = { names, on -> app.skills { enable(names, on) } }, onClose = state.pages.skills::close)
                                 return@Surface
@@ -302,21 +308,6 @@ class MainActivity : ComponentActivity() {
      */
     private fun copy(label: String, text: String) {
         getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText(label, text))
-    }
-
-    /**
-     * Hands a session's export to the share sheet (sessions-12, F8): a `content://` URI from the app's export
-     * `FileProvider`, readable by the chosen app through a grant for that URI only. No target, or a path outside the
-     * provider's root: Desktop's "Could not export session".
-     */
-    private fun shareFile(file: ExportFile) {
-        try {
-            startActivity(shareIntent(exportUri(this, file), file))
-        } catch (_: ActivityNotFoundException) {
-            Toast.makeText(this, R.string.export_failed, Toast.LENGTH_LONG).show()
-        } catch (_: IllegalArgumentException) {
-            Toast.makeText(this, R.string.export_failed, Toast.LENGTH_LONG).show()
-        }
     }
 
     private fun openInBrowser(url: String) {

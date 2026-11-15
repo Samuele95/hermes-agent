@@ -1,10 +1,14 @@
 package com.nousresearch.hermes.android
 
+import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
+import androidx.activity.ComponentActivity
 import androidx.core.content.FileProvider
+import androidx.lifecycle.Lifecycle
 import com.nousresearch.hermes.android.chat.ExportFile
 import java.io.File
 
@@ -29,4 +33,26 @@ fun shareIntent(uri: Uri, file: ExportFile): Intent {
         clipData = ClipData.newRawUri(file.name, uri)
     }
     return Intent.createChooser(send, null)
+}
+
+/**
+ * Hands [file] to the share sheet (sessions-12, F8): true only when an activity was started (architect #2). A stopped
+ * activity starts none, since Android blocks a background start without a word, and a refusal (`SecurityException`,
+ * the same block where it throws) starts none: the file then waits for the next start. No target, or a path outside
+ * the provider's root: Desktop's "Could not export session", and the file still waits.
+ */
+fun ComponentActivity.shareExport(file: ExportFile): Boolean {
+    if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return false
+    return try {
+        startActivity(shareIntent(exportUri(this, file), file))
+        true
+    } catch (_: ActivityNotFoundException) {
+        Toast.makeText(this, R.string.export_failed, Toast.LENGTH_LONG).show()
+        false
+    } catch (_: IllegalArgumentException) {
+        Toast.makeText(this, R.string.export_failed, Toast.LENGTH_LONG).show()
+        false
+    } catch (_: SecurityException) {
+        false
+    }
 }

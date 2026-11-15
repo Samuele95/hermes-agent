@@ -33,8 +33,8 @@ data class ExportUi(val busy: Boolean = false, val file: ExportFile? = null, val
 
 /**
  * Exports a session (a drawer row's, or the chat's own when null) through [export]. A finished file waits here until
- * the showing activity has shared it, so a rotation cannot lose it, as the chat's offer waits (D8); one export at a
- * time, and none while a file waits to be shared.
+ * the showing activity has really handed it to the share sheet ([handOff]), so neither a rotation nor a stopped activity
+ * loses it, as the chat's offer waits (D8); one export at a time, and none while a file waits.
  */
 class SessionExport(private val export: suspend (StoredSessionId?) -> ExportFile) {
     private val screen = MutableStateFlow(ExportUi())
@@ -58,6 +58,16 @@ class SessionExport(private val export: suspend (StoredSessionId?) -> ExportFile
     /** The activity handed [file] on to the share sheet: it waits no longer, if it is still the one waiting. */
     fun shared(file: ExportFile) {
         screen.update { if (it.file == file) ExportUi() else it }
+    }
+
+    /**
+     * Offers the waiting [file] to [share], the activity's share sheet: it waits no longer only when [share] says an
+     * activity was started; a stopped activity's or a refused handoff keeps it for the next start (architect #2). A file no
+     * longer waiting is not offered again (D4).
+     */
+    fun handOff(file: ExportFile, share: (ExportFile) -> Boolean) {
+        if (screen.value.file != file) return
+        if (share(file)) shared(file)
     }
 
     /** The words of a failed export were read. */

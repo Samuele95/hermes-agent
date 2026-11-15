@@ -1,9 +1,19 @@
 package com.nousresearch.hermes.android
 
+import android.app.Activity
+import android.app.Instrumentation
+import android.content.Intent
+import android.net.Uri
+import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.util.Log
+import androidx.core.content.IntentCompat
+import androidx.lifecycle.Lifecycle
+import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.nousresearch.hermes.android.chat.ExportFile
+import com.nousresearch.hermes.android.chat.ExportUi
 import com.nousresearch.hermes.android.chat.StoredSessionId
 import com.nousresearch.hermes.android.chat.exportSession
 import com.nousresearch.hermes.bridge.CoreError
@@ -16,6 +26,7 @@ import com.nousresearch.hermes.bridge.protocol.SessionCreateResult
 import com.nousresearch.hermes.bridge.protocol.SessionDeleteParams
 import com.nousresearch.hermes.bridge.protocol.SessionTitleParams
 import java.io.File
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
@@ -28,6 +39,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -36,7 +48,8 @@ import org.junit.runner.RunWith
 /**
  * A session's export on the phone (sessions-12, F8): the app's `session_export` writes the stored session's file into
  * `cache/exports/`, and the app's `FileProvider` serves it as a `content://` URI with a read grant (§3.4's device check).
- * The sessions get no turn, only a title, so no model is involved; the test deletes its sessions and its exports.
+ * The sessions get no turn, only a title, so no model is involved; the test deletes its sessions and its exports. The
+ * activity's share sheet is caught as it starts and never shown (N6, D6), and no file is left waiting.
  */
 @RunWith(AndroidJUnit4::class)
 class SessionExportDeviceTest {
@@ -49,7 +62,30 @@ class SessionExportDeviceTest {
             val state = runBlocking { withTimeout(120_000) { app.core.first { it !is CoreState.Starting } } }
             (state as? CoreState.Ready ?: error("the core did not start: $state")).gateway
         }
+        // The app's own composition: its `.pages.export` is the SessionExport the activity hands to the share sheet.
+        private val ready: CoreState.Ready by lazy {
+            val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as HermesApplication
+            val state = runBlocking { withTimeout(120_000) { app.core.first { it !is CoreState.Starting } } }
+            state as? CoreState.Ready ?: error("the core did not start: $state")
+        }
     }
+
+    /** Each chooser the activity starts, kept and not shown; the first [refuse] starts throw Android's SecurityException. */
+    private class ShareSheet(private var refuse: Int = 0) : Instrumentation.ActivityMonitor() {
+        val started = CopyOnWriteArrayList<Intent>()
+        val others = CopyOnWriteArrayList<String>()  // for the report: ActivityScenario's own starts, let through
+        override fun onStartActivity(intent: Intent): Instrumentation.ActivityResult? {
+            if (intent.action != Intent.ACTION_CHOOSER) {  // ActivityScenario's own starts pass
+                others += "${intent.action} ${intent.component?.shortClassName}"
+                return null
+            }
+            started += intent
+            if (refuse-- > 0) throw SecurityException("background activity start blocked (N6 test)")
+            return Instrumentation.ActivityResult(Activity.RESULT_CANCELED, null)
+        }
+    }
+
+    private val instrumentation = InstrumentationRegistry.getInstrumentation()
 
     private val ctx = InstrumentationRegistry.getInstrumentation().targetContext
     private val exports = File(ctx.cacheDir, "exports")
@@ -78,6 +114,131 @@ class SessionExportDeviceTest {
     private suspend fun cleanUp(created: SessionCreateResult) {
         runCatching { core.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = created.sessionId)) }
         runCatching { core.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = created.storedSessionId)) }
+    }
+
+    /** Polls [done] on the test thread every 100 ms; [label] fails the test after [ms]. */
+    private fun until(label: String, ms: Long = 10_000, done: () -> Boolean) {
+        val end = SystemClock.uptimeMillis() + ms
+        while (!done()) {
+            if (SystemClock.uptimeMillis() > end) throw AssertionError(label)
+            Thread.sleep(100)
+        }
+    }
+
+    /** [chooser] shares [file]: `ACTION_SEND` of `application/json`, its stream the export provider's URI for it. */
+    private fun assertSharesFile(chooser: Intent, file: ExportFile) {
+        val send = IntentCompat.getParcelableExtra(chooser, Intent.EXTRA_INTENT, Intent::class.java)!!
+        assertEquals(Intent.ACTION_SEND, send.action)
+        assertEquals("application/json", send.type)
+        assertEquals(exportUri(ctx, file), IntentCompat.getParcelableExtra(send, Intent.EXTRA_STREAM, Uri::class.java))
+    }
+
+    /** A titled session's export through the app's own [SessionExport]; the file it leaves waiting. */
+    private fun exportTitled(created: SessionCreateResult): ExportFile = runBlocking {
+        val title = "n6 export ${System.nanoTime()}"
+        core.call(Methods.SESSION_TITLE, SessionTitleParams(sessionId = created.sessionId, title = title))  // writes the row (M1)
+        ready.pages.export.export(StoredSessionId(created.storedSessionId))
+        val written = ready.pages.export.state.value.file
+        assertEquals("${safe(title)}-${safe(created.storedSessionId).take(8)}.json", written?.name)
+        written!!
+    }
+
+    /** No file left waiting (the shared phone's debug app opens no sheet later), the monitor gone, nothing stored. */
+    private fun tidy(sheet: ShareSheet, created: SessionCreateResult?) {
+        ready.pages.export.state.value.file?.let(ready.pages.export::shared)
+        instrumentation.removeMonitor(sheet)
+        Log.i(TAG, "starts let through: ${sheet.others}")
+        created?.let { runBlocking { cleanUp(it) } }
+        exports.listFiles()?.forEach { it.delete() }
+    }
+
+    @Test
+    fun aFinishedExportWaitsWhileTheAppIsAwayAndOpensTheShareSheetWhenItComesBack() {
+        assertEquals(ExportUi(), ready.pages.export.state.value)
+        val created = runBlocking { settledSession() }
+        val sheet = ShareSheet()
+        instrumentation.addMonitor(sheet)
+        try {
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                scenario.moveToState(Lifecycle.State.CREATED)  // onStop, as Home does (D7)
+
+                val written = exportTitled(created)
+
+                Thread.sleep(3_000)
+                assertEquals(0, sheet.started.size)
+                assertEquals(written, ready.pages.export.state.value.file)
+
+                scenario.moveToState(Lifecycle.State.RESUMED)
+
+                until("one share sheet, and the file waits no longer") {
+                    sheet.started.size == 1 && ready.pages.export.state.value == ExportUi()
+                }
+                assertSharesFile(sheet.started[0], written)
+                Thread.sleep(2_000)
+                assertEquals(1, sheet.started.size)
+            }
+        } finally {
+            tidy(sheet, created)
+        }
+    }
+
+    @Test
+    fun aRefusedHandoffKeepsTheFileAndIsOfferedAgainAtTheNextStart() {
+        assertEquals(ExportUi(), ready.pages.export.state.value)
+        val created = runBlocking { settledSession() }
+        val sheet = ShareSheet(refuse = 1)
+        instrumentation.addMonitor(sheet)
+        try {
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                val written = exportTitled(created)
+
+                until("the first share sheet, refused") { sheet.started.size == 1 }
+                Thread.sleep(1_000)
+                assertEquals("the file still waits", written, ready.pages.export.state.value.file)
+
+                scenario.moveToState(Lifecycle.State.CREATED)
+                scenario.moveToState(Lifecycle.State.RESUMED)
+
+                until("a second share sheet at the next start, and the file waits no longer") {
+                    sheet.started.size == 2 && ready.pages.export.state.value == ExportUi()
+                }
+                assertSharesFile(sheet.started[1], written)
+            }
+        } finally {
+            tidy(sheet, created)
+        }
+    }
+
+    @Test
+    fun aStoppedActivityStartsNoShareAndAPathOutsideTheExportsRootIsRefused() {
+        assertEquals(ExportUi(), ready.pages.export.state.value)
+        exports.mkdirs()
+        val direct = File(exports, "n6-direct.json").apply { writeText("{}") }
+        val file = ExportFile(direct.path, "n6-direct.json", 2)
+        val sheet = ShareSheet()
+        instrumentation.addMonitor(sheet)
+        try {
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                fun share(f: ExportFile): Boolean {
+                    var handed: Boolean? = null
+                    scenario.onActivity { handed = it.shareExport(f) }
+                    return handed!!
+                }
+                scenario.moveToState(Lifecycle.State.CREATED)
+                assertFalse("a stopped activity started a share", share(file))
+                assertEquals(0, sheet.started.size)
+
+                scenario.moveToState(Lifecycle.State.RESUMED)
+                assertTrue("a started activity started no share", share(file))
+                assertEquals(1, sheet.started.size)
+                assertSharesFile(sheet.started[0], file)
+
+                assertFalse("a path outside the exports root was shared", share(ExportFile("/data/local/tmp/n6.json", "n6.json", 2)))
+                assertEquals(1, sheet.started.size)
+            }
+        } finally {
+            tidy(sheet, null)
+        }
     }
 
     @Test
