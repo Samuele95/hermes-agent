@@ -26,6 +26,7 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.nousresearch.hermes.android.settings.About
 import com.nousresearch.hermes.android.settings.ApprovalMode
 import com.nousresearch.hermes.android.settings.ConfigSettings
 import com.nousresearch.hermes.android.settings.ConnectedProvider
@@ -65,10 +66,11 @@ class SettingsScreenTest {
     private val providerAsks = mutableListOf<String?>()
     private var providerConfirms = 0
     private var skillsOpened = 0
+    private val copies = mutableListOf<String>()
     private val actions = SettingsActions(approvals = { chosen += it }, personality = { personalities += it }, edit = { edits += it },
                                           askRemove = { asks += it }, confirmRemove = { confirms++ }, restartGateway = { restarts++ },
                                           askRemoveProvider = { providerAsks += it }, confirmRemoveProvider = { providerConfirms++ },
-                                          openSkills = { skillsOpened++ })
+                                          openSkills = { skillsOpened++ }, copy = { copies += it })
 
     private fun show(state: SettingsUi) = compose.setContent { SettingsScreen(state, actions, onClose = {}) }
 
@@ -303,6 +305,62 @@ class SettingsScreenTest {
     }
 
     @Test
+    fun theAboutSectionShowsEachFactAndCopiesThemAll() {
+        show(SettingsUi(ApprovalMode.SMART, about = ABOUT))
+
+        compose.onNodeWithTag("about").performScrollTo()
+        for ((tag, value) in listOf("about-app" to "0.1.0 (1)", "about-core" to "2026.9.24", "about-commit" to "3a2fcbe0a5b7c3",
+                                    "about-payload" to "9031ce3226a542bc", "about-python" to "3.14.7", "about-sqlite" to "3.53.4")) {
+            compose.onNodeWithTag(tag).performScrollTo().assertTextEquals(value)
+        }
+        compose.onNodeWithTag("about-copy").performScrollTo().performClick()
+
+        assertEquals("the whole block, the commit in full", listOf(ABOUT.report()), copies)
+    }
+
+    @Test
+    fun withoutACommitThereIsNoRowWithoutAboutNoSectionAndBusyStopsCopy() {
+        var state by mutableStateOf(SettingsUi(ApprovalMode.SMART, about = ABOUT.copy(coreCommit = null)))
+        compose.setContent { SettingsScreen(state, actions, onClose = {}) }
+
+        compose.onNodeWithTag("about-commit").assertDoesNotExist()
+        compose.onNodeWithTag("about-payload").performScrollTo().assertTextEquals("9031ce3226a542bc")
+
+        state = SettingsUi(ApprovalMode.SMART)
+        compose.onNodeWithTag("about").assertDoesNotExist()
+
+        state = SettingsUi(ApprovalMode.SMART, about = ABOUT, busy = true)
+        compose.onNodeWithTag("about-copy").performScrollTo().assertIsNotEnabled()
+    }
+
+    /** About on the phone: the installed APK's version, its payload's manifest and the real core's release (no writes). */
+    @Test
+    fun aboutReadsThePhonesOwnBuild() = runBlocking<Unit> {
+        val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as HermesApplication
+        val ready = withTimeout(120_000) { app.core.first { it !is CoreState.Starting } } as CoreState.Ready
+        val settings = ready.pages.settings
+        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+        try {
+            val began = SystemClock.elapsedRealtime()
+            settings.open()
+            Log.i("SettingsScreenTest", "open() with About took ${SystemClock.elapsedRealtime() - began} ms")
+            val state = checkNotNull(settings.state.value)
+            val about = checkNotNull(state.about) { "About failed: ${state.error}" }
+
+            assertEquals(ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName, about.appVersion)
+            val manifest = org.json.JSONObject(ctx.assets.payloadManifest())
+            assertEquals(manifest.getString("build_id"), about.payload)
+            assertEquals(manifest.getString("core_commit"), about.coreCommit)
+            assertTrue(about.coreCommit, Regex("[0-9a-f]{40}").matches(about.coreCommit!!))
+            assertTrue(about.coreRelease, Regex("""\d{4}\.\d{1,2}\.\d{1,2}""").matches(about.coreRelease))
+            assertEquals("3.14.7", about.python)
+            Log.i("SettingsScreenTest", about.report())
+        } finally {
+            settings.close()
+        }
+    }
+
+    @Test
     fun aChoiceMadeInTheAppIsTheCoresMode() = runBlocking {
         val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as HermesApplication
         val ready = withTimeout(120_000) { app.core.first { it !is CoreState.Starting } } as CoreState.Ready
@@ -370,6 +428,9 @@ class SettingsScreenTest {
     }
 
     private companion object {
+        /** The JVM tests' About, as the page receives it (the device tests cannot see AboutTest's). */
+        val ABOUT = About("0.1.0", 1, "9031ce3226a542bc", "3a2fcbe0a5b7c31aa5c3908b054a0c938ab4ca92", "2026.9.24", "3.14.7", "3.53.4")
+
         val NOUS = ConnectedProvider("nous", "Nous Portal", removable = true, current = false)
         val COPILOT = ConnectedProvider("copilot", "GitHub Copilot", removable = true, current = true)
         val ENDPOINT = ConnectedProvider("dgx", "DGX", removable = false, current = false)

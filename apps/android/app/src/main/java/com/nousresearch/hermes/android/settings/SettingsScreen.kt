@@ -51,12 +51,13 @@ import androidx.compose.material3.HorizontalDivider
 /** What the page hands over; each is one write or one ask (§2.4). */
 class SettingsActions(val approvals: (ApprovalMode) -> Unit, val personality: (String) -> Unit, val edit: (SettingsEdit) -> Unit,
                       val askRemove: (String?) -> Unit, val confirmRemove: () -> Unit, val restartGateway: () -> Unit,
-                      val askRemoveProvider: (String?) -> Unit, val confirmRemoveProvider: () -> Unit, val openSkills: () -> Unit)
+                      val askRemoveProvider: (String?) -> Unit, val confirmRemoveProvider: () -> Unit, val openSkills: () -> Unit,
+                      val copy: (String) -> Unit)
 
 /**
  * The app's settings kept in the core's config, in the order of §4: Chat (the personality), Command approvals (the
  * mode, the timeout, the always-allowed commands), Memory, Providers (each connected one with Remove, which asks
- * first), and Skills (a row that opens the skills page). It shows only what the core last answered: a part the
+ * first), Skills (a row that opens the skills page), and About (the build, with Copy details). It shows only what the core last answered: a part the
  * core could not read is absent (the mode keeps "none selected, still choosable"), and while one write runs every
  * control is off.
  */
@@ -111,6 +112,7 @@ fun SettingsScreen(state: SettingsUi, actions: SettingsActions, onClose: () -> U
         SectionCaption(stringResource(R.string.skills_title))
         ListRow(stringResource(R.string.settings_skills_open), Modifier.testTag("settings-skills"), enabled = enabled,
                 trailing = { Chevron() }) { actions.openSkills() }
+        state.about?.let { AboutSection(it, enabled, actions.copy) }
         state.error?.let { Hint(it, Modifier.padding(top = 12.dp).testTag("settings-error"), color = MaterialTheme.colorScheme.error) }
     }
     state.confirmRemove?.let { RemoveDialog(it, enabled = !state.busy, actions) }
@@ -211,6 +213,36 @@ private fun Providers(connected: List<ConnectedProvider>, enabled: Boolean, acti
         }
         HorizontalDivider(color = Hermes.colors.stroke)
     }
+}
+
+/**
+ * The build a bug report names (F13), one fact per row, and Copy details, which hands on [About.report] (the commit in
+ * full; the row shows its first 14 characters, D7). No commit row when the manifest names none.
+ */
+@Composable
+private fun AboutSection(about: About, enabled: Boolean, copy: (String) -> Unit) {
+    SectionCaption(stringResource(R.string.about_title), Modifier.testTag("about"))
+    Hint(stringResource(R.string.about_explain))
+    AboutRow(stringResource(R.string.about_app), stringResource(R.string.about_app_value, about.appVersion, about.appBuild), "about-app")
+    AboutRow(stringResource(R.string.about_core), about.coreRelease, "about-core")
+    about.coreCommit?.let { AboutRow(stringResource(R.string.about_commit), it.take(14), "about-commit", code = true) }
+    AboutRow(stringResource(R.string.about_payload), about.payload, "about-payload", code = true)
+    AboutRow(stringResource(R.string.about_python), about.python, "about-python")
+    AboutRow(stringResource(R.string.about_sqlite), about.sqlite, "about-sqlite")
+    SecondaryButton(stringResource(R.string.about_copy), { copy(about.report()) }, Modifier.padding(top = 12.dp).testTag("about-copy"),
+                    enabled = enabled)
+}
+
+/** One About fact: its label on the left, its value (tagged [tag]) on the right, in the code face when [code]. */
+@Composable
+private fun AboutRow(label: String, value: String, tag: String, code: Boolean = false) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+        val face = MaterialTheme.typography.bodyMedium
+        Text(value, Modifier.testTag(tag), style = if (code) face.copy(fontFamily = CodeFont) else face,
+             color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    HorizontalDivider(color = Hermes.colors.stroke)
 }
 
 /** A switch with its quieter line beneath the label. */

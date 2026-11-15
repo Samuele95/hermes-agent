@@ -280,11 +280,14 @@ class MainActivity : ComponentActivity() {
                                            confirmRemove = { app.settings { confirmRemove() } }, restartGateway = app::restartGateway,
                                            askRemoveProvider = settings::askRemoveProvider,
                                            confirmRemoveProvider = { app.settings { confirmRemoveProvider() } },
-                                           openSkills = { app.skills { open() } }),
+                                           openSkills = { app.skills { open() } }, copy = { text -> copy("Hermes version", text) }),
                        onClose = settings::close)
     }
 
-    /** Text onto the clipboard: the SSH public key for the host's authorized_keys, or what the user copied in the chat (F10). */
+    /**
+     * Text onto the clipboard: the SSH public key for the host's authorized_keys, what the user copied in the chat (F10),
+     * or Settings' About block (F13).
+     */
     private fun copy(label: String, text: String) {
         getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText(label, text))
     }

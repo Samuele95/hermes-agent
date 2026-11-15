@@ -309,6 +309,16 @@
     <string name="skills_none">No skills installed.</string>
     <string name="skills_general">General</string>
     <string name="skills_category_switch">All %1$s skills</string>
+    <string name="about_title">About</string>
+    <string name="about_explain">Include these in a bug report.</string>
+    <string name="about_app">App version</string>
+    <string name="about_app_value">%1$s (%2$d)</string>
+    <string name="about_core">Hermes release</string>
+    <string name="about_commit">Core commit</string>
+    <string name="about_payload">Runtime payload</string>
+    <string name="about_python">Python</string>
+    <string name="about_sqlite">SQLite</string>
+    <string name="about_copy">Copy details</string>
     <string name="gateway_stop">Stop</string>
     <string name="gateway_failed">Hermes gateway stopped</string>
     <string name="gateway_screen_title">Always-on gateway</string>
