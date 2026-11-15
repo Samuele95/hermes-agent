@@ -27,6 +27,7 @@ class SettingsControlTest {
     private var mode = "smart"
     private var personality = "concise"
     private var refuse: String? = null
+    private var personalityKept = true  // false: config.set answers ok but the core keeps its name (persist_personality's False, methods_config_set.py:463)
     private val core = FakeCoreGateway { method, params ->
         val key = params.getValue("key").jsonPrimitive.content
         when (method) {
@@ -40,10 +41,10 @@ class SettingsControlTest {
                 val value = params.getValue("value").jsonPrimitive.content
                 when (key) {
                     "approvals.mode" -> mode = value
-                    "personality" -> personality = value
+                    "personality" -> if (personalityKept) personality = effective(value)
                     else -> error("unexpected key $key")
                 }
-                """{"key":"$key","value":"$value"}"""
+                """{"key":"$key","value":"$value"}"""  // the raw value, as the core's _kv (methods_config_set.py:465)
             }
             else -> error("unexpected $method")
         }
@@ -216,6 +217,22 @@ class SettingsControlTest {
 
         assertEquals("concise", settings.state.value?.personality)
         assertEquals("Unknown personality: `x`.", settings.state.value?.error)
+        assertFalse(settings.state.value!!.busy)
+    }
+
+    @Test
+    fun aPersonalityShowsTheCoresReReadNotTheNameSent() = runTest {
+        settings.open()
+
+        settings.personality("Pirate")
+        assertEquals("the core's effective name, not the name sent", "pirate", settings.state.value?.personality)
+
+        settings.personality("Default")
+        assertEquals("a neutral spelling reads as the core's none", NO_PERSONALITY, settings.state.value?.personality)
+
+        personalityKept = false
+        settings.personality("helpful")
+        assertEquals("a pick the core did not keep shows the one it kept", NO_PERSONALITY, settings.state.value?.personality)
         assertFalse(settings.state.value!!.busy)
     }
 
@@ -752,6 +769,14 @@ class SettingsControlTest {
         val ROWS = listOf(NOUS, COPILOT, ENDPOINT)
 
         val MEMORY_100 = DEFAULT_READ.replace("\"memory_char_limit\":2200", "\"memory_char_limit\":100")  // a write's re-read
+
+        /**
+         * The core's effective name for a written personality, as `config.get personality` answers it: trimmed and
+         * lower-cased, a neutral spelling read as [NO_PERSONALITY] (`normalize_personality_name`, `active_personality_name`
+         * `or "none"`; hermes_cli/personality.py:80-83,112-115, tui_gateway/methods_config.py:200-203).
+         */
+        fun effective(written: String): String =
+            written.trim().lowercase().let { if (it in setOf("", "none", "default", "neutral")) NO_PERSONALITY else it }
         val CFG = ConfigSettings(300, listOf("git status", "docker *"), true, true, 2200, 1375,
                                  listOf(Personality("helpful", "You are a helpful, friendly AI assistant."),
                                         Personality("concise", "You are a concise assistant. Keep responses brief a...")))
