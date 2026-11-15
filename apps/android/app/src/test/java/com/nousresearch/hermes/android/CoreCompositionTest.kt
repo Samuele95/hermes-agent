@@ -13,6 +13,7 @@ import com.nousresearch.hermes.android.gateway.GatewayStatus
 import com.nousresearch.hermes.android.gateway.PlatformState
 import com.nousresearch.hermes.android.jobs.JobId
 import com.nousresearch.hermes.android.jobs.JobsWarning
+import com.nousresearch.hermes.android.setup.Readiness
 import com.nousresearch.hermes.android.turn.TurnHost
 import com.nousresearch.hermes.bridge.AppBridge
 import com.nousresearch.hermes.bridge.CoreGateway
@@ -52,6 +53,7 @@ class CoreCompositionTest {
             "session.most_recent" -> """{"session_id":${recent?.let { "\"$it\"" } ?: "null"}}"""
             "session.resume" -> resumeReply()
             "session.context_breakdown" -> EMPTY_BREAKDOWN
+            "setup.runtime_check" -> """{"ok":true,"provider":"deepseek","model":"deepseek-v4-pro"}"""
             "cron.manage" -> """{"success":true,"count":1,"jobs":[{"job_id":"j1","name":"n","state":"scheduled"}]}"""
             else -> error("unexpected $method")
         }
@@ -104,7 +106,8 @@ class CoreCompositionTest {
         composeCore(runtime, paths, deps, backgroundScope)
 
         assertEquals(listOf("runtime_facts", "cron_warm_delivery_targets"), bridgeCalls)  // once, last
-        assertEquals("no core call the composition makes comes after the warm", core.calls.map { it.first }, coreCallsAtWarm)
+        // The readiness check is the one call after the warm (D8): launched, so Ready never waits on it.
+        assertEquals("no core call the composition makes comes after the warm", startUpCalls(), coreCallsAtWarm)
         assertTrue(coreCallsAtWarm.toString(),
                    coreCallsAtWarm!!.containsAll(listOf("config.get", "session.most_recent", "session.create", "setup.status")))
     }
@@ -116,7 +119,44 @@ class CoreCompositionTest {
         composeCore(runtime, paths, deps, backgroundScope)
 
         assertTrue(coreCallsAtWarm.toString(), coreCallsAtWarm.orEmpty().contains("session.resume"))
-        assertEquals(core.calls.map { it.first }, coreCallsAtWarm)
+        assertEquals(startUpCalls(), coreCallsAtWarm)
+    }
+
+    /** The core calls the composition made, but for the readiness check that follows the warm (D8). */
+    private fun startUpCalls() = core.calls.map { it.first }.filterNot { it == "setup.runtime_check" }
+
+    private fun checks() = core.calls.count { it.first == "setup.runtime_check" }
+
+    @Test
+    fun readinessIsCheckedOnceTheStartUpCallsAndTheWarmAreDone() = runTest(UnconfinedTestDispatcher()) {
+        val ready = composeCore(runtime, paths, deps, backgroundScope)
+
+        assertFalse(coreCallsAtWarm.toString(), coreCallsAtWarm!!.contains("setup.runtime_check"))
+        assertEquals(1, checks())
+        assertEquals("setup.runtime_check", core.calls.last().first)
+        assertEquals(Readiness.Ready("deepseek", "deepseek-v4-pro"), ready.setup.readiness.value)
+    }
+
+    @Test
+    fun aProviderFailureInTheComposedChatChecksAgain() = runTest(UnconfinedTestDispatcher()) {
+        composeCore(runtime, paths, deps, backgroundScope)
+
+        core.emit("message.start", "s1")
+        core.emit("message.complete", "s1", """{"text":"","status":"error","error":"Invalid API key",
+            "error_surface":{"layer":"auth","code":"auth","retryable":false}}""")
+
+        assertEquals(2, checks())
+    }
+
+    @Test
+    fun closingTheComposedSetupChecksAgain() = runTest(UnconfinedTestDispatcher()) {
+        configured = false  // setup opens first
+
+        val ready = composeCore(runtime, paths, deps, backgroundScope)
+        assertEquals(1, checks())
+        ready.setup.close()
+
+        assertEquals(2, checks())
     }
 
     @Test

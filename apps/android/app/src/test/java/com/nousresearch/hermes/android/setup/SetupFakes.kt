@@ -41,11 +41,14 @@ abstract class SetupFakes {
     protected var disconnect: (JsonObject) -> String = { """{"slug":"deepseek","name":"DeepSeek","disconnected":true}""" }
     protected var configSet: (JsonObject) -> String = { """{"key":"model","value":"deepseek-v4-pro","scope":"global"}""" }
     protected var onCoreCall: (method: String) -> Unit = {}  // runs first in each core call (the reply is not suspend)
+    protected var configured = false  // setup.status's loose provider_configured
+    protected var runtimeCheck: (JsonObject) -> String = { """{"ok":true,"provider":"copilot","model":"gpt-5"}""" }
     protected val core = FakeCoreGateway { method, params ->
         onCoreCall(method)
         log += method
         when (method) {
-            "setup.status" -> """{"provider_configured":false}"""
+            "setup.status" -> """{"provider_configured":$configured}"""
+            "setup.runtime_check" -> runtimeCheck(params)
             "model.options" -> """{"providers":[$deepseekRow, $nousRow,
                 {"slug":"openai-codex","name":"OpenAI Codex","models":[],"authenticated":false,"auth_type":"oauth_external","key_env":""},
                 {"slug":"openrouter","name":"OpenRouter","models":[],"authenticated":false,"auth_type":"api_key","key_env":""},

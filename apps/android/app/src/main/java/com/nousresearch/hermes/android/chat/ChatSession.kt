@@ -61,13 +61,16 @@ import java.util.concurrent.atomic.AtomicLong
  * [runOwned] asks whether the gateway's scheduler still owns a job's run (the app's `cron_run_owned`); while it does,
  * the chat shows the run and sends nothing into it.
  * [queues] keeps each stored session's queue of unsent messages across process deaths (batch-3 F2, DC-M5).
+ * [providerFailed] hears of a turn of this chat that failed on its provider's side (auth, provider, billing): readiness
+ * is checked again (F6).
  */
 class ChatSession(private val core: CoreGateway, private val turns: TurnHost, private val scope: CoroutineScope,
                   private val keepSecret: suspend (name: String, value: ByteArray) -> Unit,
                   private val notifier: Notifier = Notifier.None,
                   private val gatewaySeen: () -> GatewaySeen = { GatewaySeen(GatewayStatus.RUNNING) },
                   private val runOwned: suspend (StoredSessionId) -> Boolean? = { null },
-                  private val queues: QueueStore = QueueStore.inMemory()) {
+                  private val queues: QueueStore = QueueStore.inMemory(),
+                  private val providerFailed: suspend () -> Unit = {}) {
     companion object {
         /** The session's source, which is also the agent's platform; "android" keeps the CLI toolsets. */
         const val SOURCE = "android"
@@ -900,8 +903,18 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         if (after.waiting.size < before.waiting.size && after.chat.prompts.isEmpty()) notifier.promptsSettled()
         // After the reducer, never in it (FP): the reducer stays a function of (Chat, event).
         if (schedulesAJob(event)) noticeJobs(session)
+        // After the reducer: the provider may not answer any more (F6, bet 10).
+        if (failedOnProvider(event)) scope.launch { providerFailed() }
     }
 }
 
 /** The newest entry is the answer of a turn that completed: not stopped, not failed (D6). */
 private val Chat.endedComplete: Boolean get() = (entries.lastOrNull() as? Entry.Reply)?.status == TurnStatus.COMPLETE
+
+/** The layers of a failed turn after which the provider may not answer any more: its key, the provider, the account's credit (F6). */
+private val RECHECKED_LAYERS = setOf("auth", "provider", "billing")
+
+/** [event] is a completion whose `error_surface` (advisory: absent reads as no) names one of [RECHECKED_LAYERS]. */
+internal fun failedOnProvider(event: CoreEvent): Boolean = runCatching {
+    event.type == Events.MESSAGE_COMPLETE.name && event.decode(Events.MESSAGE_COMPLETE)?.errorSurface?.layer in RECHECKED_LAYERS
+}.getOrDefault(false)

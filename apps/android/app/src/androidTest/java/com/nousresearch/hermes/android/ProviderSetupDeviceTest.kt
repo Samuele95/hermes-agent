@@ -1,10 +1,12 @@
 package com.nousresearch.hermes.android
 
 import android.content.Context.MODE_PRIVATE
+import android.os.SystemClock
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.nousresearch.hermes.android.setup.ProviderSetup
+import com.nousresearch.hermes.android.setup.Readiness
 import com.nousresearch.hermes.android.setup.SetupStep
 import com.nousresearch.hermes.bridge.EmbeddedPython
 import com.nousresearch.hermes.bridge.protocol.Methods
@@ -125,5 +127,29 @@ class ProviderSetupDeviceTest {
             // Listed once: as a custom row, or as the core's own row when it lists its current default among the models.
             assertEquals(1, (shown.models + shown.custom).count { it == unlisted })
         }
+    }
+
+    @Test
+    fun theCoresCheckReadsReadyOnceAKeyAndModelAreSet() = runBlocking {
+        // Whatever the start check answered: on a cold phone it may have passed its 4 s budget and read Unknown (§8).
+        Log.i("ProviderSetupDeviceTest", "readiness at start: ${setup.readiness.value}")
+        setup.open()
+        setup.pick("deepseek")
+        setup.submitKey("sk-hermes-android-test-not-a-real-key".toByteArray())
+        val models = (setup.state.value?.step as? SetupStep.Models ?: error("no models: ${setup.state.value}")).provider.models
+        val before = setup.readiness.value  // each answer is a new value: Checking comes between
+        setup.choose(models.first())
+        assertNull("setup closes: ${setup.state.value}", setup.state.value)
+        // The close's own check, launched by the app as it sees setup close: let it answer first.
+        withTimeout(15_000) { setup.readiness.first { it !== before && it !is Readiness.Checking } }
+
+        // DeepSeek's check reads the config and the keystore-fed environment only: no inference call, no network call.
+        val started = SystemClock.elapsedRealtime()
+        setup.checkReadiness()
+        Log.i("ProviderSetupDeviceTest", "readiness check took ${SystemClock.elapsedRealtime() - started} ms: ${setup.readiness.value}")
+
+        val ready = setup.readiness.value
+        assertTrue("$ready", ready is Readiness.Ready)
+        assertEquals("deepseek", (ready as Readiness.Ready).provider)
     }
 }

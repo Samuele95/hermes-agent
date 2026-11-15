@@ -17,12 +17,22 @@ import com.nousresearch.hermes.bridge.protocol.NousLoginParams
 import com.nousresearch.hermes.bridge.protocol.NousLoginStartParams
 import com.nousresearch.hermes.bridge.protocol.NousLoginStartResult
 import com.nousresearch.hermes.bridge.protocol.ProfileParams
+import com.nousresearch.hermes.bridge.protocol.SetupRuntimeCheckParams
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonPrimitive
 
 /**
@@ -92,6 +102,7 @@ data class Setup(val step: SetupStep = SetupStep.Loading, val busy: Boolean = fa
  * auth and the default model, and delegates the endpoint actions to it. [state] is null while setup is closed.
  * A step's answer lands only on the showing that asked for it ([Showing]). [customModels]: the ids the user typed, kept
  * per provider once the core took one. [now] is the wall clock the core's reset times are read against.
+ * [readiness]: whether the core's set-up provider will answer (F6).
  */
 class ProviderSetup(
     private val core: CoreGateway,
@@ -116,6 +127,52 @@ class ProviderSetup(
     val state: StateFlow<Setup?> = setup.asStateFlow()
 
     private val endpoints = EndpointSetup(bridge, secrets, subnet, keep = ::keep, forget = ::forget, onDefaultGone = reopenChat)
+
+    private val readinessNow = MutableStateFlow<Readiness>(Readiness.Checking)
+
+    /** Whether the provider the core is set up for will answer, as its last `setup.runtime_check` said (F6); Checking until the first answers. */
+    val readiness: StateFlow<Readiness> = readinessNow.asStateFlow()
+
+    /** Orders the checks (D4). */
+    private val checking = Mutex()
+
+    /**
+     * `setup.runtime_check {}` (the launch profile, no inference call) → [Readiness.of]; `CoreError` 5097 or any failure →
+     * [Readiness.Unknown] (never "unavailable": the check did not finish); `setup.status` is asked only after a refusal,
+     * to tell needs setup from unavailable. Called after `composeCore`'s start-up calls, each time setup closes, and from
+     * the chat after a turn failed on its provider's side. Under a lock: an overlapping call would join the core's probe
+     * for 0.5 s and read 5097 (D4). No app-side timeout: the core bounds the check at 4 s.
+     */
+    suspend fun checkReadiness() {
+        checking.withLock {
+            readinessNow.value = Readiness.Checking
+            readinessNow.value = try {
+                val check = core.call(Methods.SETUP_RUNTIME_CHECK, SetupRuntimeCheckParams())
+                Readiness.of(check, configured = check.ok || configured())
+            } catch (cancelled: CancellationException) {
+                throw cancelled  // not a failed check: nothing to show
+            } catch (_: Exception) {
+                Readiness.Unknown  // 5097 (its 4 s budget passed), any refusal, an unreadable answer: the check did not finish (EJ-55)
+            }
+        }
+    }
+
+    /** `setup.status`'s loose answer; a failure reads as none, so needs setup (Desktop's fallback). */
+    private suspend fun configured(): Boolean = try {
+        core.call(Methods.SETUP_STATUS, ProfileParams()).providerConfigured == true
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) {
+        false
+    }
+
+    /** Checks readiness each time setup closes, whatever closed it: Back, Later, a model the core took. Never returns. */
+    suspend fun followReadiness() {
+        coroutineScope {
+            // drop(1): the state found at the start, open or not; launched, so a 4 s check never conflates the next close away.
+            setup.map { it != null }.distinctUntilChanged().drop(1).filter { open -> !open }.collect { launch { checkReadiness() } }
+        }
+    }
 
     /** True when the core has no provider it could answer with. */
     suspend fun needed(): Boolean = core.call(Methods.SETUP_STATUS, ProfileParams()).providerConfigured != true

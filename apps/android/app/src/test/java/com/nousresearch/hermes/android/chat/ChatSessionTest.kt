@@ -128,6 +128,8 @@ class ChatSessionTest {
     /** The app's observation of the always-on gateway, and how often the chat took it. */
     private var seen: () -> GatewaySeen = { GatewaySeen(GatewayStatus.RUNNING) }
     private var observed = 0
+    /** How often the chat said a turn failed on its provider's side, so readiness is checked again (F6). */
+    private var failures = 0
 
     /** Whether the gateway's scheduler still owns a run, as the app's `cron_run_owned` answers; and the ids asked. */
     private var owned: suspend (StoredSessionId) -> Boolean? = { null }
@@ -139,7 +141,7 @@ class ChatSessionTest {
     private fun TestScope.openChat() =
         ChatSession(core, host, backgroundScope, keepSecret = { name, value -> keepSecret(name, value) }, notifier = notifier,
                     gatewaySeen = { observed++; seen() }, runOwned = { ownedAsked += it.value; owned(it) },
-                    queues = QueueStore.inMemory(savedQueues))
+                    queues = QueueStore.inMemory(savedQueues), providerFailed = { failures++ })
 
     /** The agent schedules a job in [session] ([action] of the job tool, answered `success`), the core's own warning included. */
     private suspend fun scheduled(session: String, id: String, action: String = "create") {
@@ -2755,5 +2757,43 @@ class ChatSessionTest {
 
         assertEquals(runtime("s2"), chat.sessionId)
         assertEquals(offer, chat.state.value.offer)  // D7: New chat moves the words, they are not left behind
+    }
+
+    // A turn that failed on its provider's side asks for a readiness check (F6, bet 10); no other end does (D7).
+
+    /** A turn in [session] that ends failed, its `error_surface` naming [layer]. */
+    private suspend fun failedOn(layer: String, session: String = "s1") {
+        core.emit("message.start", session)
+        core.emit("message.complete", session, """{"text":"","status":"error","error":"boom",
+            "error_surface":{"layer":"$layer","code":"auth","retryable":false}}""")
+    }
+
+    @Test
+    fun aTurnThatFailsOnItsKeyTheProviderOrBillingAsksForACheck() = runTest(UnconfinedTestDispatcher()) {
+        openChat().open()
+
+        for ((i, layer) in listOf("auth", "provider", "billing").withIndex()) {
+            failedOn(layer)
+            assertEquals(layer, i + 1, failures)
+        }
+    }
+
+    @Test
+    fun otherEndsOfATurnAskForNoCheck() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+
+        core.emit("message.start", "s1")
+        core.emit("message.complete", "s1", """{"text":"Hello","status":"complete"}""")
+        assertEquals("a complete reply", 0, failures)
+        for (layer in listOf("gateway", "endpoint", "streaming", "runtime", "disk")) {
+            failedOn(layer)
+            assertEquals(layer, 0, failures)
+        }
+        core.emit("message.start", "s1")
+        core.emit("error", "s1", """{"message":"not connected to any AI provider"}""")
+        assertEquals("the bare error event", 0, failures)
+        failedOn("auth", session = "s9")
+        assertEquals("another session's failure", 0, failures)
+        assertFalse(chat.state.value.busy)
     }
 }

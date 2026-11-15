@@ -24,6 +24,7 @@ import com.nousresearch.hermes.bridge.SecretStore
 import com.nousresearch.hermes.bridge.ask
 import com.nousresearch.hermes.bridge.contract.BridgeCalls
 import java.io.File
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
@@ -58,7 +59,8 @@ data class CoreDeps(val secrets: SecretStore, val turns: TurnHost, val notifier:
  * The chat process's composition root: starts [runtime]'s core and builds what the screens drive over it. The
  * chat is in the core's most recent conversation on return (a new one when there is none, or the core's setting says
  * not to reopen), and setup is showing already when the core has no provider yet; the job form's delivery targets
- * start loading once these startup calls are done. [deps] are the platform's collaborators; its [CoreDeps.seen]
+ * start loading once these startup calls are done, and the provider's readiness is checked once these calls and the
+ * warm are done, and again each time setup closes. [deps] are the platform's collaborators; its [CoreDeps.seen]
  * reaches every reader of the gateway's state.
  */
 suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps, scope: CoroutineScope): CoreState.Ready {
@@ -68,10 +70,13 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps
         deps.secrets.put(name, value)
         bridge.secretsChanged()
     }
+    val readiness = CompletableDeferred<ProviderSetup>()  // the chat is built first; a failure it hears waits for setup (D9)
     val chat = ChatSession(gateway, deps.turns, scope, keepSecret, deps.notifier, gatewaySeen = deps.seen,
-                           runOwned = { bridge.runOwnership(it).owned }, queues = deps.queues).apply { start() }
+                           runOwned = { bridge.runOwnership(it).owned }, queues = deps.queues,
+                           providerFailed = { readiness.await().checkReadiness() }).apply { start() }
     val setup = ProviderSetup(gateway, deps.secrets, bridge, session = { chat.sessionId.value }, reopenChat = chat::open,
                               keyNames = deps.keyNames, subnet = deps.subnet, customModels = deps.customModels)
+    readiness.complete(setup)
     val history = SessionHistory(list = chat::pastSessions, resume = chat::resume, rename = chat::rename, delete = chat::delete)
     val context = ContextPanel(meter = { chat.state.value.meter }, breakdown = chat::breakdown, compress = chat::compress, compressing = { chat.state.value.compressing })
     // Undispatched: setup is showing before the core is Ready, so the chat never flashes first.
@@ -80,6 +85,9 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps
     // Last: the warm's plugin loads share the GIL with every call above (+650 ms to ready, K1); the chat is open now.
     bridge.ask(BridgeCalls.CRON_WARM_DELIVERY_TARGETS)
     val fts = if (facts.fts5) "with FTS5" else "without FTS5"
+    // Last, and launched: the probe shares the GIL with every start-up call (K1b) and may take its 4 s budget; Ready never waits (F6).
+    scope.launch { setup.followReadiness() }
+    scope.launch { setup.checkReadiness() }
     return CoreState.Ready(gateway, chat, setup, SshSetup(deps.secrets, bridge),
                            TelegramSetup(deps.secrets, bridge, deps.seen), history, context,
                            ApprovalSettings(gateway), JobsControl(gateway, bridge, deps.seen, continueInChat = chat::resume),

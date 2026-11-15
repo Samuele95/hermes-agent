@@ -1,10 +1,16 @@
 package com.nousresearch.hermes.android.setup
 
 import com.nousresearch.hermes.bridge.CoreError
+import com.nousresearch.hermes.bridge.CoreGateway
+import com.nousresearch.hermes.bridge.protocol.Method
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertArrayEquals
@@ -15,6 +21,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** Setting up a provider: the core lists them, the key goes to the keystore, the chosen model becomes the default. */
+@OptIn(ExperimentalCoroutinesApi::class) // UnconfinedTestDispatcher: a launched check runs as it is launched
 class ProviderSetupTest : SetupFakes() {
     @Test
     fun aBridgeFailureMidStepIsShownByItsKindAndTheAppGoesOn() = runTest {
@@ -406,5 +413,121 @@ class ProviderSetupTest : SetupFakes() {
 
         assertTrue(setup.step().toString(), setup.step() is SetupStep.Endpoint)
         assertNull(setup.state.value?.error)
+    }
+
+    // Readiness (F6): whether the provider the core is set up for will answer, as setup.runtime_check says.
+
+    private fun checks() = core.calls.count { it.first == "setup.runtime_check" }
+
+    private val noCredentials = """{"ok":false,"provider":"deepseek","error":"No usable credentials found for deepseek."}"""
+
+    @Test
+    fun theCheckAsksTheCoreForTheLaunchProfileAndShowsCheckingUntilItAnswers() = runTest {
+        setup.checkReadiness()
+        assertEquals(Readiness.Ready("copilot", "gpt-5"), setup.readiness.value)
+        var during: Readiness? = null
+        onCoreCall = { if (it == "setup.runtime_check") during = setup.readiness.value }
+
+        setup.checkReadiness()  // a second check: Ready gives way to Checking while the core answers
+
+        assertEquals(Readiness.Checking, during)
+        assertTrue("neither provider nor profile", core.calls.filter { it.first == "setup.runtime_check" }.all { it.second.isEmpty() })
+        assertEquals(Readiness.Ready("copilot", "gpt-5"), setup.readiness.value)
+        assertFalse(log.toString(), "setup.status" in log)
+    }
+
+    @Test
+    fun aRefusalAsksSetupStatusWhichTellsNeedsSetupFromUnavailable() = runTest {
+        runtimeCheck = { noCredentials }
+
+        setup.checkReadiness()
+        assertEquals(Readiness.NeedsSetup("No usable credentials found for deepseek."), setup.readiness.value)
+        assertEquals(1, log.count { it == "setup.status" })
+
+        configured = true
+        setup.checkReadiness()
+        assertEquals(Readiness.Unavailable("No usable credentials found for deepseek."), setup.readiness.value)
+        assertEquals(2, log.count { it == "setup.status" })
+    }
+
+    @Test
+    fun aCheckThatDidNotFinishIsUnknownNeverUnavailable() = runTest {
+        configured = true  // a provider is set up throughout: a "no" would read Unavailable
+        val unfinished = listOf<(JsonObject) -> String>(
+            { throw CoreError(5097, "readiness check still in progress; retrying next tick") },
+            { throw CoreError(5016, "boom") },
+            { """{"error":"x"}""" },  // no ok: an answer the app cannot read
+        )
+        for ((i, answer) in unfinished.withIndex()) {
+            runtimeCheck = answer
+            setup.checkReadiness()
+            assertEquals("answer $i", Readiness.Unknown, setup.readiness.value)
+        }
+        assertEquals(3, checks())
+        assertFalse(log.toString(), "setup.status" in log)
+    }
+
+    @Test
+    fun aSetupStatusThatFailsAfterARefusalNeedsSetup() = runTest {
+        runtimeCheck = { noCredentials }
+        onCoreCall = { if (it == "setup.status") throw CoreError(5016, "boom") }
+
+        setup.checkReadiness()
+
+        assertEquals(Readiness.NeedsSetup("No usable credentials found for deepseek."), setup.readiness.value)
+    }
+
+    @Test
+    fun aSecondCheckWaitsForTheFirstAndItsAnswerIsShown() = runTest(UnconfinedTestDispatcher()) {
+        val released = CompletableDeferred<Unit>()
+        var answered = 0
+        runtimeCheck = { if (answered++ == 0) noCredentials else """{"ok":true,"provider":"copilot","model":"gpt-5"}""" }
+        // The core's first check reaches it, then its answer is held until the test releases it.
+        var held = false
+        val gated = object : CoreGateway by core {
+            override suspend fun <P, R> call(method: Method<P, R>, params: P): R {
+                val answer = core.call(method, params)
+                if (method.name == "setup.runtime_check" && !held) { held = true; released.await() }
+                return answer
+            }
+        }
+        val other = ProviderSetup(gated, secrets, bridge, session = { "s1" }, reopenChat = {})
+
+        val both = listOf(launch { other.checkReadiness() }, launch { other.checkReadiness() })
+        assertEquals("the second waits for the first", 1, checks())
+
+        released.complete(Unit)
+        both.joinAll()
+
+        assertEquals(2, checks())
+        assertEquals(Readiness.Ready("copilot", "gpt-5"), other.readiness.value)
+    }
+
+    @Test
+    fun closingSetupChecksAgainWhateverClosedIt() = runTest(UnconfinedTestDispatcher()) {
+        backgroundScope.launch { setup.followReadiness() }
+        assertEquals("setup was closed when it started", 0, checks())
+
+        setup.open()
+        assertEquals(0, checks())
+        setup.pick("copilot")
+        setup.back()
+        assertEquals("setup is still open", 0, checks())
+        setup.close()
+        assertEquals("Back to the chat", 1, checks())
+
+        setup.open()
+        setup.pick("copilot")
+        setup.choose("gpt-5")
+        assertNull(setup.state.value)
+        assertEquals("a model chosen closes setup", 2, checks())
+
+        configSet = { """{"key":"model","value":"gpt-6","warning":"Model `gpt-6` not found in listing; using it anyway"}""" }
+        setup.open()
+        setup.pick("copilot")
+        setup.chooseCustom("gpt-6")
+        assertEquals("the notice keeps setup open", 2, checks())
+        setup.close()
+        assertEquals("Done", 3, checks())
     }
 }
