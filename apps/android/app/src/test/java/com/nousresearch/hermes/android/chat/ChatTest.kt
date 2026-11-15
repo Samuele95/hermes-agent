@@ -10,6 +10,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -527,5 +528,66 @@ class ChatTest {
                                                          event("error", """{"message":"boom"}"""))
 
         assertEquals(offer, after.offer)  // the reducer never touches it: only the composer takes it (inv. 6)
+    }
+
+    // The out-of-credits wall describes the chat's last turn: raised by a completion carrying billing, gone with the next
+    // turn that completes (inv. 5, DC-M12, D5).
+
+    private val deepseek = """{"provider":"deepseek","provider_label":"DeepSeek","model":"deepseek-v4-pro",
+        "billing_url":"https://platform.deepseek.com/top_up","is_nous":false,
+        "message":"DeepSeek reported that billing, credits, or account entitlement is exhausted for deepseek-v4-pro.\nAdd credits or update billing with that provider, then retry.\nYou can switch providers temporarily with /model <model> --provider <provider>."}"""
+
+    /** A turn the provider refused for billing, as `prompt_turn.py` completes it, carrying [block]. */
+    private fun billed(block: String = deepseek) = """{"text":"Billing or credits exhausted: 402","status":"error",
+        "error":"402 Insufficient Balance","recoverable":true,"failure_reason":"billing",
+        "error_surface":{"layer":"billing","code":"billing","retryable":false},"billing":$block}"""
+
+    private val BILLED = billed()
+
+    private val walled: Chat = Chat().sent("hi").after(event("message.start"), event("message.complete", BILLED))
+
+    @Test
+    fun aCompletionCarryingBillingRaisesTheWall() {
+        assertEquals(BillingWall("deepseek", "DeepSeek", false, "https://platform.deepseek.com/top_up",
+                                 "DeepSeek reported that billing, credits, or account entitlement is exhausted for deepseek-v4-pro."),
+                     walled.wall)
+        val reply = walled.entries.last() as Entry.Reply
+        assertEquals(TurnStatus.ERROR, reply.status)
+        assertEquals("402 Insufficient Balance", reply.error)
+        assertFalse(walled.busy)
+    }
+
+    @Test
+    fun theWallStaysUntilALaterTurnCompletes() {
+        val wall = walled.wall!!
+
+        val started = walled.reduce(event("message.start"))
+        assertTrue(started.running)
+        assertEquals("a turn starting keeps it", wall, started.wall)
+        val streaming = started.reduce(event("message.delta", """{"text":"Hel"}"""))
+        assertEquals("a delta keeps it", wall, streaming.wall)
+        assertEquals("a stopped turn keeps it", wall, streaming.reduce(event("message.complete", """{"text":"","status":"interrupted"}""")).wall)
+        assertEquals("the bare error keeps it", wall, walled.after(event("message.start"), event("error", """{"message":"boom"}""")).wall)
+        assertEquals("another failure keeps it", wall,
+                     walled.after(event("message.start"), event("message.complete", """{"text":"","status":"error","error":"timeout"}""")).wall)
+        assertEquals("a compress or resync keeps it", wall, walled.restored(emptyList()).wall)
+
+        assertEquals("a completed turn takes it away", null, walled.answered("Hello").wall)
+        assertEquals("an absent status reads complete", null,
+                     walled.after(event("message.start"), event("message.complete", """{"text":"ok"}""")).wall)
+    }
+
+    @Test
+    fun aNewerWallReplacesTheOlderAndDismissTakesItAway() {
+        val nous = walled.after(event("message.start"), event("message.complete", billed("""{"provider":"nous","provider_label":"Nous Portal",
+            "model":"m","billing_url":"https://portal.nousresearch.com/billing","is_nous":true,"message":""}""")))
+        assertTrue(nous.wall!!.nous)
+        assertEquals("https://portal.nousresearch.com/billing", nous.wall!!.url)
+
+        val dismissed = nous.withoutWall()
+        assertEquals(null, dismissed.wall)
+        assertEquals(nous.entries, dismissed.entries)
+        val plain = Chat()
+        assertSame(plain, plain.withoutWall())
     }
 }

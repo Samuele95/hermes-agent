@@ -62,13 +62,15 @@ data class Retry(val index: Int, val text: String, val rowId: Long?)
  * the read failed (batch-3 F1).
  * [offer]: words another app shared, waiting for the composer to take them as its draft; the chat never sends them
  * (inv. 6, bet 8).
+ * [wall]: the out-of-credits wall the chat's last failed turn hit, as the core described it; set by a completion
+ * carrying `billing`, gone with the next turn that completes, a session switch or Dismiss (inv. 5, DC-M12).
  */
 data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? = null, val activity: String? = null,
                 val prompts: List<Prompt> = emptyList(), val reasoning: String? = null, val model: String? = null,
                 val todos: TodoList? = null, val meter: ContextMeter? = null, val submitted: Boolean = false,
                 val compressing: Boolean = false, val runOwned: Boolean = false,
                 val nextId: Long = entries.maxOfOrNull { it.stableId + 1 } ?: 0, val busyMode: BusyMode? = null,
-                val offer: IncomingText? = null) {
+                val offer: IncomingText? = null, val wall: BillingWall? = null) {
     val running: Boolean get() = streaming != null
 
     /** A turn runs or is about to: from the prompt's send to the turn's end (GoF-State; improve #4). */
@@ -120,6 +122,9 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
 
     /** The prompt did not go out (refused, or never reached the core): the chat is idle again. */
     fun unsent(): Chat = copy(submitted = false)
+
+    /** Dismissed: the wall leaves; nothing else changes (EJ-17). */
+    fun withoutWall(): Chat = if (wall == null) this else copy(wall = null)
 
     fun notice(text: String, opens: NoticeShortcut? = null): Chat = adding { Entry.Notice(text, opens, it) }
 
@@ -196,8 +201,13 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
         // The completed text is authoritative; a structured (parts) completion keeps what was streamed.
         val text = (done.text as? JsonPrimitive)?.takeIf { it.isString }?.content ?: streaming.orEmpty()
         val thought = done.reasoning?.takeIf { it.isNotBlank() } ?: reasoning?.takeIf { it.isNotBlank() }
-        val ended = adding { Entry.Reply(text, done.status ?: TurnStatus.COMPLETE, done.error, thought, it) }
-            .copy(streaming = null, activity = null, reasoning = null, submitted = false).measured(done.usage)
+        val status = done.status ?: TurnStatus.COMPLETE
+        // A wall describes the last turn: a newer one replaces it, and a turn that completes takes it away; a stopped
+        // or otherwise failed turn leaves it (inv. 5, D5).
+        val ended = adding { Entry.Reply(text, status, done.error, thought, it) }
+            .copy(streaming = null, activity = null, reasoning = null, submitted = false,
+                  wall = done.billing?.let { BillingWall.of(it) } ?: wall.takeUnless { status == TurnStatus.COMPLETE })
+            .measured(done.usage)
         return done.persistedTurn?.userRowId?.let(ended::boundUser) ?: ended
     }
 

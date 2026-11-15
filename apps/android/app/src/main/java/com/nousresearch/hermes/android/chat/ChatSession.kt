@@ -427,7 +427,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
      * session's turn and questions are let go, and the session itself is closed in the core if it was idle: the
      * returned value is that close's outcome. [transcript] is shown keyed on after every id the chat showed before (V5);
      * [queue] is the session's own (a new session's is empty), its ids never below one the chat gave (inv. 4). An offer
-     * not yet taken follows the chat (D7).
+     * not yet taken follows the chat (D7). A billing wall does not follow: it was the left session's last turn (inv. 5).
      */
     private fun switchTo(ref: SessionRef, chat: Chat, reportedContract: JsonElement?, open: List<InTurnPrompt> = emptyList(),
                          transcript: List<TranscriptMessage> = emptyList(), queue: QueueUi = QueueUi()): Deferred<LeftSessions.Outcome>? {
@@ -532,6 +532,11 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     /** The composer took [taken] as its draft: the offer leaves, unless a newer one has replaced it meanwhile (D3, EJ-78). */
     fun offerTaken(taken: IncomingText) {
         change { now -> if (now.chat.offer == taken) now.copy(chat = now.chat.copy(offer = null)) else now }
+    }
+
+    /** The user dismissed the billing wall: it leaves the chat, and nothing is sent (inv. 5). */
+    fun dismissWall() {
+        change { now -> now.copy(chat = now.chat.withoutWall()) }
     }
 
     /**

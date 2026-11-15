@@ -2,6 +2,8 @@ package com.nousresearch.hermes.android.chat
 
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertSame
 import com.nousresearch.hermes.android.entry.IncomingText
 import org.junit.Assert.assertArrayEquals
 import com.nousresearch.hermes.bridge.protocol.ApprovalChoice
@@ -2795,5 +2797,53 @@ class ChatSessionTest {
         failedOn("auth", session = "s9")
         assertEquals("another session's failure", 0, failures)
         assertFalse(chat.state.value.busy)
+    }
+
+    // The out-of-credits wall leaves on Dismiss and stays behind on a session switch (inv. 5, DC-M12).
+
+    /** A turn in [session] the provider refused for billing, as `prompt_turn.py` completes it (ChatTest's BILLED shape). */
+    private suspend fun outOfCredits(session: String = "s1") {
+        core.emit("message.start", session)
+        core.emit("message.complete", session, """{"text":"Billing or credits exhausted: 402","status":"error",
+            "error":"402 Insufficient Balance","recoverable":true,"failure_reason":"billing",
+            "error_surface":{"layer":"billing","code":"billing","retryable":false},
+            "billing":{"provider":"deepseek","provider_label":"DeepSeek","model":"deepseek-v4-pro",
+                       "billing_url":"https://platform.deepseek.com/top_up","is_nous":false,
+                       "message":"DeepSeek reported that billing, credits, or account entitlement is exhausted for deepseek-v4-pro."}}""")
+    }
+
+    @Test
+    fun dismissingTheWallClearsItAndSendsNothing() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        outOfCredits()
+        assertNotNull(chat.state.value.wall)
+
+        val calls = core.calls.size
+        chat.dismissWall()
+
+        assertNull(chat.state.value.wall)
+        assertEquals(calls, core.calls.size)
+        assertEquals(TurnStatus.ERROR, (chat.state.value.entries.last() as Entry.Reply).status)  // the failed reply stays
+        val dismissed = chat.state.value
+        chat.dismissWall()
+        assertSame(dismissed, chat.state.value)
+    }
+
+    @Test
+    fun aSessionSwitchLeavesTheWallBehind() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        outOfCredits()
+
+        chat.open()  // New chat
+        assertEquals(runtime("s2"), chat.sessionId)
+        assertNull(chat.state.value.wall)
+
+        outOfCredits("s2")
+        assertNotNull(chat.state.value.wall)
+        chat.resume(stored("db-old"))
+        assertNull(chat.state.value.wall)
+
+        outOfCredits("s9")  // a session the chat does not follow
+        assertNull(chat.state.value.wall)
     }
 }
