@@ -136,6 +136,37 @@ class SettingsControlTest {
     }
 
     @Test
+    fun closingKeepsTheNextStartMarkWhileTheMarkedGatewayStillRuns() = runTest {
+        seenNow = GatewaySeen(GatewayStatus.RUNNING, pid = 7)
+        settings.open()
+        settings.askRemove("docker *")
+        settings.confirmRemove()
+        assertTrue(settings.state.value!!.nextStart)
+
+        settings.close()
+        settings.open()
+        assertTrue("the gateway that held the old list still runs", settings.state.value!!.nextStart)
+
+        settings.close()
+        seenNow = GatewaySeen(GatewayStatus.RUNNING, pid = 8)  // it restarted while the page was closed
+        settings.open()
+        assertFalse(settings.state.value!!.nextStart)
+
+        settings.close()
+        seenNow = GatewaySeen(GatewayStatus.RUNNING, pid = 7)
+        settings.open()
+        assertFalse("the mark was forgotten once pid 8 was seen, not hidden", settings.state.value!!.nextStart)
+
+        settings.askRemove("docker *")
+        settings.confirmRemove()
+        assertTrue(settings.state.value!!.nextStart)
+        settings.close()
+        seenNow = GatewaySeen(GatewayStatus.STOPPED)
+        settings.open()
+        assertFalse(settings.state.value!!.nextStart)
+    }
+
+    @Test
     fun openingShowsTheCoresModePersonalityAndSettings() = runTest {
         settings.open()
 

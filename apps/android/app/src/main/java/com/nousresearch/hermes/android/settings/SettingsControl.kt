@@ -53,7 +53,7 @@ class ProviderAccess(val connected: suspend () -> List<ConnectedProvider>, val r
  *
  * A removal reaches this process at once (the bridge reconciles it) and the always-on gateway at its next start
  * (Dv31, DC-M16): [seen] is the app's one observation of it (D2), and [SettingsUi.nextStart] holds while the gateway
- * that ran at the removal still runs (D3, as `TelegramSetup` marks its own).
+ * that ran at the removal still runs, across a close and a reopen (D3, as `TelegramSetup` marks its own).
  *
  * Providers ([providers]): listed when the page opens; a removal asks first, goes through provider setup's one forget
  * path, and the page then shows the core's re-read (F10).
@@ -89,9 +89,12 @@ class SettingsControl(private val core: CoreGateway, private val bridge: AppBrid
         screen.value = SettingsUi(mode, personality, config, connected, shown, nextStart = mark(seen()) != null, error = error)
     }
 
+    /**
+     * Forgets the page. The next-start mark stays: [open] judges it against the gateway seen then ([mark]), so it holds
+     * across a reopen while the marked process still runs (as `TelegramSetup` keeps its own).
+     */
     fun close() {
         screen.value = null
-        nextStartUnder.set(null)
     }
 
     /** Writes [mode] for every session from now on; a refusal keeps the shown mode and says why. */
