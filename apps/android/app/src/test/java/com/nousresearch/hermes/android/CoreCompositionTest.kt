@@ -15,6 +15,7 @@ import com.nousresearch.hermes.android.jobs.JobId
 import com.nousresearch.hermes.android.jobs.JobsWarning
 import com.nousresearch.hermes.android.settings.ConnectedProvider
 import com.nousresearch.hermes.android.settings.SettingsControlTest
+import com.nousresearch.hermes.android.settings.SkillRow
 import com.nousresearch.hermes.android.setup.Readiness
 import com.nousresearch.hermes.android.turn.TurnHost
 import com.nousresearch.hermes.bridge.AppBridge
@@ -78,6 +79,7 @@ class CoreCompositionTest {
                                         "error_message":null,"writer_pid":7,"updated_at":"2026-11-13T00:00:00+00:00"}}"""
                 "cron_warm_delivery_targets" -> { coreCallsAtWarm = core.calls.map { it.first }; "{}" }
                 "settings_read" -> SettingsControlTest.DEFAULT_READ
+                "skills_list" -> """{"skills":[{"name":"arxiv","description":"Search arXiv.","category":"research","enabled":true}]}"""
                 else -> "{}"
             }
         }
@@ -266,6 +268,19 @@ class CoreCompositionTest {
 
         assertTrue(bridgeCalls.toString(), "settings_read" in bridgeCalls)
         assertEquals(300, ready.pages.settings.state.value?.config?.approvalTimeoutS)
+    }
+
+    @Test
+    fun theSkillsPageIsClosedUntilOpenedAndReadsThroughTheComposedBridge() = runTest(UnconfinedTestDispatcher()) {
+        val ready = composeCore(runtime, paths, deps, backgroundScope)
+
+        assertNull(ready.pages.skills.state.value)
+        assertFalse("composing reads no skills", "skills_list" in bridgeCalls)
+
+        ready.pages.skills.open()
+
+        assertTrue(bridgeCalls.toString(), "skills_list" in bridgeCalls)
+        assertEquals(listOf(SkillRow("arxiv", "Search arXiv.", "research", true)), ready.pages.skills.state.value?.rows)
     }
 
     @Test

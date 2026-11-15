@@ -2,6 +2,7 @@ package com.nousresearch.hermes.android.settings
 
 import com.nousresearch.hermes.bridge.contract.SettingsReadReply
 import com.nousresearch.hermes.bridge.contract.SettingsWriteParams
+import com.nousresearch.hermes.bridge.contract.SkillEntry
 import com.nousresearch.hermes.bridge.protocol.ModelOptionProvider
 import com.nousresearch.hermes.bridge.contract.Personality as WirePersonality
 
@@ -91,3 +92,31 @@ data class SettingsUi(val approvals: ApprovalMode? = null, val personality: Stri
                       val connected: List<ConnectedProvider>? = null, val confirmRemove: String? = null,
                       val confirmProvider: String? = null, val nextStart: Boolean = false, val busy: Boolean = false,
                       val error: String? = null)
+
+/** One skill as the core lists it (`skills_list`): [enabled] is the global `skills.disabled` list's answer (D7). */
+data class SkillRow(val name: String, val description: String, val category: String?, val enabled: Boolean) {
+    companion object {
+        /** The bridge's [entry], field for field (§5: no screen reads the wire type). Total. */
+        fun of(entry: SkillEntry): SkillRow = SkillRow(entry.name, entry.description, entry.category, entry.enabled)
+    }
+}
+
+/** One category's skills, in the core's order; [category] null for skills with none (D9). */
+data class SkillGroup(val category: String?, val rows: List<SkillRow>) {
+    /** The category's switch: on when every skill in it is on (Desktop's "All", D5). */
+    val on: Boolean get() = rows.all { it.enabled }
+
+    /** The names a flip of the category's switch to [on] sends: the skills not already so (D5). */
+    fun switching(on: Boolean): List<String> = rows.filter { it.enabled != on }.map { it.name }
+
+    companion object {
+        /** [rows] grouped by category in the order the core lists them. Total. */
+        fun of(rows: List<SkillRow>): List<SkillGroup> = rows.groupBy { it.category }.map { (c, r) -> SkillGroup(c, r) }
+    }
+}
+
+/**
+ * The skills page: [rows] the core's last answer, null while read or when it could not be read (D3); [busy] while one
+ * change is written; [error] the core's words.
+ */
+data class SkillsUi(val rows: List<SkillRow>? = null, val busy: Boolean = false, val error: String? = null)
