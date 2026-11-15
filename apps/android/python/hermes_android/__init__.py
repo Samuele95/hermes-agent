@@ -89,11 +89,12 @@ def start(paths: dict[str, str], native: Native) -> None:
 
 def _warm_delivery_targets(go: queue.SimpleQueue[bool]) -> threading.Thread:
     """The job form's first ``cron_delivery_targets`` loads every plugin and platform adapter (about 2.8 s on the
-    phone) on ``hermes-python``, the thread that carries the chat's frames: load them here, beside it. The thread
-    waits until the app says its startup calls are done (:func:`cron_warm_delivery_targets`): started earlier, its
-    loads slowed those calls through the GIL (about +650 ms to ready on the phone). This runs after the keystore
-    source and the core's env load, so never from :func:`prepare`. A form opened meanwhile waits on the core's own
-    locks."""
+    phone) on ``hermes-python``, the thread that carries the chat's frames: load them here, beside it, then scan the
+    skills listing, whose first read (up to about 1 s on the phone) also held ``hermes-python``. The thread waits
+    until the app says its startup calls are done (:func:`cron_warm_delivery_targets`): started earlier, its loads
+    slowed those calls through the GIL (about +650 ms to ready on the phone). This runs after the keystore source and
+    the core's env load, so never from :func:`prepare`. A form or Skills page opened meanwhile waits on the core's own
+    locks or scans for itself."""
     import cron.scheduler_delivery  # in sys.modules when start() returns
     from agent.memory_provider import spawn_context_thread
 
@@ -105,6 +106,7 @@ def _warm_delivery_targets(go: queue.SimpleQueue[bool]) -> threading.Thread:
 def _warm_when_told(go: queue.SimpleQueue[bool]) -> None:
     if go.get():
         _load_delivery_targets()
+        _load_skills()
 
 
 def _load_delivery_targets() -> None:
@@ -116,9 +118,18 @@ def _load_delivery_targets() -> None:
         logging.getLogger(__name__).debug("warming the delivery targets failed", exc_info=True)
 
 
+def _load_skills() -> None:
+    try:
+        from tools.skills_tool import _find_all_skills
+
+        _find_all_skills(skip_disabled=True)  # skills_list's own call (skills.py), so its cache entry
+    except Exception:  # the first Skills page then pays the cost, as before
+        logging.getLogger(__name__).debug("warming the skills listing failed", exc_info=True)
+
+
 def cron_warm_delivery_targets(_arg: str) -> str:
-    """The app's startup calls are done: the waiting warm loads the job form's delivery targets now (once; a later
-    call is left unread)."""
+    """The app's startup calls are done: the waiting warm loads the job form's delivery targets, then scans the
+    skills listing (once; a later call is left unread)."""
     if _warm_go is not None:
         _warm_go.put(True)
     return "{}"

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import os
 import re
 import sys
@@ -325,6 +326,85 @@ finally:
     hermes_android.stop()
 """
     assert _probe(tmp_path, body) == [True, False, False]
+
+
+def test_the_released_warm_fills_the_skills_listing_cache(tmp_path):
+    # The Skills page's first skills_list read every SKILL.md (cold 764-957 ms on the phone, M11) on hermes-python,
+    # the thread that carries the chat's frames (/architect 20261115T185930Z #3): the told warm scans them beside it.
+    body = _RECORDED_WARM + """
+hermes_android.start({"role": "chat"}, Native())
+hermes_android.submit(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}))
+deadline = time.monotonic() + 30
+while not any(f.get("id") == 1 for f in frames) and time.monotonic() < deadline:
+    time.sleep(0.01)
+warm = hermes_android._warm
+time.sleep(0.5)
+early = "tools.skills_tool" in sys.modules
+hermes_android.call("cron_warm_delivery_targets", "")
+warm.join(60)
+joined = not warm.is_alive()
+loaded = "tools.skills_tool" in sys.modules
+import tools.skills_tool as st
+key = ("with_disabled", False)  # _find_all_skills(skip_disabled=True)'s entry, the one skills_list reads
+entry = st._SKILLS_CACHE.get(key)
+listed = json.loads(hermes_android.call("skills_list", ""))["skills"]
+served = entry is not None and st._SKILLS_CACHE[key][1] == entry[1]  # a re-scan stamps a new time
+hermes_android.stop()
+report({"early": early, "joined": joined, "loaded": loaded, "filled": entry is not None,
+        "count": len(entry[2]) if entry is not None else 0, "listed": len(listed), "served": served})
+"""
+    seen = _probe(tmp_path, body)
+
+    assert seen["early"] is False, "the skills scan ran before the app's startup calls were done"
+    assert seen["joined"] is True
+    assert seen["loaded"] is True, "tools.skills_tool is not in sys.modules once the warm ran"
+    assert seen["filled"] is True, "the warm left skills_list's cache entry empty"
+    assert seen["count"] > 0  # start() seeds the bundled skills into the probe's home
+    assert seen["listed"] == seen["count"]
+    assert seen["served"] is True, "skills_list re-scanned instead of reading the warm's scan"
+
+
+def test_a_stop_before_the_signal_scans_no_skills(tmp_path):
+    body = _RECORDED_WARM + """
+hermes_android.start({"role": "chat"}, Native())
+warm = hermes_android._warm
+hermes_android.stop()
+report(["tools.skills_tool" in sys.modules, warm.is_alive()])
+"""
+    assert _probe(tmp_path, body) == [False, False], "stop() ran the skills scan the app never asked for"
+
+
+def test_the_skills_scan_runs_on_the_warms_thread_as_skills_list_asks(tmp_path):
+    body = _RECORDED_WARM + """
+hermes_android.start({"role": "chat"}, Native())
+import tools.skills_tool as st  # this test proves the thread and the argument, not the import
+records = []
+scan = st._find_all_skills
+def recorded(*args, **kwargs):
+    records.append([threading.current_thread().name, kwargs])
+    return scan(*args, **kwargs)
+st._find_all_skills = recorded
+reply = hermes_android.call("cron_warm_delivery_targets", "")
+hermes_android._warm.join(60)
+hermes_android.stop()
+report({"reply": reply, "records": records})
+"""
+    seen = _probe(tmp_path, body)
+
+    assert seen["reply"] == "{}"
+    assert seen["records"] == [["hermes-prewarm", {"skip_disabled": True}]], (
+        "the skills scan did not run once, on hermes-prewarm, with skills_list's own argument")
+
+
+def test_a_failed_skills_scan_is_quiet(monkeypatch, caplog):
+    def raising(**_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("tools.skills_tool._find_all_skills", raising)
+    caplog.set_level(logging.DEBUG, logger="hermes_android")
+
+    assert hermes_android._load_skills() is None
+    assert "warming the skills listing failed" in caplog.text
 
 
 def test_a_session_closed_while_its_agent_builds_prints_no_frame(tmp_path):

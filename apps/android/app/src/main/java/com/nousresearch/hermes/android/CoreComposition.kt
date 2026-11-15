@@ -70,9 +70,9 @@ data class CoreDeps(val secrets: SecretStore, val turns: TurnHost, val notifier:
  * The chat process's composition root: starts [runtime]'s core and builds what the screens drive over it. The
  * chat is in the core's most recent conversation on return (a new one when there is none, or the core's setting says
  * not to reopen), and setup is showing already when the core has no provider yet; the job form's delivery targets
- * start loading once these startup calls are done, and the provider's readiness is checked once these calls and the
- * warm are done, and again each time setup closes. [deps] are the platform's collaborators; its [CoreDeps.seen]
- * reaches every reader of the gateway's state.
+ * and the skills listing start loading once these startup calls are done, and the provider's readiness is checked
+ * once these calls and the warm are done, and again each time setup closes. [deps] are the platform's collaborators;
+ * its [CoreDeps.seen] reaches every reader of the gateway's state.
  */
 suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps, scope: CoroutineScope): CoreState.Ready {
     val gateway = runtime.connect(paths, deps.secrets)
@@ -98,7 +98,8 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps
     val facts = bridge.ask(BridgeCalls.RUNTIME_FACTS)
     // The start-up facts: they cannot change in this process; the manifest at each open (D4).
     val about: suspend () -> About = { aboutOf(deps.packageInfo, deps.payloadJson(), facts) }
-    // Last: the warm's plugin loads share the GIL with every call above (+650 ms to ready, K1); the chat is open now.
+    // Last: the warm's plugin loads (the delivery targets, then the skills listing) share the GIL with every call above
+    // (+650 ms to ready, K1); the chat is open now.
     bridge.ask(BridgeCalls.CRON_WARM_DELIVERY_TARGETS)
     val fts = if (facts.fts5) "with FTS5" else "without FTS5"
     // Last, and launched: the probe shares the GIL with every start-up call (K1b) and may take its 4 s budget; Ready never waits (F6).

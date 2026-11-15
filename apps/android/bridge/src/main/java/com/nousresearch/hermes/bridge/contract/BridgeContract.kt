@@ -472,7 +472,7 @@ object BridgeCalls {
     val CRON_SCHEDULER = BridgeCall("cron_scheduler", NoParams.serializer(), CronSchedulerReply.serializer())
     /** Whether the gateway's scheduler still owns a job's run session (the core's cron_run_scheduler_owned, the Dashboard's scheduler_owned): true while a live process holds its execution, false once none does or the run ended, null when the core cannot say (not a run, no such session, an older core). */
     val CRON_RUN_OWNED = BridgeCall("cron_run_owned", CronRunOwnedParams.serializer(), CronRunOwnedReply.serializer())
-    /** The app's startup calls are done: the job form's delivery targets (every plugin and platform adapter) start loading in this process's waiting background thread, once; answers at once. Asked earlier, the load slows those calls through the GIL. */
+    /** The app's startup calls are done: the job form's delivery targets (every plugin and platform adapter), then the skills listing's first scan, start loading in this process's waiting background thread, once; answers at once. Asked earlier, the load slows those calls through the GIL. */
     val CRON_WARM_DELIVERY_TARGETS = BridgeCall("cron_warm_delivery_targets", NoParams.serializer(), NoReply.serializer())
     /** The settings config.set refuses, as the core reads them: the approval timeout in seconds, the always-allowed command patterns, memory and the user profile on or off with their size limits in characters, and every personality the core offers with its preview line. */
     val SETTINGS_READ = BridgeCall("settings_read", NoParams.serializer(), SettingsReadReply.serializer())
