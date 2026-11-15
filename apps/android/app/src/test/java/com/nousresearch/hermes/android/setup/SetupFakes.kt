@@ -35,6 +35,7 @@ abstract class SetupFakes {
     protected val log = mutableListOf<String>()
     protected var deepseekRow = UNAUTHENTICATED_DEEPSEEK
     protected var nousRow = """{"slug":"nous","name":"Nous Portal","models":[],"authenticated":false,"auth_type":"oauth_device_code","key_env":""}"""
+    protected var copilotRow = """{"slug":"copilot","name":"GitHub Copilot","models":["gpt-5"],"authenticated":true}"""
     protected val polls = ArrayDeque(listOf("""{"status":"pending"}""", """{"status":"approved"}"""))
     protected var disconnect: (JsonObject) -> String = { """{"slug":"deepseek","name":"DeepSeek","disconnected":true}""" }
     protected var configSet: (JsonObject) -> String = { """{"key":"model","value":"deepseek-v4-pro","scope":"global"}""" }
@@ -47,7 +48,7 @@ abstract class SetupFakes {
             "model.options" -> """{"providers":[$deepseekRow, $nousRow,
                 {"slug":"openai-codex","name":"OpenAI Codex","models":[],"authenticated":false,"auth_type":"oauth_external","key_env":""},
                 {"slug":"openrouter","name":"OpenRouter","models":[],"authenticated":false,"auth_type":"api_key","key_env":""},
-                {"slug":"copilot","name":"GitHub Copilot","models":["gpt-5"],"authenticated":true}]}"""
+                $copilotRow]}"""
             "config.set" -> configSet(params)
             "model.disconnect" -> disconnect(params)
             "nous.login.start" -> """{"login_id":"L1","user_code":"NOUS-1234","verification_url":"https://portal.test/device?user_code=NOUS-1234","expires_in":600,"poll_interval":1}"""
@@ -78,7 +79,7 @@ abstract class SetupFakes {
         }
     }
     protected val setup = ProviderSetup(core, secrets, bridge, session = { "s1" }, reopenChat = { log += "reopen_chat" },
-                                    subnet = { subnetFound() })
+                                    subnet = { subnetFound() }, now = { NOW_MS })
 
     protected fun ProviderSetup.step() = state.value?.step
 
@@ -97,6 +98,8 @@ abstract class SetupFakes {
     protected val dgx = """{"id":"dgx","name":"DGX","base_url":"http://spark-98d1:11434/v1","model":"gemma4:12b-it-q8_0","has_key":true}"""
 }
 
+/** The wall clock setup's tests run at: 2026-11-15T08:00:00Z. */
+internal const val NOW_MS = 1_794_729_600_000L
 internal const val READY_NOUS = """{"slug":"nous","name":"Nous Portal","models":["nous/hermes-4"],"authenticated":true}"""
 internal const val SIGNED_IN_DEEPSEEK = """{"slug":"deepseek","name":"DeepSeek","models":["deepseek-v4-pro"],"authenticated":true}"""
 internal const val UNAUTHENTICATED_DEEPSEEK =

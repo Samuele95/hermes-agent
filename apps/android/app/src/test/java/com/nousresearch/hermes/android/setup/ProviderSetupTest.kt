@@ -113,6 +113,33 @@ class ProviderSetupTest : SetupFakes() {
     }
 
     @Test
+    fun theModelsCarryTheirFactsFromTheCoresList() = runTest {
+        copilotRow = """{"slug":"copilot","name":"GitHub Copilot","models":["gpt-5"],"authenticated":true,
+            "pricing":{"gpt-5":{"input":"$1.25","output":"$10.00","free":false}},"warning":"Copilot is slow today"}"""
+        setup.open()
+
+        setup.pick("copilot")
+
+        val facts = (setup.step() as SetupStep.Models).provider.facts
+        assertEquals("$1.25", facts.models["gpt-5"]?.input)
+        assertEquals("Copilot is slow today", facts.warning)
+    }
+
+    @Test
+    fun aLockedModelIsNeverChosen() = runTest {
+        copilotRow = """{"slug":"copilot","name":"GitHub Copilot","models":["gpt-5","gpt-5-pro"],"authenticated":true,
+            "unavailable_models":["gpt-5-pro"]}"""
+        setup.open()
+        setup.pick("copilot")
+
+        setup.choose("gpt-5-pro")
+
+        assertTrue(log.toString(), "config.set" !in log)
+        assertTrue(setup.step() is SetupStep.Models)
+        assertNull(setup.state.value?.error)
+    }
+
+    @Test
     fun anExpensiveModelIsUsedOnlyOnceTheUserConfirms() = runTest {
         configSet = { params ->
             if (params["confirm_expensive_model"]?.jsonPrimitive?.boolean == true) """{"key":"model","value":"gpt-5"}"""

@@ -7,7 +7,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.hasAnyDescendant
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -18,10 +21,13 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.nousresearch.hermes.android.setup.Confirm
+import com.nousresearch.hermes.android.setup.ModelFacts
+import com.nousresearch.hermes.android.setup.ProviderFacts
 import com.nousresearch.hermes.android.setup.ProviderChoice
 import com.nousresearch.hermes.android.setup.Setup
 import com.nousresearch.hermes.android.setup.SetupScreen
 import com.nousresearch.hermes.android.setup.SetupStep
+import com.nousresearch.hermes.android.setup.UsageWindow
 import com.nousresearch.hermes.bridge.contract.FoundServer
 import com.nousresearch.hermes.bridge.contract.ServerKind
 import com.nousresearch.hermes.bridge.contract.SavedEndpoint
@@ -93,6 +99,46 @@ class SetupScreenTest {
         compose.onNodeWithTag("setup-confirm").performClick()
 
         assertEquals(listOf("model:deepseek-flash:true"), picked)
+    }
+
+    @Test
+    fun eachModelShowsItsPriceAsTheCoreWroteIt() {
+        val facts = ProviderFacts(models = mapOf("a" to ModelFacts(input = "$3.00", output = "$15.00"), "b" to ModelFacts(input = "free", free = true)))
+        show(Setup(SetupStep.Models(deepseek.copy(ready = true, models = listOf("a", "b", "c"), facts = facts))))
+
+        compose.onNodeWithText("$3.00 in / $15.00 out per Mtok").assertExists()
+        compose.onNodeWithText("Free").assertExists()
+        compose.onNodeWithTag("model-c").assert(!hasAnyDescendant(hasText("per Mtok", substring = true)))
+    }
+
+    @Test
+    fun aProModelIsLockedAndItsTapExplainsAndChoosesNothing() {
+        val nous = ProviderChoice("nous", "Nous Portal", null, ready = true, models = listOf("nous/hermes-4", "nous/hermes-4-405b"),
+                                  facts = ProviderFacts(models = mapOf("nous/hermes-4-405b" to ModelFacts(locked = true))))
+        show(Setup(SetupStep.Models(nous)))
+
+        compose.onNodeWithTag("pro-nous/hermes-4-405b", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithTag("model-nous/hermes-4-405b").performClick()
+        assertEquals(emptyList<String>(), picked)
+        compose.onNodeWithTag("pro-explained").assert(hasText("Pro models need a paid Nous subscription."))
+
+        compose.onNodeWithTag("model-nous/hermes-4").performClick()
+        assertEquals(listOf("model:nous/hermes-4:false"), picked)
+    }
+
+    @Test
+    fun theProvidersWarningLimitAndUsageShowAboveItsModels() {
+        val facts = ProviderFacts(warning = "DeepSeek is slow today", limited = true,
+                                  usage = listOf(UsageWindow("Session", 63, null), UsageWindow("Account 2", null, null)),
+                                  models = mapOf("v4" to ModelFacts(resetsAt = "2099-01-01T10:00:00+00:00")))
+        show(Setup(SetupStep.Models(deepseek.copy(ready = true, models = listOf("v4"), facts = facts))))
+
+        compose.onNodeWithTag("provider-warning").assert(hasText("DeepSeek is slow today"))
+        compose.onNodeWithTag("provider-limited").assert(hasText("DeepSeek hit its usage limit. You can still pick a model for after it resets."))
+        compose.onNodeWithTag("provider-usage").assert(hasText("Session: 37% left", substring = true))
+            .assert(hasText("Account 2: usage unavailable", substring = true))
+        compose.onNodeWithTag("model-v4").assert(hasAnyDescendant(hasText("resets ", substring = true))).performClick()
+        assertEquals(listOf("model:v4:false"), picked)
     }
 
     @Test

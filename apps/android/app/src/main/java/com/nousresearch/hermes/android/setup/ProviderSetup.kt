@@ -27,10 +27,11 @@ import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * A provider the app can set up: one that takes a pasted key ([keyEnv]), one signed in through the
- * core's device-code flow ([signIn]: Nous Portal), or one already signed in ([ready]).
+ * core's device-code flow ([signIn]: Nous Portal), or one already signed in ([ready]). [facts]: what the core's list
+ * says about it and its models (F5).
  */
 data class ProviderChoice(val slug: String, val name: String, val keyEnv: String?, val ready: Boolean, val models: List<String>,
-                          val signIn: Boolean = false)
+                          val signIn: Boolean = false, val facts: ProviderFacts = ProviderFacts.NONE)
 
 sealed interface SetupStep {
     data object Loading : SetupStep
@@ -87,7 +88,8 @@ data class Setup(val step: SetupStep = SetupStep.Loading, val busy: Boolean = fa
  * defaults). That session then gives way to a new one ([reopenChat]): a session created before the switch
  * runs its first turn on the old default model. Custom endpoints are [EndpointSetup]'s; this class keeps provider
  * auth and the default model, and delegates the endpoint actions to it. [state] is null while setup is closed.
- * A step's answer lands only on the showing that asked for it ([Showing]).
+ * A step's answer lands only on the showing that asked for it ([Showing]). [now] is the wall clock the core's reset
+ * times are read against.
  */
 class ProviderSetup(
     private val core: CoreGateway,
@@ -97,6 +99,7 @@ class ProviderSetup(
     private val reopenChat: suspend () -> Unit,
     private val keyNames: KeyNames = KeyNames.InMemory(),
     private val subnet: suspend () -> String? = { null },
+    private val now: () -> Long = System::currentTimeMillis,
 ) {
     private companion object {
         /** `model.disconnect`'s answer when the provider holds no credential. */
@@ -203,10 +206,11 @@ class ProviderSetup(
         }
     }
 
-    /** Makes [model] the default; setup closes once the core took it. */
+    /** Makes [model] the default; setup closes once the core took it. A Pro-locked model is never sent (the core's `unavailable_models`). */
     suspend fun choose(model: String, confirmed: Boolean = false) {
         val shown = setup.value ?: return
         val provider = (shown.step as? SetupStep.Models)?.provider ?: return
+        if (provider.facts.models[model]?.locked == true) return
         val origin = shown.showing
         step(origin) {
             val set = core.call(Methods.CONFIG_SET, ConfigSetParams(
@@ -349,7 +353,8 @@ class ProviderSetup(
         SetupStep.Providers(listed(refresh), endpoints.saved(), defaultGone)
 
     private suspend fun listed(refresh: Boolean): List<ProviderChoice> =
-        core.call(Methods.MODEL_OPTIONS, ModelOptionsParams(includeUnconfigured = true, refresh = refresh)).providers.mapNotNull(::offered)
+        core.call(Methods.MODEL_OPTIONS, ModelOptionsParams(includeUnconfigured = true, refresh = refresh)).providers
+            .mapNotNull { offered(it, now()) }
 
     /**
      * Runs one exchange with the core for the showing [origin]: busy meanwhile, then its next step as a new showing, or
@@ -393,12 +398,13 @@ class ProviderSetup(
 
 /**
  * Offered: providers already signed in, those that take a pasted key, and Nous Portal, whose device-code
- * sign-in the core runs (`nous.login.*`). Other sign-in flows (OAuth elsewhere, SDKs) come later.
+ * sign-in the core runs (`nous.login.*`). Other sign-in flows (OAuth elsewhere, SDKs) come later. Each carries the
+ * row's facts as of [nowMs].
  */
-internal fun offered(row: ModelOptionProvider): ProviderChoice? {
+internal fun offered(row: ModelOptionProvider, nowMs: Long): ProviderChoice? {
     val ready = row.authenticated == true
     val keyEnv = row.keyEnv?.takeIf { row.authType == "api_key" && it.isNotEmpty() }
     val signIn = !ready && row.slug == "nous" && row.authType == "oauth_device_code"
     if (!ready && keyEnv == null && !signIn) return null
-    return ProviderChoice(row.slug, row.name, keyEnv, ready, row.models.orEmpty(), signIn)
+    return ProviderChoice(row.slug, row.name, keyEnv, ready, row.models.orEmpty(), signIn, ProviderFacts.of(row, nowMs))
 }

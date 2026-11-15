@@ -42,6 +42,7 @@ import com.nousresearch.hermes.android.ui.ListRow
 import com.nousresearch.hermes.android.ui.Hint
 import com.nousresearch.hermes.android.ui.CodeFont
 import com.nousresearch.hermes.android.ui.Chevron
+import com.nousresearch.hermes.android.ui.Hermes
 import com.nousresearch.hermes.bridge.contract.ServerKind
 
 /**
@@ -222,14 +223,20 @@ private fun kindLabel(kind: ServerKind): String = stringResource(when (kind) {
     ServerKind.SERVER -> R.string.setup_kind_server
 })
 
+/**
+ * The provider's models to pick from, each with what the core says about it (its price, a Pro lock, its own reset), under
+ * the provider's notes; a locked model's tap explains the lock and chooses nothing.
+ */
 @Composable
 private fun ModelPicker(provider: ProviderChoice, setup: Setup, onModel: (String, Boolean) -> Unit, modifier: Modifier) {
+    val nowMs = remember(provider) { System.currentTimeMillis() }
     setup.confirm?.let { confirm ->
         Hint(confirm.message, Modifier.testTag("setup-confirm-message"))
         PrimaryButton(stringResource(R.string.setup_use_anyway), { onModel(confirm.model, true) }, Modifier.padding(vertical = 8.dp).testTag("setup-confirm"),
                       enabled = !setup.busy)
     }
     if (provider.models.isEmpty()) {
+        ProviderNotes(provider, nowMs)
         // The core lists no models for this provider: the user names one.
         var typed by rememberSaveable(provider.slug) { mutableStateOf("") }
         OutlinedTextField(typed, { typed = it }, Modifier.fillMaxWidth().testTag("model-name"), singleLine = true,
@@ -237,11 +244,61 @@ private fun ModelPicker(provider: ProviderChoice, setup: Setup, onModel: (String
         PrimaryButton(stringResource(R.string.setup_use_model), { onModel(typed.trim(), false) }, Modifier.padding(top = 12.dp).testTag("model-use"),
                       enabled = !setup.busy && typed.isNotBlank())
     } else {
+        var explained by remember(provider.slug) { mutableStateOf<String?>(null) }
         LazyColumn(modifier) {
-            item { SectionCaption(provider.name, Modifier.padding(top = 0.dp)) }
+            item {
+                SectionCaption(provider.name, Modifier.padding(top = 0.dp))
+                ProviderNotes(provider, nowMs)
+            }
             items(provider.models, key = { it }) { model ->
-                ListRow(model, Modifier.testTag("model-$model"), enabled = !setup.busy) { onModel(model, false) }
+                val facts = provider.facts.models[model] ?: ModelFacts()
+                ListRow(model, Modifier.testTag("model-$model"), detail = detailOf(facts, nowMs), enabled = !setup.busy,
+                        trailing = if (facts.locked) {
+                            {
+                                Text(stringResource(R.string.setup_pro).uppercase(), Modifier.testTag("pro-$model"),
+                                     style = MaterialTheme.typography.labelSmall, color = Hermes.colors.textTertiary)
+                            }
+                        } else null) {
+                    if (facts.locked) explained = model else onModel(model, false)
+                }
+                if (explained == model) Hint(stringResource(R.string.setup_pro_needs), Modifier.testTag("pro-explained"))
             }
         }
     }
 }
+
+/** The provider's notes above its models, each only when the core reported it: its warning, an account limit, its usage. */
+@Composable
+private fun ProviderNotes(provider: ProviderChoice, nowMs: Long) {
+    val facts = provider.facts
+    if (facts.warning == null && !facts.limited && facts.usage.isEmpty()) return
+    Column(Modifier.padding(bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        facts.warning?.let { Hint(it, Modifier.testTag("provider-warning")) }
+        if (facts.limited) {
+            Hint(facts.limitedUntil?.let { stringResource(R.string.setup_limited_until, provider.name, resetTime(it, nowMs)) }
+                     ?: stringResource(R.string.setup_limited, provider.name),
+                 Modifier.testTag("provider-limited"))
+        }
+        if (facts.usage.isNotEmpty()) {
+            Hint(facts.usage.map { window ->
+                val left = window.usedPercent?.let { 100 - it }
+                when {
+                    left == null -> stringResource(R.string.setup_usage_unknown, window.label)
+                    window.resetsAt != null -> stringResource(R.string.setup_usage_window, window.label, left, resetTime(window.resetsAt, nowMs))
+                    else -> stringResource(R.string.setup_usage_window_no_reset, window.label, left)
+                }
+            }.joinToString(" · "), Modifier.testTag("provider-usage"))
+        }
+    }
+}
+
+/** A model row's detail: its price in Desktop onboarding's words (or "Free"), and when its own limit resets. */
+@Composable
+private fun detailOf(facts: ModelFacts, nowMs: Long): String? = listOfNotNull(
+    when {
+        facts.free -> stringResource(R.string.setup_price_free)
+        facts.input != null || facts.output != null -> stringResource(R.string.setup_price, facts.input ?: "?", facts.output ?: "?")
+        else -> null
+    },
+    facts.resetsAt?.let { stringResource(R.string.setup_model_resets, resetTime(it, nowMs)) },
+).joinToString(" · ").ifEmpty { null }
