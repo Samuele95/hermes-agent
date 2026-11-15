@@ -65,7 +65,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
+import com.nousresearch.hermes.android.settings.SettingsActions
+import com.nousresearch.hermes.android.settings.SettingsControl
 import com.nousresearch.hermes.android.settings.SettingsScreen
+import com.nousresearch.hermes.android.settings.SettingsUi
 import com.nousresearch.hermes.android.setup.SetupScreen
 import com.nousresearch.hermes.android.setup.SshScreen
 import com.nousresearch.hermes.android.ui.Hermes
@@ -95,7 +98,7 @@ class MainActivity : ComponentActivity() {
                             val queue by state.chat.queueState.collectAsState()
                             val settings by state.pages.settings.state.collectAsState()
                             settings?.let {
-                                SettingsScreen(it, onApprovals = { mode -> app.settings { approvals(mode) } }, onClose = state.pages.settings::close)
+                                SettingsPanel(it, app, state.pages.settings)
                                 return@Surface
                             }
                             val gateway by app.gateway.state.collectAsState()
@@ -260,6 +263,16 @@ class MainActivity : ComponentActivity() {
                                                             runNow = { id -> app.jobs { runNow(id) } }, askDelete = jobs::askDelete,
                                                             confirmDelete = { app.jobs { confirmDelete() } }),
                                         runs = JobRunsActions(show = { id -> app.jobs { showRuns(id) } }, open = { run -> app.jobs { openRun(run) } })))
+    }
+
+    /** The settings page, following the always-on gateway while it shows (a removal waits for its next start, F4). */
+    @Composable
+    private fun SettingsPanel(ui: SettingsUi, app: HermesApplication, settings: SettingsControl) {
+        LaunchedEffect(Unit) { withContext(Dispatchers.IO) { settings.followGateway(app.gatewayChanges) } }
+        SettingsScreen(ui, SettingsActions(approvals = { m -> app.settings { approvals(m) } }, personality = { n -> app.settings { personality(n) } },
+                                           edit = { e -> app.settings { edit(e) } }, askRemove = settings::askRemove,
+                                           confirmRemove = { app.settings { confirmRemove() } }, restartGateway = app::restartGateway),
+                       onClose = settings::close)
     }
 
     /** Text onto the clipboard: the SSH public key for the host's authorized_keys, or what the user copied in the chat (F10). */
