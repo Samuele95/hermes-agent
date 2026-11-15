@@ -5,7 +5,10 @@ import com.nousresearch.hermes.android.chat.ChatSession
 import com.nousresearch.hermes.android.chat.ContextPanel
 import com.nousresearch.hermes.android.chat.Notifier
 import com.nousresearch.hermes.android.chat.QueueStore
+import com.nousresearch.hermes.android.chat.SessionExport
 import com.nousresearch.hermes.android.chat.SessionHistory
+import com.nousresearch.hermes.android.chat.StatusPanel
+import com.nousresearch.hermes.android.chat.exportSession
 import com.nousresearch.hermes.android.gateway.GatewaySeen
 import com.nousresearch.hermes.android.gateway.GatewayStatus
 import com.nousresearch.hermes.android.gateway.TelegramSetup
@@ -81,12 +84,15 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps
     val readiness = CompletableDeferred<ProviderSetup>()  // the chat is built first; a failure it hears waits for setup (D9)
     val chat = ChatSession(gateway, deps.turns, scope, keepSecret, deps.notifier, gatewaySeen = deps.seen,
                            runOwned = { bridge.runOwnership(it).owned }, queues = deps.queues,
-                           providerFailed = { readiness.await().checkReadiness() }).apply { start() }
+                           providerFailed = { readiness.await().checkReadiness() },
+                           exporter = { bridge.exportSession(it) }).apply { start() }
     val setup = ProviderSetup(gateway, deps.secrets, bridge, session = { chat.sessionId.value }, reopenChat = chat::open,
                               keyNames = deps.keyNames, subnet = deps.subnet, customModels = deps.customModels)
     readiness.complete(setup)
     val history = SessionHistory(list = chat::pastSessions, resume = chat::resume, rename = chat::rename, delete = chat::delete)
     val context = ContextPanel(meter = { chat.state.value.meter }, breakdown = chat::breakdown, compress = chat::compress, compressing = { chat.state.value.compressing })
+    val export = SessionExport(export = chat::export)
+    val status = StatusPanel(status = chat::status)
     // Undispatched: setup is showing before the core is Ready, so the chat never flashes first.
     if (setup.needed()) scope.launch(start = CoroutineStart.UNDISPATCHED) { setup.open() }
     val facts = bridge.ask(BridgeCalls.RUNTIME_FACTS)
@@ -101,6 +107,7 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps
     return CoreState.Ready(gateway, chat, setup,
                            Pages(SettingsControl(gateway, bridge, deps.seen, ProviderAccess(setup::connected, setup::remove), about),
                                  SkillsControl(bridge), JobsControl(gateway, bridge, deps.seen, continueInChat = chat::resume),
-                                 TelegramSetup(deps.secrets, bridge, deps.seen), SshSetup(deps.secrets, bridge), history, context),
+                                 TelegramSetup(deps.secrets, bridge, deps.seen), SshSetup(deps.secrets, bridge), history, context,
+                                 export, status),
                            "Python ${facts.python} · SQLite ${facts.sqlite} $fts")
 }

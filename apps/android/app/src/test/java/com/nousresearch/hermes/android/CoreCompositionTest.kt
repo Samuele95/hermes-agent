@@ -3,6 +3,7 @@ package com.nousresearch.hermes.android
 import com.nousresearch.hermes.android.chat.ChatSession
 import com.nousresearch.hermes.android.chat.ContextUi
 import com.nousresearch.hermes.android.chat.Entry
+import com.nousresearch.hermes.android.chat.ExportFile
 import com.nousresearch.hermes.android.chat.FakeCoreGateway
 import com.nousresearch.hermes.android.chat.NoticeShortcut
 import com.nousresearch.hermes.android.chat.Notifier
@@ -65,13 +66,16 @@ class CoreCompositionTest {
         }
     }
     private val bridgeCalls = mutableListOf<String>()
+    /** The arguments the app's Python half was called with, by call. */
+    private val bridgeArgs = mutableMapOf<String, String>()
     private var coreCallsAtWarm: List<String>? = null
     private val runtime = object : CoreRuntime {
         val connected = mutableListOf<HermesPaths>()
         override suspend fun connect(paths: HermesPaths, secrets: SecretStore): CoreGateway = core.also { connected += paths }
         override fun startGateway(paths: HermesPaths, secrets: SecretStore, events: FrameSink) = error("not the chat's core")
-        override val bridge = AppBridge { function, _ ->
+        override val bridge = AppBridge { function, arg ->
             bridgeCalls += function
+            bridgeArgs[function] = arg
             when (function) {
                 "runtime_facts" -> """{"python":"3.14.7","sqlite":"3.53.4","fts5":true,"executable":"","core_release":"2026.9.24"}"""
                 "cron_runs" -> """{"runs":[{"session_id":"cron_j1_20261113_093000","started_at":1794562200,"ended_at":1794562260,
@@ -81,6 +85,7 @@ class CoreCompositionTest {
                 "cron_warm_delivery_targets" -> { coreCallsAtWarm = core.calls.map { it.first }; "{}" }
                 "settings_read" -> SettingsControlTest.DEFAULT_READ
                 "skills_list" -> """{"skills":[{"name":"arxiv","description":"Search arXiv.","category":"research","enabled":true}]}"""
+                "session_export" -> """{"path":"/data/app-files/cache/exports/session-db1.json","name":"session-db1.json","bytes":42}"""
                 else -> "{}"
             }
         }
@@ -215,6 +220,17 @@ class CoreCompositionTest {
         // A fresh session has no meter yet: the core reported no window.
         assertEquals(ContextUi(null, Json.decodeFromString(SessionContextBreakdownResult.serializer(), EMPTY_BREAKDOWN)),
                      ready.pages.context.state.value)
+    }
+
+    @Test
+    fun theChatExportsItsOwnSessionThroughTheAppsSessionExport() = runTest(UnconfinedTestDispatcher()) {
+        val ready = composeCore(runtime, paths, deps, backgroundScope)
+
+        ready.pages.export.export(null)
+
+        assertEquals("""{"session_id":"db1"}""", bridgeArgs["session_export"])  // the chat's stored key, never its runtime id
+        assertEquals(ExportFile("/data/app-files/cache/exports/session-db1.json", "session-db1.json", 42L),
+                     ready.pages.export.state.value.file)
     }
 
     @Test

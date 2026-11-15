@@ -28,6 +28,7 @@ import com.nousresearch.hermes.bridge.protocol.SessionCreateParams
 import com.nousresearch.hermes.bridge.protocol.SessionDeleteParams
 import com.nousresearch.hermes.bridge.protocol.SessionHistoryParams
 import com.nousresearch.hermes.bridge.protocol.SessionResumeParams
+import com.nousresearch.hermes.bridge.protocol.SessionStatusParams
 import com.nousresearch.hermes.bridge.protocol.SessionListRow
 import com.nousresearch.hermes.bridge.protocol.SessionListParams
 import com.nousresearch.hermes.bridge.protocol.SessionMostRecentParams
@@ -63,6 +64,8 @@ import java.util.concurrent.atomic.AtomicLong
  * [queues] keeps each stored session's queue of unsent messages across process deaths (batch-3 F2, DC-M5).
  * [providerFailed] hears of a turn of this chat that failed on its provider's side (auth, provider, billing): readiness
  * is checked again (F6).
+ * [exporter] writes a stored session's file into the app's cache (the app's `session_export`, sessions-12 F8); without
+ * one, nothing is exported.
  */
 class ChatSession(private val core: CoreGateway, private val turns: TurnHost, private val scope: CoroutineScope,
                   private val keepSecret: suspend (name: String, value: ByteArray) -> Unit,
@@ -70,7 +73,8 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
                   private val gatewaySeen: () -> GatewaySeen = { GatewaySeen(GatewayStatus.RUNNING) },
                   private val runOwned: suspend (StoredSessionId) -> Boolean? = { null },
                   private val queues: QueueStore = QueueStore.inMemory(),
-                  private val providerFailed: suspend () -> Unit = {}) {
+                  private val providerFailed: suspend () -> Unit = {},
+                  private val exporter: suspend (StoredSessionId) -> ExportFile = { throw SetupRefusal(NOTHING_TO_EXPORT) }) {
     companion object {
         /** The session's source, which is also the agent's platform; "android" keeps the CLI toolsets. */
         const val SOURCE = "android"
@@ -92,6 +96,10 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         const val CORRECTION_NOT_SENT = "The run ended before Hermes took this, so it was not sent."
         /** Said when the agent cannot take corrections (4010): the words wait at the queue's head instead (DC-M4, D10). */
         const val CORRECTION_QUEUED = "Hermes cannot take a correction in this run, so it waits in the queue for the next turn."
+        /** Said when the chat's own export is asked for before the chat has a session (sessions-12, D7). */
+        const val NOTHING_TO_EXPORT = "Nothing to export yet."
+        /** Said when Status is asked for before the chat has a session (protocol-21). */
+        const val NO_STATUS = "There is no session to report on yet."
     }
 
     /**
@@ -314,6 +322,29 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     /** What fills the session's context, computed by the core when asked (`session.context_breakdown`). */
     suspend fun breakdown(): SessionContextBreakdownResult =
         core.call(Methods.SESSION_CONTEXT_BREAKDOWN, SessionContextBreakdownParams(sessionId = sessionId.value))
+
+    /**
+     * Writes stored session [stored]'s file (a drawer row's key), or the chat's own when null (D7): the key its stored row
+     * goes by now, which a compression rotates, so not while the chat's session compresses. Not refused while a turn
+     * runs: the file holds the rows stored so far (D12). The export goes out off the lock.
+     */
+    suspend fun export(stored: StoredSessionId?): ExportFile {
+        val key = stored ?: synchronized(lock) { live }.let { now ->
+            val ref = now.ref ?: throw SetupRefusal(NOTHING_TO_EXPORT)
+            if (now.chat.compressing) throw SetupRefusal(STILL_COMPRESSING)
+            ref.stored
+        }
+        return exporter(key)
+    }
+
+    /**
+     * The core's `/status` text for the chat's session (`session.status`), exactly as it wrote it (D10). It asks the
+     * runtime session, the id `session.status` takes; a stored key would be refused (D9).
+     */
+    suspend fun status(): String {
+        val session = synchronized(lock) { live.ref?.runtime } ?: throw SetupRefusal(NO_STATUS)
+        return core.call(Methods.SESSION_STATUS, SessionStatusParams(sessionId = session.value)).output
+    }
 
     /**
      * Deletes stored session [stored] (a drawer row's key). The core refuses a session live here, so the chat's own is

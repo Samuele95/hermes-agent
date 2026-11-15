@@ -72,6 +72,11 @@ class ChatSessionTest {
                                    "messages":[{"role":"user","text":"what's on my calendar?"},{"role":"assistant","text":"Two meetings."}],
                                    "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT},"model":"kimi-k2"}}""" }
     /** The core's `display.busy_input_mode`, as `config.get busy` answers it; and its answers to the two corrections. */
+    /** The core's `/status` text, as `session.status` answers it (its Model line after a failed agent build, M1). */
+    private var statusReply = """{"output":"Hermes TUI Status\n\nSession ID: s1\nModel: (unknown) (unknown)\nAgent Running: No"}"""
+    /** The stored keys the chat handed to the app's `session_export`, in order. */
+    private val exported = mutableListOf<StoredSessionId>()
+    private val exportFile = ExportFile("/c/exports/session-db1.json", "session-db1.json", 42L)
     private var busyWord = "interrupt"
     private var busy: () -> String = { """{"value":"$busyWord"}""" }
     private var steer: (JsonObject) -> String = { p -> """{"status":"queued","text":${p.getValue("text")}}""" }
@@ -94,6 +99,7 @@ class ChatSessionTest {
             "session.compress" -> compressReply(params)
             "session.context_breakdown" -> breakdownReply()
             "session.title" -> title(params)
+            "session.status" -> statusReply
             else -> error("unexpected $method")
         }
     }
@@ -143,7 +149,8 @@ class ChatSessionTest {
     private fun TestScope.openChat() =
         ChatSession(core, host, backgroundScope, keepSecret = { name, value -> keepSecret(name, value) }, notifier = notifier,
                     gatewaySeen = { observed++; seen() }, runOwned = { ownedAsked += it.value; owned(it) },
-                    queues = QueueStore.inMemory(savedQueues), providerFailed = { failures++ })
+                    queues = QueueStore.inMemory(savedQueues), providerFailed = { failures++ },
+                    exporter = { exported += it; exportFile })
 
     /** The agent schedules a job in [session] ([action] of the job tool, answered `success`), the core's own warning included. */
     private suspend fun scheduled(session: String, id: String, action: String = "create") {
@@ -2845,5 +2852,76 @@ class ChatSessionTest {
 
         outOfCredits("s9")  // a session the chat does not follow
         assertNull(chat.state.value.wall)
+    }
+
+    @Test
+    fun theChatsOwnExportUsesItsStoredKeyAfterARotation() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        core.emit("session.info", "s1", """{"stored_session_id":"db1b"}""")  // a compression rotated the key
+
+        val file = chat.export(null)
+
+        assertEquals(listOf(stored("db1b")), exported)
+        assertEquals(exportFile, file)
+    }
+
+    @Test
+    fun aRowsExportUsesThatRowsKey() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+
+        chat.export(stored("db-old"))
+
+        assertEquals(listOf(stored("db-old")), exported)
+        assertEquals(runtime("s1"), chat.sessionId)  // a row's export does not switch the chat
+    }
+
+    @Test
+    fun withoutASessionThereIsNothingToExport() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat()
+
+        val refused = runCatching { chat.export(null) }.exceptionOrNull()
+
+        assertTrue("$refused", refused is SetupRefusal)
+        assertEquals(ChatSession.NOTHING_TO_EXPORT, refused?.message)
+        assertEquals(emptyList<StoredSessionId>(), exported)
+    }
+
+    @Test
+    fun theChatsOwnExportWaitsForACompression() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().answered()
+        var refused: Throwable? = null
+        compressReply = {
+            refused = runCatching { runBlocking { chat.export(null) } }.exceptionOrNull()
+            COMPRESSED
+        }
+
+        chat.compress(null)
+
+        assertTrue("$refused", refused is SetupRefusal)
+        assertEquals(ChatSession.STILL_COMPRESSING, refused?.message)
+        assertEquals(emptyList<StoredSessionId>(), exported)
+        chat.export(null)  // once it has finished, the export goes through
+        assertEquals(1, exported.size)
+    }
+
+    @Test
+    fun theStatusIsTheCoresTextForTheChatsRuntimeSession() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }  // runtime s1, stored db1
+
+        val text = chat.status()
+
+        assertEquals("Hermes TUI Status\n\nSession ID: s1\nModel: (unknown) (unknown)\nAgent Running: No", text)
+        assertEquals("session.status" to "s1", callsAfter(core.calls.size - 1).single())
+    }
+
+    @Test
+    fun withoutASessionThereIsNoStatus() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat()
+
+        val refused = runCatching { chat.status() }.exceptionOrNull()
+
+        assertTrue("$refused", refused is SetupRefusal)
+        assertEquals(ChatSession.NO_STATUS, refused?.message)
+        assertEquals(emptyList<Pair<String, JsonObject>>(), core.calls)
     }
 }
