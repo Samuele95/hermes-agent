@@ -43,6 +43,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.semantics.ScrollAxisRange
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import com.nousresearch.hermes.android.setup.Readiness
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.nousresearch.hermes.android.chat.BusyMode
 import com.nousresearch.hermes.android.chat.Chat
@@ -981,5 +983,80 @@ class ChatScreenTest {
 
         val words = InstrumentationRegistry.getInstrumentation().targetContext.getString(R.string.offer_cut)
         compose.onNodeWithTag("offer").assert(hasAnyDescendant(hasText(words)))
+    }
+
+    // The model pill says whether the provider will answer (F6): a dot, a word when not ready, the core's words on a tap.
+
+    private fun stateIs(word: String) = SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, word)
+
+    @Test
+    fun thePillSaysWhetherTheProviderWillAnswer() {
+        var readiness by mutableStateOf<Readiness>(Readiness.Checking)
+        compose.setContent { ChatScreen(Chat(model = "kimi-k2"), onSend = {}, places = ChatPlaces(setup = {}), readiness = readiness) }
+
+        compose.onNodeWithTag("open-setup").assert(stateIs("checking"))
+        compose.onNodeWithTag("readiness-dot", useUnmergedTree = true).assertExists()
+        compose.onNodeWithTag("readiness-label", useUnmergedTree = true).assertDoesNotExist()
+        compose.onNodeWithText("kimi-k2", useUnmergedTree = true).assertExists()
+
+        readiness = Readiness.Ready("deepseek", "m")
+        compose.onNodeWithTag("open-setup").assert(stateIs("ready"))
+        compose.onNodeWithTag("readiness-dot", useUnmergedTree = true).assertExists()
+        compose.onNodeWithTag("readiness-label", useUnmergedTree = true).assertDoesNotExist()
+        compose.onNodeWithText("kimi-k2", useUnmergedTree = true).assertExists()
+
+        for ((state, word) in listOf(Readiness.NeedsSetup("x") to "needs setup", Readiness.Unavailable("x") to "inference unavailable",
+                                     Readiness.Unknown to "unknown")) {
+            readiness = state
+            compose.onNodeWithTag("open-setup").assert(stateIs(word))
+            compose.onNodeWithTag("readiness-label", useUnmergedTree = true).assertTextEquals(word)
+            compose.onNodeWithText("kimi-k2", useUnmergedTree = true).assertExists()
+        }
+        // A check that did not finish is never said as a "no" (DC-M11).
+        compose.onNodeWithText("inference unavailable", useUnmergedTree = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun aPillThatIsNotReadyShowsTheCoresWordsOnATap() {
+        var opened = 0
+        var checked = 0
+        var readiness by mutableStateOf<Readiness>(Readiness.Unavailable("No usable credentials found for deepseek."))
+        compose.setContent {
+            ChatScreen(Chat(model = "kimi-k2"), onSend = {}, places = ChatPlaces(setup = { opened++ }), readiness = readiness,
+                       onCheckReadiness = { checked++ })
+        }
+
+        compose.onNodeWithTag("open-setup").performClick()
+        assertEquals(0, opened)
+        compose.onNodeWithTag("readiness-words").assertTextEquals("No usable credentials found for deepseek.")
+
+        compose.onNodeWithTag("readiness-check").performClick()
+        assertEquals(1, checked)
+        compose.onNodeWithTag("readiness-words").assertDoesNotExist()
+
+        compose.onNodeWithTag("open-setup").performClick()
+        compose.onNodeWithTag("readiness-setup").performClick()
+        assertEquals(1, opened)
+        compose.onNodeWithTag("readiness-words").assertDoesNotExist()
+
+        readiness = Readiness.Unknown
+        compose.onNodeWithTag("open-setup").performClick()
+        val unknown = InstrumentationRegistry.getInstrumentation().targetContext.getString(R.string.chat_ready_unknown_words)
+        compose.onNodeWithTag("readiness-words").assertTextEquals(unknown)
+        assertEquals(1, opened)
+    }
+
+    @Test
+    fun aReadyPillOpensSetupAtOnce() {
+        var opened = 0
+        compose.setContent {
+            ChatScreen(Chat(model = "kimi-k2"), onSend = {}, places = ChatPlaces(setup = { opened++ }),
+                       readiness = Readiness.Ready("deepseek", "deepseek-v4-pro"), onCheckReadiness = {})
+        }
+
+        compose.onNodeWithTag("open-setup").performClick()
+
+        assertEquals(1, opened)
+        compose.onNodeWithTag("readiness-words").assertDoesNotExist()
     }
 }

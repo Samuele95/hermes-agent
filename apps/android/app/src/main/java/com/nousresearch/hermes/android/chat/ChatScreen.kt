@@ -1,6 +1,7 @@
 package com.nousresearch.hermes.android.chat
 
 import androidx.activity.compose.BackHandler
+import androidx.annotation.StringRes
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -71,6 +72,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextAlign
@@ -80,6 +82,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nousresearch.hermes.android.R
 import com.nousresearch.hermes.android.entry.IncomingText
+import com.nousresearch.hermes.android.setup.Readiness
 import com.nousresearch.hermes.android.ui.CodeFont
 import com.nousresearch.hermes.android.ui.Hermes
 import com.nousresearch.hermes.android.ui.HermesIcons
@@ -107,7 +110,8 @@ class ChatPlaces(val setup: (() -> Unit)? = null, val terminal: (() -> Unit)? = 
  * (chat-09, chat-10); without it nothing offers Copy. [queue] is the chat's queue of unsent messages, shown above the
  * composer with each row's actions, and [queueActions] what they do and what the composer's Queue button adds to it
  * (chat-19); without them the chat offers no queue. [chat]'s offer is taken into the composer's draft once and handed
- * back to [onOfferTaken]; the strip above the field offers [places]' New chat.
+ * back to [onOfferTaken]; the strip above the field offers [places]' New chat. [readiness] marks the model pill (F6);
+ * while it is not ready a tap shows the core's words, with setup and [onCheckReadiness].
  */
 @Composable
 fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifier, answers: PromptAnswers? = null,
@@ -115,7 +119,8 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
                sessionActions: SessionActions? = null, context: ContextUi? = null, contextActions: ContextActions? = null,
                places: ChatPlaces? = null, onStop: () -> Unit = {}, onRetry: (() -> Unit)? = null,
                onCopy: ((String) -> Unit)? = null, about: String? = null, queue: QueueUi = QueueUi(),
-               queueActions: QueueActions? = null, onOfferTaken: (IncomingText) -> Unit = {}) {
+               queueActions: QueueActions? = null, onOfferTaken: (IncomingText) -> Unit = {}, readiness: Readiness? = null,
+               onCheckReadiness: (() -> Unit)? = null) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var picked by remember { mutableIntStateOf(0) }  // a conversation picked in the drawer is shown from its end (V5)
@@ -150,7 +155,8 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
             chat.todos?.takeIf { chat.running && it.active }?.let { TodoStrip(it) }
             // The messages that wait for a turn's end, in the order they go out (chat-19).
             queueActions?.takeIf { queue.items.isNotEmpty() }?.let { QueuePanel(queue, chat.busy, chat.steerMode != null, it) }
-            Composer(chat, onSend, onStop, places?.setup, contextActions?.open, queueActions?.add, chat.offer, onOfferTaken, places?.newChat)
+            Composer(chat, onSend, onStop, places?.setup, contextActions?.open, queueActions?.add, chat.offer, onOfferTaken, places?.newChat,
+                     readiness, onCheckReadiness)
             context?.let { ContextSheet(it, running = chat.busy, compressing = chat.compressing, onCompress = contextActions?.compress ?: {},
                                           onClose = contextActions?.close ?: {}) }
         }
@@ -424,10 +430,13 @@ private fun Problem(text: String, modifier: Modifier = Modifier) {
  * session the chat may write to (D12); in queue mode it is the only send control, and the field says "Queue message".
  * An [offer] another app shared joins the draft once, after the user's own words (D6), and goes back to [onOfferTaken];
  * a strip says nothing is sent until Send, with [onNewChat] beside it, while those words are in the field (bet 8).
+ * The model pill carries [readiness]'s mark (none while null); while it is not ready a tap opens the core's words,
+ * setup and [onCheckReadiness] instead of setup (D5, D6).
  */
 @Composable
 private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, onSetup: (() -> Unit)?, onContext: (() -> Unit)?,
-                     onQueue: ((String) -> Unit)?, offer: IncomingText?, onOfferTaken: (IncomingText) -> Unit, onNewChat: (() -> Unit)?) {
+                     onQueue: ((String) -> Unit)?, offer: IncomingText?, onOfferTaken: (IncomingText) -> Unit, onNewChat: (() -> Unit)?,
+                     readiness: Readiness?, onCheckReadiness: (() -> Unit)?) {
     var draft by rememberSaveable { mutableStateOf("") }
     var shared by rememberSaveable { mutableStateOf(false) }  // the draft holds words another app shared
     var cut by rememberSaveable { mutableStateOf(false) }
@@ -468,11 +477,29 @@ private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, o
             // The model takes the room the button leaves; a long name is cut at its end.
             Box(Modifier.weight(1f)) {
                 if (onSetup != null) {
-                    Row(Modifier.clip(CircleShape).clickable(onClick = onSetup).testTag("open-setup").padding(horizontal = 8.dp, vertical = 6.dp),
+                    // Not ready: the tap shows why first (a phone has no tooltip; Desktop's gateway menu shows the reason).
+                    val asks = readiness is Readiness.NeedsSetup || readiness is Readiness.Unavailable || readiness == Readiness.Unknown
+                    var words by remember { mutableStateOf(false) }
+                    val said = readiness?.let { stringResource(stateWord(it)) }
+                    Row(Modifier.clip(CircleShape).clickable { if (asks) words = true else onSetup() }.testTag("open-setup")
+                            .then(said?.let { Modifier.semantics { stateDescription = it } } ?: Modifier)
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically) {
                         Icon(HermesIcons.Model, null, Modifier.size(15.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(chat.model ?: stringResource(R.string.chat_model), Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelLarge,
+                        Text(chat.model ?: stringResource(R.string.chat_model), Modifier.weight(1f, fill = false).padding(start = 6.dp),
+                             style = MaterialTheme.typography.labelLarge,
                              color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        readiness?.let { ReadinessMark(it) }
+                    }
+                    if (readiness != null) DropdownMenu(expanded = words && asks, onDismissRequest = { words = false }) {
+                        Text(wordsOf(readiness), Modifier.widthIn(max = 280.dp).padding(horizontal = 16.dp, vertical = 8.dp).testTag("readiness-words"),
+                             style = MaterialTheme.typography.bodySmall)
+                        DropdownMenuItem(text = { Text(stringResource(R.string.setup_title)) }, onClick = { words = false; onSetup() },
+                                         Modifier.testTag("readiness-setup"))
+                        onCheckReadiness?.let { check ->
+                            DropdownMenuItem(text = { Text(stringResource(R.string.chat_ready_check)) }, onClick = { words = false; check() },
+                                             Modifier.testTag("readiness-check"))
+                        }
                     }
                 }
             }
@@ -502,6 +529,45 @@ private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, o
             }
         }
     }
+}
+
+/**
+ * The model pill's mark: a dot, and for a pill that is not ready its word. Unknown looks neutral, never like a "no"
+ * (DC-M11); the `when` is exhaustive, so a new state cannot fall to "ready" (EJ-34).
+ */
+@Composable
+private fun ReadinessMark(readiness: Readiness) {
+    val muted = Hermes.colors.textTertiary
+    val (tint, labelled) = when (readiness) {
+        Readiness.Checking -> muted to false
+        is Readiness.Ready -> MaterialTheme.colorScheme.primary to false
+        is Readiness.NeedsSetup -> MaterialTheme.colorScheme.error to true
+        is Readiness.Unavailable -> MaterialTheme.colorScheme.error to true
+        Readiness.Unknown -> muted to true
+    }
+    Box(Modifier.padding(start = 6.dp).size(7.dp).clip(CircleShape).background(tint).testTag("readiness-dot"))
+    if (labelled) {
+        Text(stringResource(stateWord(readiness)), Modifier.padding(start = 4.dp).testTag("readiness-label"),
+             style = MaterialTheme.typography.labelMedium, color = tint, maxLines = 1)
+    }
+}
+
+/** The pill's state in one word: its label when not ready, and what TalkBack reads with the model. */
+@StringRes
+private fun stateWord(readiness: Readiness): Int = when (readiness) {
+    Readiness.Checking -> R.string.chat_ready_checking
+    is Readiness.Ready -> R.string.chat_ready_ready
+    is Readiness.NeedsSetup -> R.string.chat_ready_needs_setup
+    is Readiness.Unavailable -> R.string.chat_ready_unavailable
+    Readiness.Unknown -> R.string.chat_ready_unknown
+}
+
+/** What a tap on a pill that is not ready says: the core's own words, or that the check did not finish. */
+@Composable
+private fun wordsOf(readiness: Readiness): String = when (readiness) {
+    is Readiness.NeedsSetup -> readiness.words
+    is Readiness.Unavailable -> readiness.words
+    Readiness.Checking, is Readiness.Ready, Readiness.Unknown -> stringResource(R.string.chat_ready_unknown_words)
 }
 
 /** The agent's plan above the composer: "Tasks 2/5" and the item it is on, the whole list one tap away. */

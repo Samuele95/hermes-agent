@@ -5,6 +5,13 @@
     <string name="chat_send">Send</string>
     <string name="chat_run_owned">This job is still running in the background. You can read it here; write once it has finished.</string>
     <string name="chat_model">Model</string>
+    <string name="chat_ready_checking">checking</string>
+    <string name="chat_ready_ready">ready</string>
+    <string name="chat_ready_needs_setup">needs setup</string>
+    <string name="chat_ready_unavailable">inference unavailable</string>
+    <string name="chat_ready_unknown">unknown</string>
+    <string name="chat_ready_unknown_words">Hermes could not tell whether the provider will answer: the check did not finish.</string>
+    <string name="chat_ready_check">Check again</string>
     <string name="chat_terminal">Terminal</string>
     <string name="chat_gateway">Gateway</string>
     <string name="chat_thinking">Thinking</string>

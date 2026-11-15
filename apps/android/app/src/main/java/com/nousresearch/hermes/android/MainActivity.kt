@@ -88,6 +88,7 @@ class MainActivity : ComponentActivity() {
                         is CoreState.Ready -> {
                             val chat by state.chat.state.collectAsState()
                             val setup by state.setup.state.collectAsState()
+                            val readiness by state.setup.readiness.collectAsState()
                             val ssh by state.ssh.state.collectAsState()
                             val history by state.history.state.collectAsState()
                             val context by state.context.state.collectAsState()
@@ -148,6 +149,7 @@ class MainActivity : ComponentActivity() {
                                                                        askDelete = state.history::askDelete, confirmDelete = { app.history { confirmDelete() } }),
                                        context = context, contextActions = contextActions, queue = queue, queueActions = queueActions,
                                        onOfferTaken = state.chat::offerTaken,
+                                       readiness = readiness, onCheckReadiness = { app.setup { checkReadiness() } },
                                        onSend = { text ->
                                 if (Build.VERSION.SDK_INT >= 33 &&
                                     checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
