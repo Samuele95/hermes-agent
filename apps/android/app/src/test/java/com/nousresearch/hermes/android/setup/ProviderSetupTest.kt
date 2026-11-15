@@ -140,6 +140,103 @@ class ProviderSetupTest : SetupFakes() {
     }
 
     @Test
+    fun aTypedIdIsChosenAsAnyModelIsAndKeptOnceTheCoreTookIt() = runTest {
+        setup.open()
+        setup.pick("copilot")
+
+        setup.chooseCustom(" gpt-6-preview ")
+
+        val params = core.calls.last { it.first == "config.set" }.second
+        assertEquals(listOf("s1", "model", "gpt-6-preview --provider copilot --global"),
+                     listOf("session_id", "key", "value").map { params.getValue(it).jsonPrimitive.content })
+        assertEquals("reopen_chat", log.last())
+        assertNull(setup.state.value)
+        assertEquals(listOf("gpt-6-preview"), customs["copilot"])
+
+        setup.open()
+        setup.pick("copilot")
+        val provider = (setup.step() as SetupStep.Models).provider
+        assertEquals(listOf("gpt-6-preview"), provider.custom)
+        assertEquals(listOf("gpt-5"), provider.models)
+    }
+
+    @Test
+    fun anIdTheCoreRefusesIsNotKept() = runTest {
+        configSet = { throw CoreError(5001, "Model `gpt-6` was not found in this provider's catalog.") }
+        setup.open()
+        setup.pick("copilot")
+
+        setup.chooseCustom("gpt-6")
+
+        assertEquals("Model `gpt-6` was not found in this provider's catalog.", setup.state.value?.error)
+        assertTrue(setup.step() is SetupStep.Models)
+        assertEquals("refused", emptyList<String>(), customs["copilot"])
+
+        // The expensive-model answer: nothing is taken while the confirm shows, and the confirmed id is.
+        configSet = { params ->
+            if (params["confirm_expensive_model"]?.jsonPrimitive?.boolean == true) """{"key":"model","value":"gpt-6"}"""
+            else """{"key":"model","confirm_required":true,"confirm_message":"gpt-6 costs $$$"}"""
+        }
+        setup.chooseCustom("gpt-6")
+        assertEquals(Confirm("gpt-6", "gpt-6 costs $$$"), setup.state.value?.confirm)
+        assertEquals("asked to confirm", emptyList<String>(), customs["copilot"])
+
+        setup.choose("gpt-6", confirmed = true)
+        assertNull(setup.state.value)
+        assertEquals(listOf("gpt-6"), customs["copilot"])
+    }
+
+    @Test
+    fun anIdWithASpaceNeverReachesTheCore() = runTest {
+        setup.open()
+        setup.pick("copilot")
+
+        setup.chooseCustom("gpt 6")
+        assertTrue(log.toString(), "config.set" !in log)
+        assertEquals("A model id has no spaces.", setup.state.value?.error)
+
+        setup.back(); setup.pick("copilot")
+        setup.chooseCustom("   ")
+        assertTrue(log.toString(), "config.set" !in log)
+        assertNull(setup.state.value?.error)
+    }
+
+    @Test
+    fun aCoreWarningOnATakenIdIsShownUntilDone() = runTest {
+        configSet = { """{"key":"model","value":"gpt-6","warning":"Model `gpt-6` not found in listing; using it anyway"}""" }
+        setup.open()
+        setup.pick("copilot")
+
+        setup.chooseCustom("gpt-6")
+
+        assertEquals("Model `gpt-6` not found in listing; using it anyway", setup.state.value?.notice)
+        assertEquals(listOf("gpt-6"), (setup.step() as SetupStep.Models).provider.custom)
+        assertEquals("reopen_chat", log.last())
+        assertEquals(listOf("gpt-6"), customs["copilot"])
+        setup.close()
+        assertNull(setup.state.value)
+
+        // A model the catalog lists closes setup as before, whatever the core notes.
+        setup.open()
+        setup.pick("copilot")
+        setup.choose("gpt-5")
+        assertNull(setup.state.value)
+    }
+
+    @Test
+    fun aListedIdIsNeverKeptAsCustomAndShowsOnce() = runTest {
+        setup.open()
+        setup.pick("copilot")
+        setup.choose("gpt-5")
+        assertEquals(emptyList<String>(), customs["copilot"])
+
+        customs.add("copilot", "gpt-5")  // kept before the catalog listed it
+        setup.open()
+        setup.pick("copilot")
+        assertEquals(emptyList<String>(), (setup.step() as SetupStep.Models).provider.custom)
+    }
+
+    @Test
     fun anExpensiveModelIsUsedOnlyOnceTheUserConfirms() = runTest {
         configSet = { params ->
             if (params["confirm_expensive_model"]?.jsonPrimitive?.boolean == true) """{"key":"model","value":"gpt-5"}"""

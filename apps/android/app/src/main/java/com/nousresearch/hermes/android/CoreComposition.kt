@@ -12,6 +12,7 @@ import com.nousresearch.hermes.android.gateway.TelegramSetup
 import com.nousresearch.hermes.android.jobs.JobsControl
 import com.nousresearch.hermes.android.jobs.runOwnership
 import com.nousresearch.hermes.android.setup.ApprovalSettings
+import com.nousresearch.hermes.android.setup.CustomModels
 import com.nousresearch.hermes.android.setup.KeyNames
 import com.nousresearch.hermes.android.setup.ProviderSetup
 import com.nousresearch.hermes.android.setup.SshSetup
@@ -39,14 +40,16 @@ fun installRuntime(context: Context): HermesPaths {
 /**
  * What the platform hands the chat process's core (D39 F12): the keystore [secrets], the [turns] host that keeps a
  * running turn alive, the [notifier] for a question or reply while the app is off screen, the provider [keyNames],
+ * the provider [customModels]: ids the user typed, kept once the core took one,
  * the phone's Wi-Fi [subnet] for the endpoint search, [seen], the app's own observation of the always-on gateway:
  * the one value the chat, the jobs page and the bot's live state all judge it by (§3.1), and [queues], where the chat
- * keeps each session's queue of unsent messages (batch-3 F2). A field left out is today's default: names kept in
- * memory, no subnet, a stopped gateway, queues kept in memory. Its lambdas compare by identity, so two values are
+ * keeps each session's queue of unsent messages (batch-3 F2). A field left out is today's default: names and
+ * model ids kept in memory, no subnet, a stopped gateway, queues kept in memory. Its lambdas compare by identity, so two values are
  * never compared.
  */
 data class CoreDeps(val secrets: SecretStore, val turns: TurnHost, val notifier: Notifier,
                     val keyNames: KeyNames = KeyNames.InMemory(),
+                    val customModels: CustomModels = CustomModels.InMemory(),
                     val subnet: suspend () -> String? = { null },
                     val seen: () -> GatewaySeen = { GatewaySeen(GatewayStatus.STOPPED) },
                     val queues: QueueStore = QueueStore.inMemory())
@@ -68,7 +71,7 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps
     val chat = ChatSession(gateway, deps.turns, scope, keepSecret, deps.notifier, gatewaySeen = deps.seen,
                            runOwned = { bridge.runOwnership(it).owned }, queues = deps.queues).apply { start() }
     val setup = ProviderSetup(gateway, deps.secrets, bridge, session = { chat.sessionId.value }, reopenChat = chat::open,
-                              keyNames = deps.keyNames, subnet = deps.subnet)
+                              keyNames = deps.keyNames, subnet = deps.subnet, customModels = deps.customModels)
     val history = SessionHistory(list = chat::pastSessions, resume = chat::resume, rename = chat::rename, delete = chat::delete)
     val context = ContextPanel(meter = { chat.state.value.meter }, breakdown = chat::breakdown, compress = chat::compress, compressing = { chat.state.value.compressing })
     // Undispatched: setup is showing before the core is Ready, so the chat never flashes first.

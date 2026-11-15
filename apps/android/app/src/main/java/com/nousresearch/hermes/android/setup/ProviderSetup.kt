@@ -28,10 +28,11 @@ import kotlinx.serialization.json.JsonPrimitive
 /**
  * A provider the app can set up: one that takes a pasted key ([keyEnv]), one signed in through the
  * core's device-code flow ([signIn]: Nous Portal), or one already signed in ([ready]). [facts]: what the core's list
- * says about it and its models (F5).
+ * says about it and its models (F5). [custom]: ids the user added for it that its catalog does not list (DC-M9).
  */
 data class ProviderChoice(val slug: String, val name: String, val keyEnv: String?, val ready: Boolean, val models: List<String>,
-                          val signIn: Boolean = false, val facts: ProviderFacts = ProviderFacts.NONE)
+                          val signIn: Boolean = false, val facts: ProviderFacts = ProviderFacts.NONE,
+                          val custom: List<String> = emptyList())
 
 sealed interface SetupStep {
     data object Loading : SetupStep
@@ -75,10 +76,11 @@ class Showing
 /**
  * What setup shows. [list]: the provider list Back returns to: the core's choices, the endpoints saved on this phone,
  * and whether the default model's endpoint was deleted since setup opened. Setup keeps no list outside this value.
- * [showing]: which showing this is (see [Showing]).
+ * [showing]: which showing this is (see [Showing]). [notice]: the core's words on a typed id it took with a warning; that
+ * id is already the default (D10).
  */
 data class Setup(val step: SetupStep = SetupStep.Loading, val busy: Boolean = false, val error: String? = null,
-                 val confirm: Confirm? = null, val list: SetupStep.Providers = SetupStep.Providers(emptyList()),
+                 val confirm: Confirm? = null, val notice: String? = null, val list: SetupStep.Providers = SetupStep.Providers(emptyList()),
                  val showing: Showing = Showing())
 
 /**
@@ -88,8 +90,8 @@ data class Setup(val step: SetupStep = SetupStep.Loading, val busy: Boolean = fa
  * defaults). That session then gives way to a new one ([reopenChat]): a session created before the switch
  * runs its first turn on the old default model. Custom endpoints are [EndpointSetup]'s; this class keeps provider
  * auth and the default model, and delegates the endpoint actions to it. [state] is null while setup is closed.
- * A step's answer lands only on the showing that asked for it ([Showing]). [now] is the wall clock the core's reset
- * times are read against.
+ * A step's answer lands only on the showing that asked for it ([Showing]). [customModels]: the ids the user typed, kept
+ * per provider once the core took one. [now] is the wall clock the core's reset times are read against.
  */
 class ProviderSetup(
     private val core: CoreGateway,
@@ -99,6 +101,7 @@ class ProviderSetup(
     private val reopenChat: suspend () -> Unit,
     private val keyNames: KeyNames = KeyNames.InMemory(),
     private val subnet: suspend () -> String? = { null },
+    private val customModels: CustomModels = CustomModels.InMemory(),
     private val now: () -> Long = System::currentTimeMillis,
 ) {
     private companion object {
@@ -206,7 +209,11 @@ class ProviderSetup(
         }
     }
 
-    /** Makes [model] the default; setup closes once the core took it. A Pro-locked model is never sent (the core's `unavailable_models`). */
+    /**
+     * Makes [model] the default; setup closes once the core took it. A Pro-locked model is never sent (the core's
+     * `unavailable_models`). A model the provider's catalog does not list is kept for it only once the core took it
+     * (DC-M9); a warning the core answers on one stays shown until Done (D10).
+     */
     suspend fun choose(model: String, confirmed: Boolean = false) {
         val shown = setup.value ?: return
         val provider = (shown.step as? SetupStep.Models)?.provider ?: return
@@ -220,10 +227,28 @@ class ProviderSetup(
                 on(origin) { it.copy(confirm = Confirm(model, set.confirmMessage.orEmpty())) }
                 return@step models(provider)
             }
+            val custom = model !in provider.models
+            if (custom) customModels.add(provider.slug, model)  // only now: the core took it (DC-M9)
             reopenChat()  // the core's default changed whoever is looking (L11)
+            val note = set.warning?.takeIf { custom && it.isNotBlank() }
+            if (note != null) {
+                on(origin) { it.copy(notice = note) }
+                return@step models(provider.copy(custom = (provider.custom + model).distinct()))
+            }
             on(origin) { null }
             return
         }
+    }
+
+    /** The typed id, kept in prefs only once the core took it: one with whitespace is refused here, a blank one ignored. */
+    suspend fun chooseCustom(model: String) {
+        val shown = setup.value ?: return
+        val id = customModelId(model)
+        if (id == null) {
+            if (model.isNotBlank()) on(shown.showing) { it.copy(error = "A model id has no spaces.") }
+            return
+        }
+        choose(id)
     }
 
     fun addEndpoint() {
@@ -296,7 +321,7 @@ class ProviderSetup(
     }
 
     fun back() {
-        setup.update { it?.copy(step = it.list, busy = false, error = null, confirm = null, showing = Showing()) }
+        setup.update { it?.copy(step = it.list, busy = false, error = null, confirm = null, notice = null, showing = Showing()) }
     }
 
     /** Keeps an endpoint's newly typed [key] as a pasted provider key is kept: keystore, core, then its name. */
@@ -354,7 +379,7 @@ class ProviderSetup(
 
     private suspend fun listed(refresh: Boolean): List<ProviderChoice> =
         core.call(Methods.MODEL_OPTIONS, ModelOptionsParams(includeUnconfigured = true, refresh = refresh)).providers
-            .mapNotNull { offered(it, now()) }
+            .mapNotNull { row -> offered(row, now())?.let { p -> p.copy(custom = customModels[p.slug].filterNot { it in p.models }) } }
 
     /**
      * Runs one exchange with the core for the showing [origin]: busy meanwhile, then its next step as a new showing, or
@@ -362,7 +387,7 @@ class ProviderSetup(
      * step opened, or null when nothing landed; callers decide from this, never from `Setup.error`.
      */
     private inline fun step(origin: Showing?, exchange: () -> SetupStep): Showing? {
-        on(origin) { it.copy(busy = true, error = null, confirm = null) }
+        on(origin) { it.copy(busy = true, error = null, confirm = null, notice = null) }
         try {
             val next = exchange()
             val opened = Showing()
@@ -390,9 +415,9 @@ class ProviderSetup(
         return landed
     }
 
-    /** Shows [step] as a new showing: not busy, no error, no confirm (those belong to the showing they came from). */
+    /** Shows [step] as a new showing: not busy, no error, no confirm or notice (those belong to the showing they came from). */
     private fun show(step: SetupStep) {
-        setup.update { it?.copy(step = step, busy = false, error = null, confirm = null, showing = Showing()) }
+        setup.update { it?.copy(step = step, busy = false, error = null, confirm = null, notice = null, showing = Showing()) }
     }
 }
 

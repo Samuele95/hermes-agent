@@ -123,7 +123,8 @@ class MainActivity : ComponentActivity() {
                                             onFindServer = { address, key, model -> app.setup { findServer(address, key, model) } },
                                             onSearchNetwork = { app.setup { searchNetwork() } },
                                             onEditEndpoint = state.setup::editEndpoint,
-                                            onDeleteEndpoint = { id -> app.setup { deleteEndpoint(id) } })
+                                            onDeleteEndpoint = { id -> app.setup { deleteEndpoint(id) } },
+                                            onCustomModel = { id -> app.setup { chooseCustom(id) } })
                                 return@Surface
                             }
                             val answers = PromptAnswers(approve = { p, choice -> app.chat { approve(p, choice) } },

@@ -53,7 +53,7 @@ class SetupScreenTest {
     @Composable
     private fun Screen(setup: Setup) {
         SetupScreen(setup, onPick = { picked += "pick:$it" }, onKey = { picked += "key:" + String(it) },
-                    onModel = { model, confirmed -> picked += "model:$model:$confirmed" }, onBack = {}, onClose = {},
+                    onModel = { model, confirmed -> picked += "model:$model:$confirmed" }, onBack = {}, onClose = { picked += "close" },
                     onAddEndpoint = { picked += "add-endpoint" },
                     onEndpoint = { name, url, model, key -> picked += "endpoint:$name|$url|$model|${key?.let(::String)}" },
                     onOpenUrl = { picked += "open:$it" }, onForget = { picked += "forget" },
@@ -62,7 +62,7 @@ class SetupScreenTest {
                             (model.takeIf { it.isNotBlank() }?.let { " model:$it" } ?: "")
                     },
                     onSearchNetwork = { picked += "search" }, onEditEndpoint = { picked += "edit $it" },
-                    onDeleteEndpoint = { picked += "delete $it" })
+                    onDeleteEndpoint = { picked += "delete $it" }, onCustomModel = { picked += "custom:$it" })
     }
 
     private val dgx = SavedEndpoint("dgx", "DGX", "http://spark-98d1:11434/v1", "gemma4:12b-it-q8_0", true)
@@ -139,6 +139,39 @@ class SetupScreenTest {
             .assert(hasText("Account 2: usage unavailable", substring = true))
         compose.onNodeWithTag("model-v4").assert(hasAnyDescendant(hasText("resets ", substring = true))).performClick()
         assertEquals(listOf("model:v4:false"), picked)
+    }
+
+    @Test
+    fun addCustomModelOpensAFieldThatHandsTheTrimmedIdOver() {
+        show(Setup(SetupStep.Models(deepseek.copy(ready = true, models = listOf("a")))))
+
+        compose.onNodeWithTag("add-custom-model").performClick()
+        compose.onNodeWithTag("model-use").assertIsNotEnabled()
+        compose.onNodeWithTag("model-name").performTextInput("gpt 6")
+        compose.onNodeWithTag("model-use").assertIsNotEnabled()
+        compose.onNodeWithTag("model-name").performTextReplacement("  gpt-6  ")
+        compose.onNodeWithTag("model-use").performClick()
+
+        assertEquals(listOf("custom:gpt-6"), picked)
+    }
+
+    @Test
+    fun theIdsTheUserAddedFollowTheCatalogAsCustomModels() {
+        show(Setup(SetupStep.Models(deepseek.copy(ready = true, models = listOf("a"), custom = listOf("mine")))))
+
+        compose.onNodeWithTag("model-mine").assert(hasAnyDescendant(hasText("Custom model"))).performClick()
+
+        assertEquals(listOf("model:mine:false"), picked)
+    }
+
+    @Test
+    fun theCoresNoteOnATakenIdShowsWithDone() {
+        show(Setup(SetupStep.Models(deepseek.copy(ready = true, models = listOf("a"), custom = listOf("gpt-6"))), notice = "not in listing"))
+
+        compose.onNodeWithTag("setup-notice").assert(hasText("not in listing"))
+        compose.onNodeWithTag("setup-done").performClick()
+
+        assertEquals(listOf("close"), picked)
     }
 
     @Test

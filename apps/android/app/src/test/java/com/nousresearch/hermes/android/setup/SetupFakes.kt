@@ -33,6 +33,7 @@ abstract class SetupFakes {
         override fun all() = held.mapValues { it.value.copyOf() }
     }
     protected val log = mutableListOf<String>()
+    protected val customs = CustomModels.InMemory()  // the model ids kept for each provider
     protected var deepseekRow = UNAUTHENTICATED_DEEPSEEK
     protected var nousRow = """{"slug":"nous","name":"Nous Portal","models":[],"authenticated":false,"auth_type":"oauth_device_code","key_env":""}"""
     protected var copilotRow = """{"slug":"copilot","name":"GitHub Copilot","models":["gpt-5"],"authenticated":true}"""
@@ -79,7 +80,7 @@ abstract class SetupFakes {
         }
     }
     protected val setup = ProviderSetup(core, secrets, bridge, session = { "s1" }, reopenChat = { log += "reopen_chat" },
-                                    subnet = { subnetFound() }, now = { NOW_MS })
+                                    subnet = { subnetFound() }, customModels = customs, now = { NOW_MS })
 
     protected fun ProviderSetup.step() = state.value?.step
 

@@ -1,5 +1,7 @@
 package com.nousresearch.hermes.android
 
+import android.content.Context.MODE_PRIVATE
+import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.nousresearch.hermes.android.setup.ProviderSetup
@@ -34,6 +36,7 @@ class ProviderSetupDeviceTest {
     }
     private val setup: ProviderSetup get() = ready.setup
     private val auth = File(app.filesDir, ".hermes/auth.json")
+    private val customModels get() = app.getSharedPreferences("custom_models", MODE_PRIVATE)
 
     /** What the app does to forget a key: the keystore, then the core's own credential rows. */
     private fun forgetDeepSeek() {
@@ -53,6 +56,7 @@ class ProviderSetupDeviceTest {
     @After
     fun restore() {
         forgetDeepSeek()
+        customModels.edit().clear().commit()
         configBefore?.let(config::writeBytes)
         setup.close()
         // A pool row left here would list DeepSeek as signed in after the next restart, with no key anywhere.
@@ -91,5 +95,35 @@ class ProviderSetupDeviceTest {
         assertFalse("DeepSeek no longer signed in", listed.first { it.slug == "deepseek" }.ready)
         val pool = auth.takeIf { it.isFile }?.let { JSONObject(it.readText()).optJSONObject("credential_pool") }
         assertFalse(pool?.optJSONArray("deepseek")?.length()?.let { it > 0 } ?: false)
+    }
+
+    @Test
+    fun anUnlistedIdGoesToTheCoreAndIsKeptOnlyIfTheCoreTookIt() = runBlocking {
+        val unlisted = "deepseek-hermes-android-unlisted"
+        setup.open()
+        setup.pick("deepseek")
+        setup.submitKey("sk-hermes-android-test-not-a-real-key".toByteArray())
+        assertTrue("no models: ${setup.state.value}", setup.state.value?.step is SetupStep.Models)
+
+        setup.chooseCustom(unlisted)
+
+        val after = setup.state.value
+        val kept = customModels.getString("deepseek", null)
+        if (after?.error != null) {
+            Log.i("ProviderSetupDeviceTest", "the core refused $unlisted: ${after.error}")
+            assertNull(kept)
+            assertFalse(config.readText().contains("default: $unlisted"))
+        } else {
+            Log.i("ProviderSetupDeviceTest", "the core took $unlisted; notice: ${after?.notice}")
+            val written = config.readText()
+            assertTrue(written, written.contains("provider: deepseek") && written.contains("default: $unlisted"))
+            assertEquals(unlisted, kept)
+            setup.open()
+            setup.pick("deepseek")
+            val shown = (setup.state.value?.step as? SetupStep.Models ?: error("no models: ${setup.state.value}")).provider
+            Log.i("ProviderSetupDeviceTest", "listed again: models ${shown.models}, custom ${shown.custom}")
+            // Listed once: as a custom row, or as the core's own row when it lists its current default among the models.
+            assertEquals(1, (shown.models + shown.custom).count { it == unlisted })
+        }
     }
 }

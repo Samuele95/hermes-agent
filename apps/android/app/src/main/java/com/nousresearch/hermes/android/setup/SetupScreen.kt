@@ -47,8 +47,8 @@ import com.nousresearch.hermes.bridge.contract.ServerKind
 
 /**
  * Provider setup: pick a provider, paste its key when it needs one, pick a model; or find a model server by its address
- * (or on the Wi-Fi network), pick one of its models, and edit or delete the endpoints saved before. Stateless but for
- * the fields.
+ * (or on the Wi-Fi network), pick one of its models, and edit or delete the endpoints saved before. A typed model id goes
+ * to [onCustomModel]. Stateless but for the fields.
  */
 @Composable
 fun SetupScreen(setup: Setup, onPick: (String) -> Unit, onKey: (ByteArray) -> Unit, onModel: (String, Boolean) -> Unit,
@@ -56,12 +56,12 @@ fun SetupScreen(setup: Setup, onPick: (String) -> Unit, onKey: (ByteArray) -> Un
                 onEndpoint: (name: String, baseUrl: String, model: String, key: ByteArray?) -> Unit = { _, _, _, _ -> },
                 onOpenUrl: (String) -> Unit = {}, onForget: () -> Unit = {},
                 onFindServer: (address: String, key: ByteArray?, model: String) -> Unit = { _, _, _ -> }, onSearchNetwork: () -> Unit = {},
-                onEditEndpoint: (String) -> Unit = {}, onDeleteEndpoint: (String) -> Unit = {}) {
+                onEditEndpoint: (String) -> Unit = {}, onDeleteEndpoint: (String) -> Unit = {}, onCustomModel: (String) -> Unit = {}) {
     val step = setup.step
     // The provider list is the first page (the brand mark heads it, as the desktop's first run); later steps go back.
     val first = step is SetupStep.Loading || step is SetupStep.Providers
     // A page holding a lazy list scrolls itself.
-    val lists = step is SetupStep.Providers || (step is SetupStep.Models && step.provider.models.isNotEmpty())
+    val lists = step is SetupStep.Providers || (step is SetupStep.Models && (step.provider.models + step.provider.custom).isNotEmpty())
     Page(stringResource(R.string.setup_title), modifier.testTag("setup"), onBack = if (first) null else onBack, backTag = "setup-back",
          backEnabled = !setup.busy, busy = setup.busy, scroll = !lists,
          action = { TextButton(onClose, Modifier.testTag("setup-close")) { Text(stringResource(R.string.setup_later)) } }) {
@@ -93,7 +93,7 @@ fun SetupScreen(setup: Setup, onPick: (String) -> Unit, onKey: (ByteArray) -> Un
             }
             is SetupStep.Key -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) { KeyField(step.provider, enabled = !setup.busy, onKey) }
             is SetupStep.Models -> {
-                ModelPicker(step.provider, setup, onModel, Modifier.weight(1f))
+                ModelPicker(step.provider, setup, onModel, onCustomModel, onClose, Modifier.weight(1f))
                 if (step.keyHeld) {
                     TextButton(onForget, Modifier.testTag("forget-key"), enabled = !setup.busy) {
                         Text(stringResource(R.string.setup_forget_key, step.provider.name), color = MaterialTheme.colorScheme.error)
@@ -225,25 +225,29 @@ private fun kindLabel(kind: ServerKind): String = stringResource(when (kind) {
 
 /**
  * The provider's models to pick from, each with what the core says about it (its price, a Pro lock, its own reset), under
- * the provider's notes; a locked model's tap explains the lock and chooses nothing.
+ * the provider's notes; a locked model's tap explains the lock and chooses nothing. The ids the user added follow, then
+ * "Add custom model…"; with neither a catalog nor added ids, the field shows at once. The core's note on a typed id it
+ * took shows with Done ([onDone]).
  */
 @Composable
-private fun ModelPicker(provider: ProviderChoice, setup: Setup, onModel: (String, Boolean) -> Unit, modifier: Modifier) {
+private fun ModelPicker(provider: ProviderChoice, setup: Setup, onModel: (String, Boolean) -> Unit, onCustomModel: (String) -> Unit,
+                        onDone: () -> Unit, modifier: Modifier) {
     val nowMs = remember(provider) { System.currentTimeMillis() }
+    setup.notice?.let {
+        Hint(it, Modifier.testTag("setup-notice"))
+        PrimaryButton(stringResource(R.string.setup_done), onDone, Modifier.padding(vertical = 8.dp).testTag("setup-done"))
+    }
     setup.confirm?.let { confirm ->
         Hint(confirm.message, Modifier.testTag("setup-confirm-message"))
         PrimaryButton(stringResource(R.string.setup_use_anyway), { onModel(confirm.model, true) }, Modifier.padding(vertical = 8.dp).testTag("setup-confirm"),
                       enabled = !setup.busy)
     }
-    if (provider.models.isEmpty()) {
+    if (provider.models.isEmpty() && provider.custom.isEmpty()) {
         ProviderNotes(provider, nowMs)
         // The core lists no models for this provider: the user names one.
-        var typed by rememberSaveable(provider.slug) { mutableStateOf("") }
-        OutlinedTextField(typed, { typed = it }, Modifier.fillMaxWidth().testTag("model-name"), singleLine = true,
-                          label = { Text(stringResource(R.string.setup_model_name)) })
-        PrimaryButton(stringResource(R.string.setup_use_model), { onModel(typed.trim(), false) }, Modifier.padding(top = 12.dp).testTag("model-use"),
-                      enabled = !setup.busy && typed.isNotBlank())
+        CustomModelField(provider, setup, onCustomModel)
     } else {
+        var adding by rememberSaveable(provider.slug) { mutableStateOf(false) }
         var explained by remember(provider.slug) { mutableStateOf<String?>(null) }
         LazyColumn(modifier) {
             item {
@@ -263,8 +267,31 @@ private fun ModelPicker(provider: ProviderChoice, setup: Setup, onModel: (String
                 }
                 if (explained == model) Hint(stringResource(R.string.setup_pro_needs), Modifier.testTag("pro-explained"))
             }
+            items(provider.custom, key = { "custom-$it" }) { model ->
+                ListRow(model, Modifier.testTag("model-$model"), detail = stringResource(R.string.setup_custom_model),
+                        enabled = !setup.busy) { onModel(model, false) }
+            }
+            item {
+                if (!adding) {
+                    ListRow(stringResource(R.string.setup_add_custom_model), Modifier.testTag("add-custom-model"),
+                            trailing = { Chevron() }) { adding = true }
+                } else {
+                    Column(Modifier.padding(top = 12.dp)) { CustomModelField(provider, setup, onCustomModel) }
+                }
+            }
         }
     }
+}
+
+/** A model id the catalog does not list, typed by the user: offered only once it is one (trimmed, no whitespace). */
+@Composable
+private fun CustomModelField(provider: ProviderChoice, setup: Setup, onCustomModel: (String) -> Unit) {
+    var typed by rememberSaveable(provider.slug) { mutableStateOf("") }
+    OutlinedTextField(typed, { typed = it }, Modifier.fillMaxWidth().testTag("model-name"), singleLine = true,
+                      label = { Text(stringResource(R.string.setup_custom_model_hint)) },
+                      keyboardOptions = KeyboardOptions(autoCorrectEnabled = false))
+    PrimaryButton(stringResource(R.string.setup_use_model), { onCustomModel(typed.trim()) }, Modifier.padding(top = 12.dp).testTag("model-use"),
+                  enabled = !setup.busy && customModelId(typed) != null)
 }
 
 /** The provider's notes above its models, each only when the core reported it: its warning, an account limit, its usage. */

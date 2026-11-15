@@ -22,6 +22,7 @@ import com.nousresearch.hermes.android.gateway.observeGateway
 import com.nousresearch.hermes.android.gateway.watchGateway
 import com.nousresearch.hermes.android.jobs.JobsControl
 import com.nousresearch.hermes.android.setup.ApprovalSettings
+import com.nousresearch.hermes.android.setup.PrefsCustomModels
 import com.nousresearch.hermes.android.setup.PrefsKeyNames
 import com.nousresearch.hermes.android.setup.ProviderSetup
 import com.nousresearch.hermes.android.setup.SshSetup
@@ -242,6 +243,7 @@ class HermesApplication : Application() {
         val paths = withContext(Dispatchers.IO) { installRuntime(this@HermesApplication) }
         val deps = CoreDeps(secrets, ForegroundTurnHost(this), notifier,
                             keyNames = PrefsKeyNames(getSharedPreferences("provider_keys", MODE_PRIVATE)),
+                            customModels = PrefsCustomModels(getSharedPreferences("custom_models", MODE_PRIVATE)),
                             subnet = { wifiSubnet(this@HermesApplication) }, seen = seen,
                             queues = queueFiles(File(noBackupFilesDir, "queue")))  // app-private, never backed up
         val ready = composeCore(runtime, paths, deps, scope)
