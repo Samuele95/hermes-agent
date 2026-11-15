@@ -9,6 +9,7 @@ import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -18,12 +19,16 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import android.os.SystemClock
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.nousresearch.hermes.android.settings.ApprovalMode
 import com.nousresearch.hermes.android.settings.ConfigSettings
+import com.nousresearch.hermes.android.settings.ConnectedProvider
 import com.nousresearch.hermes.android.settings.Personality
 import com.nousresearch.hermes.android.settings.SettingsActions
 import com.nousresearch.hermes.android.settings.SettingsEdit
@@ -57,8 +62,11 @@ class SettingsScreenTest {
     private val asks = mutableListOf<String?>()
     private var confirms = 0
     private var restarts = 0
+    private val providerAsks = mutableListOf<String?>()
+    private var providerConfirms = 0
     private val actions = SettingsActions(approvals = { chosen += it }, personality = { personalities += it }, edit = { edits += it },
-                                          askRemove = { asks += it }, confirmRemove = { confirms++ }, restartGateway = { restarts++ })
+                                          askRemove = { asks += it }, confirmRemove = { confirms++ }, restartGateway = { restarts++ },
+                                          askRemoveProvider = { providerAsks += it }, confirmRemoveProvider = { providerConfirms++ })
 
     private fun show(state: SettingsUi) = compose.setContent { SettingsScreen(state, actions, onClose = {}) }
 
@@ -232,6 +240,55 @@ class SettingsScreenTest {
     }
 
     @Test
+    fun theProvidersSectionListsEachConnectedOneWithRemove() {
+        show(SettingsUi(ApprovalMode.SMART, "concise", CFG, connected = listOf(NOUS, COPILOT, ENDPOINT)))
+
+        compose.onNodeWithTag("provider-nous").performScrollTo()
+        compose.onNode(hasAnyAncestor(hasTestTag("provider-nous")) and hasText("Nous Portal")).assertExists()
+        compose.onNodeWithTag("provider-current-copilot").assertExists()
+        compose.onNodeWithTag("provider-current-nous").assertDoesNotExist()
+        compose.onNodeWithTag("provider-remove-dgx").assertDoesNotExist()
+        compose.onNodeWithTag("provider-managed-dgx").assertExists()
+        compose.onNode(hasContentDescription("Remove Nous Portal")).assertExists()
+        compose.onNodeWithTag("provider-remove-nous").performScrollTo().performClick()
+
+        assertEquals(listOf<String?>("nous"), providerAsks)
+        compose.onNodeWithTag("provider-remove-dialog").assertDoesNotExist()
+    }
+
+    @Test
+    fun theProviderDialogNamesItAndSaysWhatRemovingTheOneInUseDoes() {
+        var state by mutableStateOf(SettingsUi(ApprovalMode.SMART, "concise", CFG, connected = listOf(NOUS, COPILOT, ENDPOINT),
+                                               confirmProvider = "copilot"))
+        compose.setContent { SettingsScreen(state, actions, onClose = {}) }
+
+        compose.onNodeWithText("Remove GitHub Copilot?").assertExists()
+        compose.onNodeWithTag("provider-remove-current").assertExists()
+        compose.onNodeWithTag("provider-remove-confirm").performClick()
+        assertEquals(1, providerConfirms)
+        compose.onNodeWithTag("provider-remove-cancel").performClick()
+        assertNull(providerAsks.last())
+
+        state = state.copy(confirmProvider = "nous")
+        compose.onNodeWithText("Remove Nous Portal?").assertExists()
+        compose.onNodeWithTag("provider-remove-current").assertDoesNotExist()
+    }
+
+    @Test
+    fun anEmptyOrUnreadProviderListSaysSoAndBusyDisablesRemove() {
+        var state by mutableStateOf(SettingsUi(ApprovalMode.SMART, "concise", CFG, connected = emptyList()))
+        compose.setContent { SettingsScreen(state, actions, onClose = {}) }
+
+        compose.onNodeWithTag("providers-none").performScrollTo().assertExists()
+
+        state = state.copy(connected = null)
+        compose.onNodeWithTag("providers").assertDoesNotExist()
+
+        state = state.copy(connected = listOf(NOUS), busy = true)
+        compose.onNodeWithTag("provider-remove-nous").performScrollTo().assertIsNotEnabled()
+    }
+
+    @Test
     fun aChoiceMadeInTheAppIsTheCoresMode() = runBlocking {
         val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as HermesApplication
         val ready = withTimeout(120_000) { app.core.first { it !is CoreState.Starting } } as CoreState.Ready
@@ -299,6 +356,10 @@ class SettingsScreenTest {
     }
 
     private companion object {
+        val NOUS = ConnectedProvider("nous", "Nous Portal", removable = true, current = false)
+        val COPILOT = ConnectedProvider("copilot", "GitHub Copilot", removable = true, current = true)
+        val ENDPOINT = ConnectedProvider("dgx", "DGX", removable = false, current = false)
+
         /** The JVM tests' `settings_read` answer, as the page receives it. */
         val CFG = ConfigSettings(300, listOf("git status", "docker *"), true, true, 2200, 1375,
                                  listOf(Personality("helpful", "You are a helpful, friendly AI assistant."),

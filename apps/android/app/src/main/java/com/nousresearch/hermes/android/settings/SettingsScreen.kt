@@ -30,6 +30,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -48,11 +50,13 @@ import androidx.compose.material3.HorizontalDivider
 
 /** What the page hands over; each is one write or one ask (§2.4). */
 class SettingsActions(val approvals: (ApprovalMode) -> Unit, val personality: (String) -> Unit, val edit: (SettingsEdit) -> Unit,
-                      val askRemove: (String?) -> Unit, val confirmRemove: () -> Unit, val restartGateway: () -> Unit)
+                      val askRemove: (String?) -> Unit, val confirmRemove: () -> Unit, val restartGateway: () -> Unit,
+                      val askRemoveProvider: (String?) -> Unit, val confirmRemoveProvider: () -> Unit)
 
 /**
  * The app's settings kept in the core's config, in the order of §4: Chat (the personality), Command approvals (the
- * mode, the timeout, the always-allowed commands) and Memory. It shows only what the core last answered: a part the
+ * mode, the timeout, the always-allowed commands), Memory, and Providers (each connected one with Remove, which asks
+ * first). It shows only what the core last answered: a part the
  * core could not read is absent (the mode keeps "none selected, still choosable"), and while one write runs every
  * control is off.
  */
@@ -103,9 +107,13 @@ fun SettingsScreen(state: SettingsUi, actions: SettingsActions, onClose: () -> U
                           "profile-chars", enabled) { actions.edit(SettingsEdit(profileChars = it)) }
             Hint(stringResource(R.string.settings_new_chats), Modifier.padding(top = 12.dp).testTag("settings-new-chats"))
         }
+        state.connected?.let { Providers(it, enabled, actions) }
         state.error?.let { Hint(it, Modifier.padding(top = 12.dp).testTag("settings-error"), color = MaterialTheme.colorScheme.error) }
     }
     state.confirmRemove?.let { RemoveDialog(it, enabled = !state.busy, actions) }
+    state.confirmProvider?.let { slug ->
+        state.connected?.firstOrNull { it.slug == slug }?.let { ProviderRemoveDialog(it, enabled = !state.busy, actions) }
+    }
 }
 
 /** The core's word for a personality as the page shows it: [NO_PERSONALITY] reads "None", a name its first letter upper-cased (Desktop's `prettyName`). */
@@ -171,6 +179,37 @@ private fun Allowlist(allowed: List<String>, nextStart: Boolean, enabled: Boolea
     }
 }
 
+/**
+ * The providers Hermes holds a key or sign-in for, in the core's order: the one in use marked, each with Remove (asks
+ * first), except a saved custom endpoint, which is deleted in provider setup (D3).
+ */
+@Composable
+private fun Providers(connected: List<ConnectedProvider>, enabled: Boolean, actions: SettingsActions) {
+    SectionCaption(stringResource(R.string.providers_title), Modifier.testTag("providers"))
+    Hint(stringResource(R.string.providers_explain))
+    if (connected.isEmpty()) Hint(stringResource(R.string.providers_none), Modifier.padding(top = 8.dp).testTag("providers-none"))
+    connected.forEach { p ->
+        Row(Modifier.fillMaxWidth().testTag("provider-${p.slug}"), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(p.name, style = MaterialTheme.typography.bodyLarge)
+                if (p.current) {
+                    Text(stringResource(R.string.providers_in_use), Modifier.testTag("provider-current-${p.slug}"),
+                         style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                }
+                if (!p.removable) Hint(stringResource(R.string.providers_managed), Modifier.testTag("provider-managed-${p.slug}"))
+            }
+            if (p.removable) {
+                val label = stringResource(R.string.providers_remove_label, p.name)
+                TextButton({ actions.askRemoveProvider(p.slug) },
+                           Modifier.testTag("provider-remove-${p.slug}").semantics { contentDescription = label }, enabled = enabled) {
+                    Text(stringResource(R.string.providers_remove))
+                }
+            }
+        }
+        HorizontalDivider(color = Hermes.colors.stroke)
+    }
+}
+
 /** A switch with its quieter line beneath the label. */
 @Composable
 private fun SwitchSetting(label: String, detail: String, checked: Boolean, tag: String, enabled: Boolean, onChange: (Boolean) -> Unit) {
@@ -220,4 +259,24 @@ private fun RemoveDialog(pattern: String, enabled: Boolean, actions: SettingsAct
                                                 Modifier.testTag("allowed-remove-confirm"), enabled = enabled) },
                 dismissButton = { SecondaryButton(stringResource(R.string.job_form_cancel), { actions.askRemove(null) },
                                                   Modifier.testTag("allowed-remove-cancel"), enabled = enabled) })
+}
+
+/** Asks before a provider is removed, naming it, and says what removing the one in use does (D9); both buttons are off while it runs. */
+@Composable
+private fun ProviderRemoveDialog(provider: ConnectedProvider, enabled: Boolean, actions: SettingsActions) {
+    AlertDialog(onDismissRequest = { actions.askRemoveProvider(null) }, modifier = Modifier.testTag("provider-remove-dialog"),
+                containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                title = { Text(stringResource(R.string.providers_remove_title, provider.name)) },
+                text = {
+                    Column {
+                        Text(stringResource(R.string.providers_remove_body))
+                        if (provider.current) {
+                            Text(stringResource(R.string.providers_remove_current), Modifier.padding(top = 8.dp).testTag("provider-remove-current"))
+                        }
+                    }
+                },
+                confirmButton = { PrimaryButton(stringResource(R.string.providers_remove_confirm), actions.confirmRemoveProvider,
+                                                Modifier.testTag("provider-remove-confirm"), enabled = enabled) },
+                dismissButton = { SecondaryButton(stringResource(R.string.job_form_cancel), { actions.askRemoveProvider(null) },
+                                                  Modifier.testTag("provider-remove-cancel"), enabled = enabled) })
 }

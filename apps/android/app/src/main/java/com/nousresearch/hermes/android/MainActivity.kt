@@ -271,7 +271,9 @@ class MainActivity : ComponentActivity() {
         LaunchedEffect(Unit) { withContext(Dispatchers.IO) { settings.followGateway(app.gatewayChanges) } }
         SettingsScreen(ui, SettingsActions(approvals = { m -> app.settings { approvals(m) } }, personality = { n -> app.settings { personality(n) } },
                                            edit = { e -> app.settings { edit(e) } }, askRemove = settings::askRemove,
-                                           confirmRemove = { app.settings { confirmRemove() } }, restartGateway = app::restartGateway),
+                                           confirmRemove = { app.settings { confirmRemove() } }, restartGateway = app::restartGateway,
+                                           askRemoveProvider = settings::askRemoveProvider,
+                                           confirmRemoveProvider = { app.settings { confirmRemoveProvider() } }),
                        onClose = settings::close)
     }
 

@@ -292,6 +292,17 @@
     <string name="unit_characters">characters</string>
     <string name="settings_new_chats">Changes apply to new chats; an open chat keeps what it started with.</string>
     <string name="settings_save">Save</string>
+    <string name="providers_title">Providers</string>
+    <string name="providers_explain">The providers Hermes holds a key or sign-in for on this phone.</string>
+    <string name="providers_none">No provider is connected.</string>
+    <string name="providers_in_use">In use</string>
+    <string name="providers_remove">Remove</string>
+    <string name="providers_remove_label">Remove %1$s</string>
+    <string name="providers_managed">A custom endpoint: edit or delete it in provider setup.</string>
+    <string name="providers_remove_title">Remove %1$s?</string>
+    <string name="providers_remove_body">Hermes forgets its key or sign-in on this phone. An account stays signed in on your other devices.</string>
+    <string name="providers_remove_current">Hermes answers with it now: a new chat starts, and provider setup opens when you leave Settings.</string>
+    <string name="providers_remove_confirm">Remove</string>
     <string name="gateway_stop">Stop</string>
     <string name="gateway_failed">Hermes gateway stopped</string>
     <string name="gateway_screen_title">Always-on gateway</string>
