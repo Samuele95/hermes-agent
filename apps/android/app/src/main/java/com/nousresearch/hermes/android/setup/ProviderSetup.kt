@@ -2,6 +2,7 @@ package com.nousresearch.hermes.android.setup
 
 import com.nousresearch.hermes.android.SetupRefusal
 import com.nousresearch.hermes.android.forUser
+import com.nousresearch.hermes.android.settings.ConnectedProvider
 import com.nousresearch.hermes.bridge.AppBridge
 import com.nousresearch.hermes.bridge.CoreError
 import com.nousresearch.hermes.bridge.CoreGateway
@@ -103,6 +104,7 @@ data class Setup(val step: SetupStep = SetupStep.Loading, val busy: Boolean = fa
  * A step's answer lands only on the showing that asked for it ([Showing]). [customModels]: the ids the user typed, kept
  * per provider once the core took one. [now] is the wall clock the core's reset times are read against.
  * [readiness]: whether the core's set-up provider will answer (F6).
+ * [connected] / [remove]: the Settings page's providers (F10), through the one forget path.
  */
 class ProviderSetup(
     private val core: CoreGateway,
@@ -401,11 +403,15 @@ class ProviderSetup(
     /**
      * Takes a key back from the keystore and from the core. The core keeps env-backed credential rows
      * (without their value) across restarts, so the provider would still list as signed in until disconnected.
+     * [name]: the variable the app stored the key under, null when it holds none (Nous Portal: its tokens are the
+     * core's, D18).
      */
-    private suspend fun forget(slug: String, name: String) {
-        secrets.delete(name)
-        keyNames.remove(slug)
-        bridge.secretsChanged()
+    private suspend fun forget(slug: String, name: String?) {
+        if (name != null) {  // a key the app holds: off the phone first, so a re-read of secrets cannot bring it back (§3.2)
+            secrets.delete(name)
+            keyNames.remove(slug)
+            bridge.secretsChanged()
+        }
         try {
             core.call(Methods.MODEL_DISCONNECT, ModelDisconnectParams(slug))
         } catch (nothingLeft: CoreError) {
@@ -422,6 +428,26 @@ class ProviderSetup(
             forget(shown.provider.slug, name)
             providers(refresh = false)
         }
+    }
+
+    /** The providers Hermes holds a key or sign-in for, in the core's order: one cache-only read, no catalog refresh (§6). */
+    suspend fun connected(): List<ConnectedProvider> =
+        core.call(Methods.MODEL_OPTIONS, ModelOptionsParams()).providers.mapNotNull(ConnectedProvider::of)
+
+    /**
+     * Forgets the provider [slug] (`forget(slug, keyName(slug))`: the keystore when held), checks readiness again, and
+     * reopens the chat if it was the current provider. Every connected provider goes through [forget] (SOLID-S): a
+     * pasted key leaves the keystore before `model.disconnect`; Nous is signed out by `model.disconnect` alone. A
+     * refusal propagates and nothing after it runs (D10). Suspends through the readiness check (≤ 4 s).
+     */
+    suspend fun remove(slug: String) {
+        val provider = connected().firstOrNull { it.slug == slug }?.takeIf { it.removable } ?: return  // the core's answer now (D8)
+        forget(slug, keyNames[slug])
+        if (provider.current) {  // the chat's live session keeps what it was built with (L11); the default has no credential left (D9)
+            reopenChat()
+            open()
+        }
+        checkReadiness()
     }
 
     private fun models(provider: ProviderChoice) =

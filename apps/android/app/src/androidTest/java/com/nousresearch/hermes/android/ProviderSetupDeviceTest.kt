@@ -152,4 +152,42 @@ class ProviderSetupDeviceTest {
         assertTrue("$ready", ready is Readiness.Ready)
         assertEquals("deepseek", (ready as Readiness.Ready).provider)
     }
+
+    /** Settings' Remove (F10) on the test's own fake DeepSeek key only: never another provider the phone lists, never a Nous sign-in. */
+    @Test
+    fun aKeyProviderRemovedFromSettingsLeavesThePhoneAndTheCore() = runBlocking<Unit> {
+        setup.open()
+        setup.pick("deepseek")
+        setup.submitKey("sk-hermes-android-test-not-a-real-key".toByteArray())
+        val models = (setup.state.value?.step as? SetupStep.Models ?: error("no models: ${setup.state.value}")).provider.models
+        setup.choose(models.first())  // DeepSeek is the provider in use
+        assertNull("setup closes: ${setup.state.value}", setup.state.value)
+
+        val settings = ready.pages.settings
+        try {
+            settings.open()
+            val listed = settings.state.value?.connected ?: error("providers not read: ${settings.state.value?.error}")
+            Log.i("ProviderSetupDeviceTest", "connected: ${listed.map { "${it.slug}(removable=${it.removable}, current=${it.current})" }}")
+            val deepseek = listed.firstOrNull { it.slug == "deepseek" } ?: error("DeepSeek not listed: ${listed.map { it.slug }}")
+            assertTrue("removable and in use: $deepseek", deepseek.removable && deepseek.current)
+
+            val before = ready.chat.sessionId.value
+            settings.askRemoveProvider("deepseek")
+            val started = SystemClock.elapsedRealtime()
+            settings.confirmRemoveProvider()
+            Log.i("ProviderSetupDeviceTest", "confirmRemoveProvider took ${SystemClock.elapsedRealtime() - started} ms")
+
+            assertNull(app.secrets.get("DEEPSEEK_API_KEY"))
+            val after = checkNotNull(settings.state.value)
+            assertNull("error: ${after.error}", after.error)
+            assertFalse(after.connected.toString(), after.connected.orEmpty().any { it.slug == "deepseek" })
+            assertNotEquals("the chat started afresh", before, ready.chat.sessionId.value)
+            assertTrue("setup opened (D9)", setup.state.value != null)
+            val pool = auth.takeIf { it.isFile }?.let { JSONObject(it.readText()).optJSONObject("credential_pool") }
+            assertFalse(pool?.optJSONArray("deepseek")?.length()?.let { it > 0 } ?: false)
+            Log.i("ProviderSetupDeviceTest", "readiness after the removal: ${setup.readiness.value}")
+        } finally {
+            settings.close()
+        }
+    }
 }

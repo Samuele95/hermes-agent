@@ -54,6 +54,13 @@ class SettingsControlTest {
     private var writeGate: CompletableDeferred<Unit>? = null  // a write that suspends until completed
     private val bridgeCalls = mutableListOf<Pair<String, String>>()
     private var seenNow = GatewaySeen(GatewayStatus.STOPPED)
+    private var providerRows = ROWS  // what provider setup lists as connected
+    private val removed = mutableListOf<String>()
+    private var removeGate: CompletableDeferred<Unit>? = null  // a removal that suspends until completed
+    private var removeFails: CoreError? = null
+    private var connectedFails: String? = null
+    private var connectedReads = 0
+    private var onRemove: (String) -> Unit = { s -> providerRows = providerRows.filterNot { it.slug == s } }
     private val settings = SettingsControl(core, bridge = { function, arg ->
         bridgeCalls += function to arg
         when (function) {
@@ -61,7 +68,16 @@ class SettingsControlTest {
             "settings_write" -> { writeGate?.await(); writeAnswer }
             else -> error("unexpected $function")
         }
-    }, seen = { seenNow })
+    }, seen = { seenNow }, providers = ProviderAccess(connected = {
+        connectedFails?.let { throw CoreError(5033, it) }
+        connectedReads++
+        providerRows
+    }, remove = {
+        removeGate?.await()
+        removeFails?.let { throw it }
+        removed += it
+        onRemove(it)
+    }))
 
     private fun writes() = bridgeCalls.filter { it.first == "settings_write" }.map { Json.parseToJsonElement(it.second) }
     private fun reads() = bridgeCalls.count { it.first == "settings_read" }
@@ -92,7 +108,8 @@ class SettingsControlTest {
 
         settings.approvals(ApprovalMode.OFF)
 
-        assertEquals(SettingsUi(ApprovalMode.SMART, "concise", CFG, error = "managed install — settings are read-only"), settings.state.value)
+        assertEquals(SettingsUi(ApprovalMode.SMART, "concise", CFG, connected = ROWS, error = "managed install — settings are read-only"),
+                     settings.state.value)
     }
 
     @Test
@@ -101,7 +118,7 @@ class SettingsControlTest {
 
         settings.open()
 
-        assertEquals(SettingsUi(approvals = null, personality = "concise", config = CFG, error = "config.yaml could not be read"),
+        assertEquals(SettingsUi(approvals = null, personality = "concise", config = CFG, connected = ROWS, error = "config.yaml could not be read"),
                      settings.state.value)
     }
 
@@ -118,7 +135,7 @@ class SettingsControlTest {
     fun openingShowsTheCoresModePersonalityAndSettings() = runTest {
         settings.open()
 
-        assertEquals(SettingsUi(ApprovalMode.SMART, "concise", CFG), settings.state.value)
+        assertEquals(SettingsUi(ApprovalMode.SMART, "concise", CFG, connected = ROWS), settings.state.value)
         assertEquals(listOf("settings_read" to "{}"), bridgeCalls)
         assertEquals(listOf("approvals.mode", "personality"),
                      core.calls.filter { it.first == "config.get" }.map { it.second.getValue("key").jsonPrimitive.content })
@@ -293,12 +310,130 @@ class SettingsControlTest {
         assertFalse(settings.state.value!!.busy)
     }
 
+    // Providers (F10): listed when the page opens; a removal asks first and goes through provider setup's one forget path.
+
+    @Test
+    fun openingListsTheConnectedProviders() = runTest {
+        settings.open()
+
+        assertEquals(ROWS, settings.state.value?.connected)
+        assertEquals(emptyList<String>(), removed)
+    }
+
+    @Test
+    fun providersThatCannotBeReadAreNoneAndSayWhy() = runTest {
+        connectedFails = "model.options failed"
+
+        settings.open()
+
+        val ui = settings.state.value!!
+        assertNull("cannot tell is not none (D5)", ui.connected)
+        assertEquals("model.options failed", ui.error)
+        assertEquals(ApprovalMode.SMART, ui.approvals)
+        assertEquals("concise", ui.personality)
+        assertEquals(CFG, ui.config)
+    }
+
+    @Test
+    fun removingAProviderAsksFirstAndRemovesOnlyThatOne() = runTest {
+        settings.open()
+
+        settings.askRemoveProvider("nous")
+        assertEquals("nous", settings.state.value?.confirmProvider)
+        assertEquals(emptyList<String>(), removed)
+
+        settings.askRemoveProvider("dgx")  // listed, but deleted in provider setup (D3)
+        assertNull(settings.state.value?.confirmProvider)
+        settings.askRemoveProvider("ghost")
+        assertNull(settings.state.value?.confirmProvider)
+        settings.askRemoveProvider("nous")
+        settings.askRemoveProvider(null)
+        assertNull(settings.state.value?.confirmProvider)
+        settings.confirmRemoveProvider()  // nothing asked: nothing removed
+        assertEquals(emptyList<String>(), removed)
+
+        settings.askRemoveProvider("nous")
+        settings.confirmRemoveProvider()
+
+        assertEquals(listOf("nous"), removed)
+        val ui = settings.state.value!!
+        assertEquals("the core's re-read", listOf(COPILOT, ENDPOINT), ui.connected)
+        assertEquals(2, connectedReads)
+        assertNull(ui.confirmProvider)
+        assertFalse(ui.busy)
+        assertNull(ui.error)
+        assertEquals(emptyList<Any>(), writes())
+    }
+
+    @Test
+    fun oneQuestionAtATime() = runTest {
+        settings.open()
+
+        settings.askRemove("docker *")
+        settings.askRemoveProvider("nous")
+        assertNull(settings.state.value?.confirmRemove)
+        assertEquals("nous", settings.state.value?.confirmProvider)
+
+        settings.askRemove("docker *")
+        assertNull(settings.state.value?.confirmProvider)
+    }
+
+    @Test
+    fun aSecondProviderConfirmationRemovesNothingMore() = runTest {
+        settings.open()
+        settings.askRemoveProvider("nous")
+        removeGate = CompletableDeferred()
+
+        val first = launch { settings.confirmRemoveProvider() }
+        val second = launch { settings.confirmRemoveProvider() }
+        runCurrent()
+        removeGate!!.complete(Unit)
+        first.join(); second.join()
+        settings.confirmRemoveProvider()
+
+        assertEquals(1, removed.size)
+    }
+
+    @Test
+    fun aProviderStillListedAfterItsRemovalIsManagedOutsideTheApp() = runTest {
+        onRemove = {}  // the core answered 4005 and nothing came off (D6)
+        settings.open()
+        settings.askRemoveProvider("nous")
+
+        settings.confirmRemoveProvider()
+
+        val ui = settings.state.value!!
+        assertEquals("Nous Portal is still connected: its credential is managed outside the app.", ui.error)
+        assertEquals(ROWS, ui.connected)
+        assertFalse(ui.busy)
+    }
+
+    @Test
+    fun aRefusedRemovalShowsTheCoresWordsAndKeepsTheList() = runTest {
+        removeFails = CoreError(5035, "DEEPSEEK_API_KEY is managed by your system: cannot remove it")
+        settings.open()
+        settings.askRemoveProvider("nous")
+
+        settings.confirmRemoveProvider()
+
+        val ui = settings.state.value!!
+        assertEquals("DEEPSEEK_API_KEY is managed by your system: cannot remove it", ui.error)
+        assertEquals(ROWS, ui.connected)
+        assertEquals("no re-read after a refusal", 1, connectedReads)
+        assertFalse(ui.busy)
+    }
+
     companion object {
         /** `settings_read`'s answer: the core's defaults, two always-allowed commands and two personalities. */
         const val DEFAULT_READ = """{"approvals_timeout_s":300,"command_allowlist":["git status","docker *"],"memory_enabled":true,
             "user_profile_enabled":true,"memory_char_limit":2200,"user_char_limit":1375,
             "personalities":[{"name":"helpful","description":"You are a helpful, friendly AI assistant."},
                              {"name":"concise","description":"You are a concise assistant. Keep responses brief a..."}]}"""
+
+        val NOUS = ConnectedProvider("nous", "Nous Portal", removable = true, current = false)
+        val COPILOT = ConnectedProvider("copilot", "GitHub Copilot", removable = true, current = true)
+        val ENDPOINT = ConnectedProvider("dgx", "DGX", removable = false, current = false)
+        val ROWS = listOf(NOUS, COPILOT, ENDPOINT)
 
         val CFG = ConfigSettings(300, listOf("git status", "docker *"), true, true, 2200, 1375,
                                  listOf(Personality("helpful", "You are a helpful, friendly AI assistant."),

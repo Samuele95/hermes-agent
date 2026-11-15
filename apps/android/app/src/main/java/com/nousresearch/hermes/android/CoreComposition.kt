@@ -11,6 +11,7 @@ import com.nousresearch.hermes.android.gateway.GatewayStatus
 import com.nousresearch.hermes.android.gateway.TelegramSetup
 import com.nousresearch.hermes.android.jobs.JobsControl
 import com.nousresearch.hermes.android.jobs.runOwnership
+import com.nousresearch.hermes.android.settings.ProviderAccess
 import com.nousresearch.hermes.android.settings.SettingsControl
 import com.nousresearch.hermes.android.setup.CustomModels
 import com.nousresearch.hermes.android.setup.KeyNames
@@ -89,7 +90,7 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps
     scope.launch { setup.followReadiness() }
     scope.launch { setup.checkReadiness() }
     return CoreState.Ready(gateway, chat, setup,
-                           Pages(SettingsControl(gateway, bridge, deps.seen),
+                           Pages(SettingsControl(gateway, bridge, deps.seen, ProviderAccess(setup::connected, setup::remove)),
                                  JobsControl(gateway, bridge, deps.seen, continueInChat = chat::resume),
                                  TelegramSetup(deps.secrets, bridge, deps.seen), SshSetup(deps.secrets, bridge), history, context),
                            "Python ${facts.python} · SQLite ${facts.sqlite} $fts")

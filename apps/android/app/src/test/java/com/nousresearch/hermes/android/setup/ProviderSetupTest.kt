@@ -1,5 +1,6 @@
 package com.nousresearch.hermes.android.setup
 
+import com.nousresearch.hermes.android.settings.ConnectedProvider
 import com.nousresearch.hermes.bridge.CoreError
 import com.nousresearch.hermes.bridge.CoreGateway
 import com.nousresearch.hermes.bridge.protocol.Method
@@ -529,5 +530,117 @@ class ProviderSetupTest : SetupFakes() {
         assertEquals("the notice keeps setup open", 2, checks())
         setup.close()
         assertEquals("Done", 3, checks())
+    }
+
+    // The Settings page's providers (F10): listed from model.options, removed through the one forget path.
+
+    private val currentCopilot = """{"slug":"copilot","name":"GitHub Copilot","models":["gpt-5"],"authenticated":true,"is_current":true}"""
+
+    private fun disconnected() = core.calls.last { it.first == "model.disconnect" }.second.getValue("slug").jsonPrimitive.content
+
+    @Test
+    fun connectedListsTheSignedInProvidersInTheCoresOrder() = runTest {
+        nousRow = READY_NOUS
+        copilotRow = currentCopilot
+
+        val connected = setup.connected()
+
+        // The unauthenticated deepseek, codex and openrouter rows are not connected.
+        assertEquals(listOf(ConnectedProvider("nous", "Nous Portal", removable = true, current = false),
+                            ConnectedProvider("copilot", "GitHub Copilot", removable = true, current = true)), connected)
+        val (method, params) = core.calls.single()
+        assertEquals("model.options", method)
+        assertEquals("cache only, the configured providers", listOf(false, false),
+                     listOf("include_unconfigured", "refresh").map { params[it]?.jsonPrimitive?.boolean ?: false })
+    }
+
+    @Test
+    fun signingOutOfNousIsTheCoresDisconnectOnly() = runTest {
+        nousRow = READY_NOUS
+        held["DEEPSEEK_API_KEY"] = "sk-unrelated".toByteArray()
+
+        setup.remove("nous")
+
+        // Its tokens are the core's (D18): no keystore, no secrets re-read; not the provider in use, so no new chat.
+        assertEquals(listOf("model.options", "model.disconnect", "setup.runtime_check"), log)
+        assertEquals("nous", disconnected())
+        assertArrayEquals("sk-unrelated".toByteArray(), held["DEEPSEEK_API_KEY"])
+        assertNull(setup.state.value)
+    }
+
+    @Test
+    fun removingAKeyProviderDeletesItsKeyBeforeTheCoreForgetsIt() = runTest {
+        deepseekRow = SIGNED_IN_DEEPSEEK
+        names["deepseek"] = "DEEPSEEK_API_KEY"
+        held["DEEPSEEK_API_KEY"] = "sk-held".toByteArray()
+        var goneFirst = false
+        secretsChanged = { log += "secrets_changed"; goneFirst = "DEEPSEEK_API_KEY" !in held }
+
+        setup.remove("deepseek")
+
+        assertEquals(listOf("model.options", "secrets_changed", "model.disconnect", "setup.runtime_check"), log)
+        assertTrue("the secrets re-read finds the key gone", goneFirst)
+        assertTrue(held.isEmpty())
+        assertNull(names["deepseek"])
+        assertEquals("deepseek", disconnected())
+    }
+
+    @Test
+    fun removingTheCurrentProviderStartsANewChatOpensSetupAndChecksAgain() = runTest {
+        copilotRow = currentCopilot
+        configured = true
+        runtimeCheck = { """{"ok":false,"provider":"copilot","error":"No usable credentials found for copilot."}""" }
+
+        setup.remove("copilot")
+
+        // The chat's live session keeps what it was built with (L11); the default names a provider with no credential (D9).
+        val disconnect = log.indexOf("model.disconnect")
+        val reopen = log.indexOf("reopen_chat")
+        val listing = log.withIndex().firstOrNull { it.index > reopen && it.value == "model.options" }?.index ?: -1
+        val check = log.indexOf("setup.runtime_check")
+        assertTrue(log.toString(), disconnect in 0 until reopen && reopen < listing && listing < check)
+        assertTrue(setup.step() is SetupStep.Providers)
+        assertEquals(Readiness.Unavailable("No usable credentials found for copilot."), setup.readiness.value)
+    }
+
+    @Test
+    fun aProviderTheCoreHadNothingLeftForIsRemovedWithoutAFailure() = runTest {
+        disconnect = { throw CoreError(4005, "no credentials found for nous") }
+        nousRow = READY_NOUS
+
+        setup.remove("nous")
+
+        assertEquals("setup.runtime_check", log.last())
+    }
+
+    @Test
+    fun aRefusedRemovalStopsBeforeTheChatAndTheCheck() = runTest {
+        copilotRow = currentCopilot
+        configured = true
+        names["copilot"] = "COPILOT_API_KEY"
+        held["COPILOT_API_KEY"] = "sk-held".toByteArray()
+        val locked = CoreError(5035, "COPILOT_API_KEY is managed by your system: cannot remove it")
+        disconnect = { throw locked }
+
+        val refused = runCatching { setup.remove("copilot") }.exceptionOrNull()
+
+        assertEquals(locked, refused)
+        assertFalse("the key left the phone first (§8)", "COPILOT_API_KEY" in held)
+        assertFalse(log.toString(), "reopen_chat" in log || "setup.runtime_check" in log)
+        assertNull(setup.state.value)
+    }
+
+    @Test
+    fun aSavedEndpointOrAnUnlistedSlugIsNotRemovedHere() = runTest {
+        copilotRow = """{"slug":"copilot","name":"GitHub Copilot","models":["gpt-5"],"authenticated":true,"is_user_defined":true}"""
+        held["DEEPSEEK_API_KEY"] = "sk-held".toByteArray()
+
+        setup.remove("copilot")
+        assertEquals(listOf("model.options"), log)
+
+        log.clear()
+        setup.remove("ghost")
+        assertEquals(listOf("model.options"), log)
+        assertEquals(setOf("DEEPSEEK_API_KEY"), held.keys)
     }
 }

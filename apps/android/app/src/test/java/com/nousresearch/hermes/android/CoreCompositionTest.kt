@@ -13,6 +13,7 @@ import com.nousresearch.hermes.android.gateway.GatewayStatus
 import com.nousresearch.hermes.android.gateway.PlatformState
 import com.nousresearch.hermes.android.jobs.JobId
 import com.nousresearch.hermes.android.jobs.JobsWarning
+import com.nousresearch.hermes.android.settings.ConnectedProvider
 import com.nousresearch.hermes.android.settings.SettingsControlTest
 import com.nousresearch.hermes.android.setup.Readiness
 import com.nousresearch.hermes.android.turn.TurnHost
@@ -41,6 +42,7 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class CoreCompositionTest {
     private var configured = true
+    private var options = """{"providers":[]}"""
     private var recent: String? = null
     private var resumeReply: () -> String = { """{"session_id":"s-last","message_count":0,"messages":[],"session_key":"db-last",
                                    "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}}}""" }
@@ -49,7 +51,8 @@ class CoreCompositionTest {
             "session.create" -> """{"session_id":"s1","stored_session_id":"db1","message_count":0,"messages":[],
                                    "info":{"desktop_contract":${BackendContract.BACKEND_CONTRACT}}}"""
             "setup.status" -> """{"provider_configured":$configured}"""
-            "model.options" -> """{"providers":[]}"""
+            "model.options" -> options
+            "model.disconnect" -> """{"slug":"deepseek","name":"DeepSeek","disconnected":true}"""
             "config.get" -> """{"config":{}}"""
             "session.most_recent" -> """{"session_id":${recent?.let { "\"$it\"" } ?: "null"}}"""
             "session.resume" -> resumeReply()
@@ -263,6 +266,24 @@ class CoreCompositionTest {
 
         assertTrue(bridgeCalls.toString(), "settings_read" in bridgeCalls)
         assertEquals(300, ready.pages.settings.state.value?.config?.approvalTimeoutS)
+    }
+
+    @Test
+    fun theSettingsPageListsAndRemovesProvidersThroughTheComposedSetup() = runTest(UnconfinedTestDispatcher()) {
+        options = """{"providers":[{"slug":"deepseek","name":"DeepSeek","models":["m"],"authenticated":true}]}"""
+        val ready = composeCore(runtime, paths, deps, backgroundScope)
+        val settings = ready.pages.settings
+
+        settings.open()
+        assertEquals(listOf(ConnectedProvider("deepseek", "DeepSeek", removable = true, current = false)), settings.state.value?.connected)
+
+        settings.askRemoveProvider("deepseek")
+        settings.confirmRemoveProvider()
+
+        val calls = core.calls.map { it.first }
+        val disconnect = calls.indexOf("model.disconnect")
+        assertEquals("deepseek", core.calls[disconnect].second.getValue("slug").jsonPrimitive.content)
+        assertTrue(calls.toString(), "setup.runtime_check" in calls.subList(disconnect, calls.size))
     }
 
     @Test

@@ -2,6 +2,7 @@ package com.nousresearch.hermes.android.settings
 
 import com.nousresearch.hermes.bridge.contract.SettingsReadReply
 import com.nousresearch.hermes.bridge.contract.SettingsWriteParams
+import com.nousresearch.hermes.bridge.protocol.ModelOptionProvider
 import com.nousresearch.hermes.bridge.contract.Personality as WirePersonality
 
 /** The core's `approvals.mode`: who approves a command the agent wants to run that the core flags as risky. */
@@ -26,6 +27,26 @@ const val NO_PERSONALITY = "none"
 
 /** One personality the core offers: its [name] (what `config.set personality` takes) and its preview line. */
 data class Personality(val name: String, val description: String)
+
+/**
+ * A provider Hermes holds a key or sign-in for (`model.options`, F10). [removable]: Remove offers to forget it here;
+ * a saved custom endpoint is deleted in provider setup instead (D3). [current]: the provider Hermes answers with.
+ */
+data class ConnectedProvider(val slug: String, val name: String, val removable: Boolean, val current: Boolean) {
+    companion object {
+        /** Rows that hold no credential: the managed local server and the MoA aggregate (D1). */
+        private val NO_CREDENTIAL = setOf("local", "virtual")
+
+        /**
+         * The core's [row] as connected, or null: not signed in, the Nous free tier (D2), or nothing to remove (D1). Total.
+         * The core sends `auth_type` only on rows not signed in (`inventory.py:835-849`), so removability is read from
+         * `is_user_defined` (D1).
+         */
+        fun of(row: ModelOptionProvider): ConnectedProvider? =
+            if (row.authenticated != true || row.freeTierRow == true || row.authType in NO_CREDENTIAL) null
+            else ConnectedProvider(row.slug, row.name, removable = row.isUserDefined != true, current = row.isCurrent == true)
+    }
+}
 
 /**
  * What the core last answered to `settings_read` (EJ-17): an immutable snapshot, replaced whole by the re-read after
@@ -60,10 +81,13 @@ data class SettingsEdit(val approvalTimeoutS: Int? = null, val memoryEnabled: Bo
 /**
  * The settings page. [approvals] is null when the core's mode could not be read: no mode is shown as the one in force.
  * [personality] is the core's word (a name, or [NO_PERSONALITY]) and [config] its `settings_read`, each null when it
- * could not be read. [confirmRemove] the allowlist pattern a removal waits to be confirmed for; [nextStart] while a
- * removal waits for the always-on gateway's next start (the pid it was made under still runs; F4, Dv31). [busy] while
- * one write runs; [error] the core's words for the last failure.
+ * could not be read. [connected] the core's connected providers, null when they could not be read (D5).
+ * [confirmRemove] the allowlist pattern a removal waits to be confirmed for; [confirmProvider] the provider slug a
+ * removal waits to be confirmed for (D4): one question at a time. [nextStart] while a removal waits for the always-on
+ * gateway's next start (the pid it was made under still runs; F4, Dv31). [busy] while one write runs; [error] the
+ * core's words for the last failure.
  */
 data class SettingsUi(val approvals: ApprovalMode? = null, val personality: String? = null, val config: ConfigSettings? = null,
-                      val confirmRemove: String? = null, val nextStart: Boolean = false, val busy: Boolean = false,
+                      val connected: List<ConnectedProvider>? = null, val confirmRemove: String? = null,
+                      val confirmProvider: String? = null, val nextStart: Boolean = false, val busy: Boolean = false,
                       val error: String? = null)

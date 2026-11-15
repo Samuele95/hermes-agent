@@ -26,6 +26,16 @@ private fun SettingsUi.writing(): SettingsUi? = if (busy) null else copy(busy = 
 /** The asked removal admitted: busy with the question gone, or null when not (busy, or nothing asked). */
 private fun SettingsUi.removing(): SettingsUi? = if (busy || confirmRemove == null) null else copy(confirmRemove = null, busy = true, error = null)
 
+/** The asked provider removal admitted: busy with the question gone, or null when not (busy, or nothing asked). */
+private fun SettingsUi.removingProvider(): SettingsUi? =
+    if (busy || confirmProvider == null) null else copy(confirmProvider = null, busy = true, error = null)
+
+/**
+ * What the page may do with provider auth, which `ProviderSetup` owns alone (DC-M20, EJ-5): list the connected
+ * providers, and remove one.
+ */
+class ProviderAccess(val connected: suspend () -> List<ConnectedProvider>, val remove: suspend (slug: String) -> Unit)
+
 /**
  * The app's settings that live in the core's config (Dv22): read and written over the protocol, like the
  * desktop's, so the core stays the one owner. [state] is null while the screen is closed.
@@ -43,8 +53,12 @@ private fun SettingsUi.removing(): SettingsUi? = if (busy || confirmRemove == nu
  * A removal reaches this process at once (the bridge reconciles it) and the always-on gateway at its next start
  * (Dv31, DC-M16): [seen] is the app's one observation of it (D2), and [SettingsUi.nextStart] holds while the gateway
  * that ran at the removal still runs (D3, as `TelegramSetup` marks its own).
+ *
+ * Providers ([providers]): listed when the page opens; a removal asks first, goes through provider setup's one forget
+ * path, and the page then shows the core's re-read (F10).
  */
-class SettingsControl(private val core: CoreGateway, private val bridge: AppBridge, private val seen: () -> GatewaySeen) {
+class SettingsControl(private val core: CoreGateway, private val bridge: AppBridge, private val seen: () -> GatewaySeen,
+                      private val providers: ProviderAccess) {
     private companion object {
         const val KEY = "approvals.mode"
         const val PERSONALITY = "personality"
@@ -56,14 +70,15 @@ class SettingsControl(private val core: CoreGateway, private val bridge: AppBrid
     /** The pid of the gateway that was running when a removal last applied (null: nothing waits for a start). */
     private val nextStartUnder = AtomicReference<Int?>(null)
 
-    /** Reads the mode, the personality and the bridge's settings, each on its own: a part that fails is null, and the first failure's words show. */
+    /** Reads the mode, the personality, the bridge's settings and the connected providers, each on its own: a part that fails is null, and the first failure's words show. */
     suspend fun open() {
         var error: String? = null
         val keep: (String) -> Unit = { if (error == null) error = it }
         val mode = orNull(keep) { ApprovalMode.of(core.call(Methods.CONFIG_GET, ConfigGetParams(key = KEY)).value) }
         val personality = orNull(keep) { core.call(Methods.CONFIG_GET, ConfigGetParams(key = PERSONALITY)).value }
         val config = orNull(keep) { ConfigSettings.of(bridge.ask(BridgeCalls.SETTINGS_READ)) }
-        screen.value = SettingsUi(mode, personality, config, nextStart = mark(seen()) != null, error = error)
+        val connected = orNull(keep) { providers.connected() }
+        screen.value = SettingsUi(mode, personality, config, connected, nextStart = mark(seen()) != null, error = error)
     }
 
     fun close() {
@@ -103,7 +118,7 @@ class SettingsControl(private val core: CoreGateway, private val bridge: AppBrid
     fun askRemove(key: String?) {
         screen.update { ui ->
             if (ui == null || ui.busy) ui
-            else ui.copy(confirmRemove = key?.takeIf { it in ui.config?.allowlist.orEmpty() }, error = null)
+            else ui.copy(confirmRemove = key?.takeIf { it in ui.config?.allowlist.orEmpty() }, confirmProvider = null, error = null)
         }
     }
 
@@ -117,6 +132,32 @@ class SettingsControl(private val core: CoreGateway, private val bridge: AppBrid
             }
             val waiting = mark(seen()) != null
             ({ shown(it).copy(nextStart = waiting) })
+        }
+    }
+
+    /** Asks to remove the provider [slug] (null stops asking); one not listed as removable, or a page busy, asks nothing. Nothing is sent. */
+    fun askRemoveProvider(slug: String?) {
+        screen.update { ui ->
+            if (ui == null || ui.busy) ui
+            else ui.copy(confirmProvider = slug?.takeIf { s -> ui.connected.orEmpty().any { it.slug == s && it.removable } },
+                         confirmRemove = null, error = null)
+        }
+    }
+
+    /**
+     * Removes the provider [askRemoveProvider] named, once, through provider setup (keystore when held,
+     * `model.disconnect`, a new chat and setup when it was in use, readiness again); then shows the re-read. One still
+     * listed is managed outside the app (D6). A refusal shows its words and keeps the list (D10).
+     */
+    suspend fun confirmRemoveProvider() {
+        val before = screen.getAndUpdate { it?.removingProvider() ?: it }  // one atomic step: a double tap removes once
+        val slug = before?.takeIf { it.removingProvider() != null }?.confirmProvider ?: return
+        val name = before.connected?.firstOrNull { it.slug == slug }?.name ?: slug
+        finish {
+            providers.remove(slug)
+            val now = providers.connected()  // the page shows the core's re-read (§2.4)
+            val still = if (now.any { it.slug == slug }) "$name is still connected: its credential is managed outside the app." else null
+            ({ it.copy(connected = now, error = still) })
         }
     }
 
