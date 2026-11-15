@@ -39,7 +39,9 @@ import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.semantics.ScrollAxisRange
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.nousresearch.hermes.android.chat.BusyMode
 import com.nousresearch.hermes.android.chat.Chat
+import com.nousresearch.hermes.android.chat.Correction
 import com.nousresearch.hermes.android.chat.ChatScreen
 import com.nousresearch.hermes.android.chat.ChatSession
 import com.nousresearch.hermes.android.chat.NoticeShortcut
@@ -157,6 +159,53 @@ class ChatScreenTest {
         compose.onNodeWithTag("stop").performClick()
 
         assertEquals(1, stopped)
+    }
+
+    @Test
+    fun whileATurnRunsSendStandsBesideStopNamedByTheCoresMode() {
+        val sent = mutableListOf<String>()
+        var stopped = 0
+        var chat by mutableStateOf(Chat(streaming = "Once upon", busyMode = BusyMode.INTERRUPT))
+        compose.setContent { ChatScreen(chat, onSend = { sent += it }, onStop = { stopped++ }) }
+
+        compose.onNodeWithTag("stop").assertExists()
+        compose.onNodeWithTag("send").assertExists().assertIsNotEnabled()
+        compose.onNodeWithText("Redirect the current run", useUnmergedTree = true).assertExists()  // the field says it too
+
+        compose.onNodeWithTag("draft").performTextInput("use metric units")
+        compose.onNodeWithTag("send").assertIsEnabled()
+        compose.onNodeWithContentDescription("Redirect the current run").assertExists()
+        // Stop stays the right-most control, the only interrupt.
+        assertTrue(compose.onNodeWithTag("stop").getUnclippedBoundsInRoot().left >= compose.onNodeWithTag("send").getUnclippedBoundsInRoot().right)
+        compose.onNodeWithTag("send").performClick()
+
+        assertEquals(listOf("use metric units"), sent)
+        compose.onNodeWithTag("draft").assert(!hasText("use metric units", substring = true))
+        compose.onNodeWithTag("stop").performClick()
+        assertEquals(1, stopped)
+
+        chat = chat.copy(busyMode = BusyMode.STEER)
+        compose.onNodeWithContentDescription("Steer the current run").assertExists()
+
+        chat = chat.copy(busyMode = BusyMode.QUEUE)  // the app's queue is M3's: Stop alone, as before
+        compose.onNodeWithTag("send").assertDoesNotExist()
+        compose.onNodeWithTag("stop").assertExists()
+    }
+
+    @Test
+    fun aCorrectionSaysWhatTheCoreDidWithIt() {
+        val chat = Chat(listOf(Entry.User("hi", stableId = 0),
+                               Entry.User("shorter", stableId = 1, mode = BusyMode.INTERRUPT, correction = Correction.REDIRECTED),
+                               Entry.User("metric", stableId = 2, mode = BusyMode.STEER, correction = Correction.STEERED),
+                               Entry.User("later", stableId = 3, mode = BusyMode.INTERRUPT, correction = Correction.QUEUED_BY_CORE)))
+
+        compose.setContent { ChatScreen(chat, onSend = {}) }
+
+        listOf("Redirected the current run", "Steered the current run", "Hermes will run this next").forEach {
+            compose.onAllNodesWithText(it).assertCountEquals(1)
+            compose.onNodeWithText(it).assertIsDisplayed()
+        }
+        compose.onAllNodesWithTag("correction").assertCountEquals(3)
     }
 
     @Test

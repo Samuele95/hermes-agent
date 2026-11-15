@@ -292,7 +292,7 @@ private fun JumpToLatest(modifier: Modifier, onClick: () -> Unit) {
 @Composable
 private fun EntryRow(entry: Entry, onCopy: ((String) -> Unit)?, retry: (() -> Unit)?, onGateway: (() -> Unit)?) {
     when (entry) {
-        is Entry.User -> UserBubble(entry.text, onCopy)
+        is Entry.User -> UserBubble(entry.text, entry.correction, onCopy)
         is Entry.Reply -> Column(Modifier.fillMaxWidth().testTag("entry-reply")) {
             entry.reasoning?.let { reasoning ->
                 var shown by rememberSaveable { mutableStateOf(false) }
@@ -340,15 +340,18 @@ private fun Reasoning(text: String, modifier: Modifier = Modifier) {
     }
 }
 
-/** The user's words in a bubble; a long press offers Copy (V6: the drawer row's menu, a phone has no hover bar). */
+/**
+ * The user's words in a bubble; a long press offers Copy (V6: the drawer row's menu, a phone has no hover bar). A
+ * correction sent while a turn ran says beneath it what the core did with it, once the core answered.
+ */
 @Composable
-private fun UserBubble(text: String, onCopy: ((String) -> Unit)?) {
+private fun UserBubble(text: String, correction: Correction?, onCopy: ((String) -> Unit)?) {
     val shape = RoundedCornerShape(14.dp)
     var menu by remember { mutableStateOf(false) }
     val press = onCopy?.let {
         Modifier.combinedClickable(onClick = {}, onLongClickLabel = stringResource(R.string.chat_message_actions), onLongClick = { menu = true })
     } ?: Modifier
-    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
         Box {
             Text(text, Modifier.widthIn(max = 320.dp).clip(shape).then(press).background(Hermes.colors.userBubble, shape)
                      .border(1.dp, Hermes.colors.userBubbleBorder, shape).padding(horizontal = 14.dp, vertical = 10.dp),
@@ -358,7 +361,26 @@ private fun UserBubble(text: String, onCopy: ((String) -> Unit)?) {
                                  Modifier.testTag("copy-message"), leadingIcon = { Icon(HermesIcons.Copy, null, Modifier.size(16.dp)) })
             }
         }
+        outcome(correction)?.let {
+            Text(stringResource(it), Modifier.padding(top = 4.dp).testTag("correction"), style = MaterialTheme.typography.labelSmall,
+                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
+}
+
+/** What the core did with a correction, in words; none before it answered, or when it turned the words away. */
+private fun outcome(correction: Correction?): Int? = when (correction) {
+    Correction.REDIRECTED -> R.string.chat_redirected
+    Correction.STEERED -> R.string.chat_steered
+    Correction.QUEUED_BY_CORE -> R.string.chat_runs_next
+    Correction.REFUSED, null -> null
+}
+
+/** Send's name while a turn runs, by the core's busy mode. */
+private fun label(mode: BusyMode): Int = when (mode) {
+    BusyMode.INTERRUPT -> R.string.chat_redirect
+    BusyMode.STEER -> R.string.chat_steer
+    BusyMode.QUEUE -> error("queue mode shows Stop alone")  // Chat.busySend leaves it out (D3)
 }
 
 /** A tool the agent ran: one quiet line, its name in the code face. */
@@ -386,7 +408,9 @@ private fun Problem(text: String, modifier: Modifier = Modifier) {
 
 /**
  * The desktop's composer: a rounded field, the model it will ask beneath, and Send — or Stop while a turn runs or is
- * about to; Send waits while the session compresses, or while it is a job's run the gateway still runs.
+ * about to; Send waits while the session compresses, or while it is a job's run the gateway still runs. While a turn
+ * runs, Send stands beside Stop, named by the core's busy mode (redirect or steer the run; the field says the same),
+ * and Stop stays the only interrupt; Stop alone in queue mode, before the turn starts, or while a question waits.
  */
 @Composable
 private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, onSetup: (() -> Unit)?, onContext: (() -> Unit)?) {
@@ -399,7 +423,8 @@ private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, o
                                 Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 10.dp).testTag("run-owned"),
                                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         TextField(draft, { draft = it }, Modifier.fillMaxWidth().testTag("draft"), maxLines = 6,
-                  textStyle = MaterialTheme.typography.bodyLarge, placeholder = { Text(stringResource(R.string.chat_hint)) },
+                  textStyle = MaterialTheme.typography.bodyLarge,
+                  placeholder = { Text(stringResource(chat.busySend?.let(::label) ?: R.string.chat_hint)) },
                   colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent,
                                                     disabledContainerColor = Color.Transparent, focusedIndicatorColor = Color.Transparent,
                                                     unfocusedIndicatorColor = Color.Transparent))
@@ -417,6 +442,12 @@ private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, o
             }
             chat.meter?.let { ContextChip(it, onContext) }
             if (chat.busy) {
+                chat.busySend?.let { mode ->
+                    FilledIconButton({ onSend(draft.trim()); draft = "" }, Modifier.size(36.dp).testTag("send"), enabled = draft.isNotBlank()) {
+                        Icon(HermesIcons.Send, stringResource(label(mode)), Modifier.size(18.dp))
+                    }
+                    Spacer(Modifier.width(8.dp))
+                }
                 FilledIconButton(onStop, Modifier.size(36.dp).testTag("stop"),
                                  colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.onSurface,
                                                                                     contentColor = MaterialTheme.colorScheme.surface)) {

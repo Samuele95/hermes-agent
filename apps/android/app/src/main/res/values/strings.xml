@@ -9,6 +9,11 @@
     <string name="chat_gateway">Gateway</string>
     <string name="chat_thinking">Thinking</string>
     <string name="chat_stop">Stop</string>
+    <string name="chat_redirect">Redirect the current run</string>
+    <string name="chat_steer">Steer the current run</string>
+    <string name="chat_redirected">Redirected the current run</string>
+    <string name="chat_steered">Steered the current run</string>
+    <string name="chat_runs_next">Hermes will run this next</string>
     <string name="chat_new">New chat</string>
     <string name="chat_menu">Menu</string>
     <string name="chat_retry">Retry</string>
