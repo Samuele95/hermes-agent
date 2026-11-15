@@ -84,6 +84,13 @@
     <string name="session_rename_cancel">Cancel rename</string>
     <string name="session_untitled">Untitled session</string>
     <string name="session_delete">Delete</string>
+    <string name="session_export">Export</string>
+    <string name="chat_more">More</string>
+    <string name="chat_status">Status</string>
+    <string name="status_title">Session status</string>
+    <string name="status_loading">Reading the status…</string>
+    <string name="export_failed">Could not export session</string>
+    <string name="export_ok">OK</string>
     <string name="session_delete_title">Delete session?</string>
     <string name="session_delete_body">This will permanently delete “%1$s”. This cannot be undone.</string>
     <string name="session_cancel">Cancel</string>

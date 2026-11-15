@@ -68,14 +68,18 @@ import java.util.Locale
 /** One place the drawer leads to. */
 data class DrawerLink(val icon: ImageVector, val label: String, val tag: String, val go: () -> Unit)
 
-/** What a session row's menu does (sessions-05/06): [edit] / [askDelete] take a row's stored key, null to stop. */
+/**
+ * What a session row's menu does (sessions-05/06/12): rename, export or delete. [edit] / [askDelete] take a row's stored
+ * key, null to stop; [export] hands a row's stored key to the share sheet's export (none: the menu offers no Export).
+ */
 class SessionActions(val edit: (stored: StoredSessionId?) -> Unit, val saveTitle: (String) -> Unit,
-                     val askDelete: (stored: StoredSessionId?) -> Unit, val confirmDelete: () -> Unit)
+                     val askDelete: (stored: StoredSessionId?) -> Unit, val confirmDelete: () -> Unit,
+                     val export: ((stored: StoredSessionId) -> Unit)? = null)
 
 /**
  * The drawer the chat slides out, in the shape of the desktop's sidebar: the brand, a new chat and the places the
  * app has, then the sessions, newest first under their headings; [about] (the runtime line) closes it. With [actions],
- * a long press on a session offers to rename or delete it.
+ * a long press on a session offers to rename, export or delete it.
  */
 @Composable
 fun ColumnScope.SessionDrawerContent(links: List<DrawerLink>, sessions: HistoryUi?, onPick: (StoredSessionId) -> Unit, about: String?,
@@ -121,7 +125,7 @@ private fun Caption(label: String, modifier: Modifier = Modifier) {
 
 /**
  * Past conversations under their headings (spec §2.5); a tap continues one. With [actions], a long press opens the
- * row's menu (Rename… · Delete), the row being renamed is a title field, and a delete asks first.
+ * row's menu (Rename… · Export · Delete), the row being renamed is a title field, and a delete asks first.
  */
 @Composable
 fun SessionList(ui: HistoryUi, onPick: (StoredSessionId) -> Unit, modifier: Modifier = Modifier, actions: SessionActions? = null) {
@@ -151,6 +155,7 @@ fun SessionList(ui: HistoryUi, onPick: (StoredSessionId) -> Unit, modifier: Modi
                                    onMenu = actions?.let { { menuFor = row.stored } })
                         if (actions != null) RowMenu(open = menuFor == row.stored, onDismiss = { menuFor = null },
                                                      onRename = { menuFor = null; actions.edit(row.stored) },
+                                                     onExport = actions.export?.let { ex -> { menuFor = null; ex(row.stored) } },
                                                      onDelete = { menuFor = null; actions.askDelete(row.stored) })
                     }
                 }
@@ -177,12 +182,16 @@ private fun SessionRow(row: SessionListRow, now: Long, enabled: Boolean, onPick:
     }
 }
 
-/** A row's menu, as the desktop sidebar's: Rename… and Delete. */
+/** A row's menu, as the desktop sidebar's: Rename…, Export (the work item before the destructive one) and Delete. */
 @Composable
-private fun RowMenu(open: Boolean, onDismiss: () -> Unit, onRename: () -> Unit, onDelete: () -> Unit) {
+private fun RowMenu(open: Boolean, onDismiss: () -> Unit, onRename: () -> Unit, onExport: (() -> Unit)?, onDelete: () -> Unit) {
     DropdownMenu(expanded = open, onDismissRequest = onDismiss) {
         DropdownMenuItem(text = { Text(stringResource(R.string.session_rename)) }, onClick = onRename, Modifier.testTag("session-rename"),
                          leadingIcon = { Icon(HermesIcons.Pencil, null, Modifier.size(16.dp)) })
+        onExport?.let {
+            DropdownMenuItem(text = { Text(stringResource(R.string.session_export)) }, onClick = it, Modifier.testTag("session-export"),
+                             leadingIcon = { Icon(HermesIcons.Download, null, Modifier.size(16.dp)) })
+        }
         DropdownMenuItem(text = { Text(stringResource(R.string.session_delete), color = MaterialTheme.colorScheme.error) }, onClick = onDelete,
                          Modifier.testTag("session-delete"),
                          leadingIcon = { Icon(HermesIcons.Trash, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.error) })

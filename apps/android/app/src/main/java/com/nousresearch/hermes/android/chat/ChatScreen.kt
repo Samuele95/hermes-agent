@@ -33,6 +33,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
@@ -42,6 +43,7 @@ import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
@@ -86,6 +88,7 @@ import com.nousresearch.hermes.android.setup.Readiness
 import com.nousresearch.hermes.android.ui.CodeFont
 import com.nousresearch.hermes.android.ui.Hermes
 import com.nousresearch.hermes.android.ui.HermesIcons
+import com.nousresearch.hermes.android.ui.PrimaryButton
 import com.nousresearch.hermes.android.ui.SecondaryButton
 import com.nousresearch.hermes.android.ui.Wordmark
 import com.nousresearch.hermes.bridge.protocol.TurnStatus
@@ -98,6 +101,12 @@ import kotlin.random.Random
 /** The places the chat leads to (the drawer's links, the top bar's new chat, the composer's model pill); a null one has no way there. */
 class ChatPlaces(val setup: (() -> Unit)? = null, val terminal: (() -> Unit)? = null, val gateway: (() -> Unit)? = null,
                  val settings: (() -> Unit)? = null, val newChat: (() -> Unit)? = null, val jobs: (() -> Unit)? = null)
+
+/** What the chat's Export does (sessions-12): [export] the chat's own session to the share sheet, [dismiss] a failure's words. */
+class ExportActions(val export: () -> Unit, val dismiss: () -> Unit)
+
+/** What the chat's Status does (protocol-21): [open] the sheet with the core's `/status` text, [close] it. */
+class StatusActions(val open: () -> Unit, val close: () -> Unit)
 
 /**
  * A chat in the desktop's shape: the transcript is the page, replies flat across it and the user's words in
@@ -113,6 +122,8 @@ class ChatPlaces(val setup: (() -> Unit)? = null, val terminal: (() -> Unit)? = 
  * back to [onOfferTaken]; the strip above the field offers [places]' New chat. [readiness] marks the model pill (F6);
  * while it is not ready a tap shows the core's words, with setup and [onCheckReadiness]. [chat]'s billing wall shows above
  * the composer until dismissed ([onDismissWall]); its action opens the core's page through [onOpenUrl], else setup (models-23).
+ * The top bar's ⋮ menu offers Status ([statusActions]; [status] is that sheet while it is open) and Export of the chat's own
+ * session ([exportActions]; [exportUi] shows one on its way and a failure's words); without their actions there is no menu.
  */
 @Composable
 fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifier, answers: PromptAnswers? = null,
@@ -121,7 +132,9 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
                places: ChatPlaces? = null, onStop: () -> Unit = {}, onRetry: (() -> Unit)? = null,
                onCopy: ((String) -> Unit)? = null, about: String? = null, queue: QueueUi = QueueUi(),
                queueActions: QueueActions? = null, onOfferTaken: (IncomingText) -> Unit = {}, readiness: Readiness? = null,
-               onCheckReadiness: (() -> Unit)? = null, onOpenUrl: ((String) -> Unit)? = null, onDismissWall: () -> Unit = {}) {
+               onCheckReadiness: (() -> Unit)? = null, onOpenUrl: ((String) -> Unit)? = null, onDismissWall: () -> Unit = {},
+               exportUi: ExportUi = ExportUi(), exportActions: ExportActions? = null, status: StatusUi? = null,
+               statusActions: StatusActions? = null) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var picked by remember { mutableIntStateOf(0) }  // a conversation picked in the drawer is shown from its end (V5)
@@ -147,7 +160,9 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
         }
     }, modifier, drawerState = drawer, gesturesEnabled = hasDrawer) {
         Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).safeDrawingPadding()) {
-            TopBar(onMenu = if (hasDrawer) ({ scope.launch { drawer.open() } }) else null, places?.newChat)
+            TopBar(onMenu = if (hasDrawer) ({ scope.launch { drawer.open() } }) else null, places?.newChat, statusActions?.open,
+                   exportActions?.export, exporting = exportUi.busy)
+            if (exportUi.busy) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp).testTag("export-busy"))
             if (chat.entries.isEmpty() && !chat.running && chat.prompts.isEmpty()) Intro(Modifier.weight(1f))
             else Transcript(chat, onRetry, onCopy, picked, places?.gateway, Modifier.weight(1f))
             // The billing wall tops the stack above the composer: a blocker outranks the rest (D7); the composer stays usable.
@@ -162,12 +177,14 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
                      readiness, onCheckReadiness)
             context?.let { ContextSheet(it, running = chat.busy, compressing = chat.compressing, onCompress = contextActions?.compress ?: {},
                                           onClose = contextActions?.close ?: {}) }
+            status?.let { StatusSheet(it, onClose = statusActions?.close ?: {}) }
+            exportUi.error?.let { ExportFailed(it, onDismiss = exportActions?.dismiss ?: {}) }
         }
     }
 }
 
 @Composable
-private fun TopBar(onMenu: (() -> Unit)?, onNewChat: (() -> Unit)?) {
+private fun TopBar(onMenu: (() -> Unit)?, onNewChat: (() -> Unit)?, onStatus: (() -> Unit)?, onExport: (() -> Unit)?, exporting: Boolean) {
     Row(Modifier.fillMaxWidth().height(52.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         if (onMenu != null) {
             IconButton(onMenu, Modifier.testTag("open-drawer")) { Icon(HermesIcons.Menu, stringResource(R.string.chat_menu), Modifier.size(22.dp)) }
@@ -176,7 +193,36 @@ private fun TopBar(onMenu: (() -> Unit)?, onNewChat: (() -> Unit)?) {
         onNewChat?.let {
             IconButton(it, Modifier.testTag("new-chat")) { Icon(HermesIcons.NewChat, stringResource(R.string.chat_new), Modifier.size(20.dp)) }
         }
+        if (onStatus != null || onExport != null) {
+            var open by remember { mutableStateOf(false) }  // the menu's open flag: transient UI
+            Box {
+                IconButton({ open = true }, Modifier.testTag("chat-more")) {
+                    Icon(HermesIcons.More, stringResource(R.string.chat_more), Modifier.size(20.dp))
+                }
+                DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                    onStatus?.let {
+                        DropdownMenuItem(text = { Text(stringResource(R.string.chat_status)) }, onClick = { open = false; it() },
+                                         Modifier.testTag("chat-status"), leadingIcon = { Icon(HermesIcons.Info, null, Modifier.size(16.dp)) })
+                    }
+                    onExport?.let {
+                        DropdownMenuItem(text = { Text(stringResource(R.string.session_export)) }, onClick = { open = false; it() },
+                                         Modifier.testTag("chat-export"), enabled = !exporting,
+                                         leadingIcon = { Icon(HermesIcons.Download, null, Modifier.size(16.dp)) })
+                    }
+                }
+            }
+        }
     }
+}
+
+/** An export that failed, titled in Desktop's words over the failure's own; a successful one needs no notice (D11). */
+@Composable
+private fun ExportFailed(words: String, onDismiss: () -> Unit) {
+    AlertDialog(onDismissRequest = onDismiss, modifier = Modifier.testTag("export-error"),
+                containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                title = { Text(stringResource(R.string.export_failed)) },
+                text = { Text(words) },
+                confirmButton = { PrimaryButton(stringResource(R.string.export_ok), onDismiss, Modifier.testTag("export-ok")) })
 }
 
 /** The empty chat: the wordmark and one of the desktop's lines. */

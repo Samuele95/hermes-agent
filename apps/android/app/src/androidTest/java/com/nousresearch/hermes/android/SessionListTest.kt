@@ -2,6 +2,7 @@ package com.nousresearch.hermes.android
 
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithTag
@@ -16,13 +17,14 @@ import com.nousresearch.hermes.android.chat.SessionList
 import com.nousresearch.hermes.android.chat.StoredSessionId
 import com.nousresearch.hermes.bridge.protocol.SessionListRow
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
  * The past conversations in the drawer, under their headings, each by its title (or how it began) and a tap from
- * continuing; a long press offers to rename or delete one.
+ * continuing; a long press offers to rename, export or delete one.
  */
 @RunWith(AndroidJUnit4::class)
 class SessionListTest {
@@ -82,6 +84,32 @@ class SessionListTest {
 
         compose.onNodeWithText("Calendar").performClick()  // a plain tap still continues it
         assertEquals(listOf("db-1"), picked)
+    }
+
+    @Test
+    fun aLongPressOffersExportBetweenRenameAndDelete() {
+        show(HistoryUi(calendar), SessionActions(actions.edit, actions.saveTitle, actions.askDelete, actions.confirmDelete,
+                                                 export = { heard += "export:${it.value}" }))
+
+        compose.onNodeWithText("Calendar").performTouchInput { longClick() }
+        val tops = listOf("session-rename", "session-export", "session-delete").map { compose.onNodeWithTag(it).getUnclippedBoundsInRoot().top }
+        assertTrue("Rename…, then Export, then Delete: $tops", tops.zipWithNext().all { (a, b) -> a < b })
+        compose.onNodeWithTag("session-export").performClick()
+
+        assertEquals(listOf("export:db-1"), heard)
+        compose.onNodeWithTag("session-export").assertDoesNotExist()  // the menu closed
+        assertEquals(emptyList<String>(), picked)
+    }
+
+    @Test
+    fun withoutExportTheRowsMenuHasNone() {
+        show(HistoryUi(calendar), actions)
+
+        compose.onNodeWithText("Calendar").performTouchInput { longClick() }
+
+        compose.onNodeWithTag("session-export").assertDoesNotExist()
+        compose.onNodeWithTag("session-rename").assertExists()
+        compose.onNodeWithTag("session-delete").assertExists()
     }
 
     @Test

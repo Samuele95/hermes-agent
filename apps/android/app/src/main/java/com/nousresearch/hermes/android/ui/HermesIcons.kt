@@ -66,4 +66,6 @@ object HermesIcons {
     val Queue = icon("stack-2", "M12 4l-8 4l8 4l8 -4l-8 -4", "M4 12l8 4l8 -4", "M4 16l8 4l8 -4")
     val Bolt = icon("bolt", "M13 3l0 7l6 0l-8 11l0 -7l-6 0l8 -11")
     val History = icon("history", "M12 8l0 4l2 2", "M3.05 11a9 9 0 1 1 .5 4m-.5 5v-5h5")
+    val Download = icon("download", "M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2", "M7 11l5 5l5 -5", "M12 4l0 12")
+    val Info = icon("info-circle", "M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0", "M12 9h.01", "M11 12h1v4h1")
 }

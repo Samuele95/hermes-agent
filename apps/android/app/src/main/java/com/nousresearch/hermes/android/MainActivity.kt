@@ -44,6 +44,9 @@ import androidx.compose.ui.unit.dp
 import com.nousresearch.hermes.android.chat.ChatPlaces
 import com.nousresearch.hermes.android.chat.ChatScreen
 import com.nousresearch.hermes.android.chat.ContextActions
+import com.nousresearch.hermes.android.chat.ExportActions
+import com.nousresearch.hermes.android.chat.ExportFile
+import com.nousresearch.hermes.android.chat.StatusActions
 import com.nousresearch.hermes.android.chat.PromptAnswers
 import com.nousresearch.hermes.android.chat.QueueActions
 import com.nousresearch.hermes.android.chat.SessionActions
@@ -98,6 +101,10 @@ class MainActivity : ComponentActivity() {
                             val context by state.pages.context.state.collectAsState()
                             val queue by state.chat.queueState.collectAsState()
                             val skills by state.pages.skills.state.collectAsState()
+                            val exported by state.pages.export.state.collectAsState()
+                            val status by state.pages.status.state.collectAsState()
+                            // Whichever page shows: a finished export goes to the share sheet once, then waits no longer (D8).
+                            LaunchedEffect(exported.file) { exported.file?.let { file -> shareFile(file); state.pages.export.shared(file) } }
                             skills?.let {  // above Settings, which stays open beneath: Back returns to it (D4)
                                 SkillsScreen(it, onEnable = { names, on -> app.skills { enable(names, on) } }, onClose = state.pages.skills::close)
                                 return@Surface
@@ -155,10 +162,15 @@ class MainActivity : ComponentActivity() {
                                        sessions = history, onSessions = { open -> if (open) app.history { open() } else state.pages.history.close() },
                                        onPickSession = { id -> app.history { pick(id) } },
                                        sessionActions = SessionActions(edit = state.pages.history::edit, saveTitle = { title -> app.history { saveTitle(title) } },
-                                                                       askDelete = state.pages.history::askDelete, confirmDelete = { app.history { confirmDelete() } }),
+                                                                       askDelete = state.pages.history::askDelete, confirmDelete = { app.history { confirmDelete() } },
+                                                                       export = { id -> app.export { export(id) } }),
                                        context = context, contextActions = contextActions, queue = queue, queueActions = queueActions,
                                        onOfferTaken = state.chat::offerTaken, onOpenUrl = ::openInBrowser, onDismissWall = state.chat::dismissWall,
                                        readiness = readiness, onCheckReadiness = { app.setup { checkReadiness() } },
+                                       exportUi = exported,
+                                       exportActions = ExportActions(export = { app.export { export(null) } }, dismiss = state.pages.export::dismiss),
+                                       status = status,
+                                       statusActions = StatusActions(open = { app.status { open() } }, close = state.pages.status::close),
                                        onSend = { text ->
                                 if (Build.VERSION.SDK_INT >= 33 &&
                                     checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -290,6 +302,21 @@ class MainActivity : ComponentActivity() {
      */
     private fun copy(label: String, text: String) {
         getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText(label, text))
+    }
+
+    /**
+     * Hands a session's export to the share sheet (sessions-12, F8): a `content://` URI from the app's export
+     * `FileProvider`, readable by the chosen app through a grant for that URI only. No target, or a path outside the
+     * provider's root: Desktop's "Could not export session".
+     */
+    private fun shareFile(file: ExportFile) {
+        try {
+            startActivity(shareIntent(exportUri(this, file), file))
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(this, R.string.export_failed, Toast.LENGTH_LONG).show()
+        } catch (_: IllegalArgumentException) {
+            Toast.makeText(this, R.string.export_failed, Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun openInBrowser(url: String) {

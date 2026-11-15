@@ -16,6 +16,10 @@ import com.nousresearch.hermes.android.chat.QueueActions
 import com.nousresearch.hermes.android.chat.QueueUi
 import com.nousresearch.hermes.android.chat.Queued
 import com.nousresearch.hermes.android.chat.ContextUi
+import com.nousresearch.hermes.android.chat.ExportActions
+import com.nousresearch.hermes.android.chat.ExportUi
+import com.nousresearch.hermes.android.chat.StatusActions
+import com.nousresearch.hermes.android.chat.StatusUi
 import com.nousresearch.hermes.bridge.protocol.ContextCategory
 import com.nousresearch.hermes.bridge.protocol.SessionContextBreakdownResult
 import androidx.compose.ui.test.assert
@@ -1127,5 +1131,86 @@ class ChatScreenTest {
         places = null  // nowhere to act: no button, Dismiss still there
         compose.onNodeWithTag("billing-action").assertDoesNotExist()
         compose.onNodeWithTag("billing-dismiss").assertExists()
+    }
+
+    @Test
+    fun theChatsMenuOpensStatusAndExportsTheChat() {
+        var opened = 0
+        var exported = 0
+        compose.setContent {
+            ChatScreen(Chat(), onSend = {}, exportActions = ExportActions(export = { exported++ }, dismiss = {}),
+                       statusActions = StatusActions(open = { opened++ }, close = {}))
+        }
+
+        compose.onNodeWithTag("chat-more").performClick()
+        compose.onNodeWithTag("chat-status").performClick()
+        assertEquals(1 to 0, opened to exported)
+        compose.onNodeWithTag("chat-status").assertDoesNotExist()  // the menu closed first
+
+        compose.onNodeWithTag("chat-more").performClick()
+        compose.onNodeWithTag("chat-export").performClick()
+        assertEquals(1 to 1, opened to exported)
+    }
+
+    @Test
+    fun withoutTheirActionsTheTopBarHasNoMenu() {
+        compose.setContent { ChatScreen(Chat(), onSend = {}, places = ChatPlaces(newChat = {})) }
+
+        compose.onNodeWithTag("new-chat").assertExists()
+        compose.onNodeWithTag("chat-more").assertDoesNotExist()
+    }
+
+    @Test
+    fun theStatusSheetShowsTheCoresTextAsItIs() {
+        val text = "Hermes TUI Status\n\nSession ID: s1\nModel: (unknown) (unknown)"
+        var status: StatusUi? by mutableStateOf(StatusUi(text = text))
+        var closed = 0
+        compose.setContent { ChatScreen(Chat(), onSend = {}, status = status, statusActions = StatusActions(open = {}, close = { closed++ })) }
+
+        compose.onNodeWithTag("status-sheet").assertExists()
+        compose.onNodeWithText("Session status").assertExists()
+        compose.onNodeWithTag("status-text").assertTextEquals(text)
+
+        status = StatusUi()
+        compose.onNodeWithTag("status-loading").assertExists()
+        compose.onNodeWithTag("status-text").assertDoesNotExist()
+
+        status = StatusUi(error = "x")
+        compose.onNodeWithTag("status-error").assertTextEquals("x")
+
+        status = null
+        compose.onNodeWithTag("status-sheet").assertDoesNotExist()
+        assertEquals(0, closed)
+    }
+
+    @Test
+    fun aFailedExportSaysSoInItsWordsUntilDismissed() {
+        var dismissed = 0
+        compose.setContent {
+            ChatScreen(Chat(), onSend = {}, exportUi = ExportUi(error = "Nothing to export yet: Hermes has not saved this conversation."),
+                       exportActions = ExportActions(export = {}, dismiss = { dismissed++ }))
+        }
+
+        compose.onNodeWithTag("export-error").assertExists()
+        compose.onNodeWithText("Could not export session").assertExists()
+        compose.onNodeWithText("Nothing to export yet: Hermes has not saved this conversation.").assertExists()
+        compose.onNodeWithTag("export-ok").performClick()
+
+        assertEquals(1, dismissed)
+    }
+
+    @Test
+    fun whileAnExportRunsTheChatsExportWaits() {
+        var exported = 0
+        compose.setContent {
+            ChatScreen(Chat(), onSend = {}, exportUi = ExportUi(busy = true), exportActions = ExportActions(export = { exported++ }, dismiss = {}),
+                       statusActions = StatusActions(open = {}, close = {}))
+        }
+
+        compose.onNodeWithTag("export-busy").assertExists()
+        compose.onNodeWithTag("chat-more").performClick()
+        compose.onNodeWithTag("chat-export").assertIsNotEnabled()
+        compose.onNodeWithTag("chat-status").assertIsEnabled()
+        assertEquals(0, exported)
     }
 }
