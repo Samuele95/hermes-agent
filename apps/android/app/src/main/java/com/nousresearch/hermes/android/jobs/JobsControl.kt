@@ -223,7 +223,7 @@ class JobsControl(
     private suspend fun readRuns(id: JobId) {
         val read = try {
             // By the job's id (invariant 2), in the core's order, newest first: never re-sorted, never parsed.
-            Result.success(bridge.ask(BridgeCalls.CRON_RUNS, CronRunsParams(id.value, RUNS_SHOWN)).runs.mapNotNull(JobRun::of))
+            Result.success(bridge.ask(BridgeCalls.CRON_RUNS, CronRunsParams(id.value, RUNS_SHOWN.toLong())).runs.mapNotNull(JobRun::of))
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failed: Exception) {

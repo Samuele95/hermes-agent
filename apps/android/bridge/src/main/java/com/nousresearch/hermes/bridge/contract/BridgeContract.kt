@@ -80,9 +80,9 @@ data class SavedEndpoint(
 @Serializable
 data class CronRun(
     @SerialName("session_id") val sessionId: String,
-    @SerialName("started_at") val startedAt: Int,
-    @SerialName("ended_at") val endedAt: Int?,
-    val messages: Int,
+    @SerialName("started_at") val startedAt: Long,
+    @SerialName("ended_at") val endedAt: Long?,
+    val messages: Long,
     val preview: String?,
     val active: Boolean,
 )
@@ -98,7 +98,7 @@ data class DeliveryTarget(
 data class PlatformEntry(
     val state: String?,
     @SerialName("error_message") val errorMessage: String?,
-    @SerialName("writer_pid") val writerPid: Int?,
+    @SerialName("writer_pid") val writerPid: Long?,
     @SerialName("updated_at") val updatedAt: String?,
 )
 
@@ -209,7 +209,7 @@ data class SshPublicKeyReply(
 @Serializable
 data class SshHostKeyParams(
     val host: String,
-    val port: Int,
+    val port: Long,
 )
 
 @Serializable
@@ -222,7 +222,7 @@ data class SshHostKeyReply(
 @Serializable
 data class SshTrustHostParams(
     val host: String,
-    val port: Int,
+    val port: Long,
     val key: String,
 )
 
@@ -235,7 +235,7 @@ data class SshTrustHostReply(
 data class SshConfigureParams(
     val host: String,
     val user: String,
-    val port: Int,
+    val port: Long,
 )
 
 @Serializable
@@ -247,7 +247,7 @@ data class SshConfigureReply(
 data class SshCheckLoginParams(
     val host: String,
     val user: String,
-    val port: Int,
+    val port: Long,
 )
 
 @Serializable
@@ -308,7 +308,7 @@ data class CronUpdateParams(
     val schedule: String?,
     val prompt: String?,
     val deliver: String?,
-    val repeat: Int?,
+    val repeat: Long?,
 )
 
 @Serializable
@@ -329,7 +329,7 @@ data class CronTriggerReply(
 @Serializable
 data class CronRunsParams(
     @SerialName("job_id") val jobId: String,
-    val limit: Int,
+    val limit: Long,
 )
 
 @Serializable
@@ -344,10 +344,10 @@ data class CronDeliveryTargetsReply(
 
 @Serializable
 data class CronSchedulerReply(
-    @SerialName("heartbeat_age_s") val heartbeatAgeS: Int?,
-    @SerialName("success_age_s") val successAgeS: Int?,
+    @SerialName("heartbeat_age_s") val heartbeatAgeS: Long?,
+    @SerialName("success_age_s") val successAgeS: Long?,
     @SerialName("last_error") val lastError: String?,
-    @SerialName("stale_after_s") val staleAfterS: Int,
+    @SerialName("stale_after_s") val staleAfterS: Long,
 )
 
 @Serializable
@@ -362,22 +362,22 @@ data class CronRunOwnedReply(
 
 @Serializable
 data class SettingsReadReply(
-    @SerialName("approvals_timeout_s") val approvalsTimeoutS: Int,
+    @SerialName("approvals_timeout_s") val approvalsTimeoutS: Long,
     @SerialName("command_allowlist") val commandAllowlist: List<String>,
     @SerialName("memory_enabled") val memoryEnabled: Boolean,
     @SerialName("user_profile_enabled") val userProfileEnabled: Boolean,
-    @SerialName("memory_char_limit") val memoryCharLimit: Int,
-    @SerialName("user_char_limit") val userCharLimit: Int,
+    @SerialName("memory_char_limit") val memoryCharLimit: Long,
+    @SerialName("user_char_limit") val userCharLimit: Long,
     val personalities: List<Personality>,
 )
 
 @Serializable
 data class SettingsWriteParams(
-    @SerialName("approvals_timeout_s") val approvalsTimeoutS: Int?,
+    @SerialName("approvals_timeout_s") val approvalsTimeoutS: Long?,
     @SerialName("memory_enabled") val memoryEnabled: Boolean?,
     @SerialName("user_profile_enabled") val userProfileEnabled: Boolean?,
-    @SerialName("memory_char_limit") val memoryCharLimit: Int?,
-    @SerialName("user_char_limit") val userCharLimit: Int?,
+    @SerialName("memory_char_limit") val memoryCharLimit: Long?,
+    @SerialName("user_char_limit") val userCharLimit: Long?,
     @SerialName("allowlist_remove") val allowlistRemove: List<String>,
 )
 
@@ -411,7 +411,7 @@ data class SessionExportParams(
 data class SessionExportReply(
     val path: String,
     val name: String,
-    val bytes: Int,
+    val bytes: Long,
 )
 
 /** Every call the app may make into its Python half. */

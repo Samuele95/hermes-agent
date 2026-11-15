@@ -75,7 +75,7 @@ class SshSetup(
     /** Looks at [target]'s host key without logging in; creates the app's identity first if there is none. */
     suspend fun look(target: SshTarget) = step {
         ensureIdentity()
-        val seen = bridge.ask(BridgeCalls.SSH_HOST_KEY, SshHostKeyParams(target.host, target.port))
+        val seen = bridge.ask(BridgeCalls.SSH_HOST_KEY, SshHostKeyParams(target.host, target.port.toLong()))
         when (seen.pinned) {
             Pinned.YES -> configured(target)
             Pinned.CHANGED -> throw StepFailed("${target.host}:${target.port} presents a different host key than the one " +
@@ -87,14 +87,14 @@ class SshSetup(
     /** The user confirmed the fingerprint on screen: pin that key and point the terminal at the host. */
     suspend fun trust() = step {
         val seen = setup.value?.step as? SshStep.Fingerprint ?: return@step null
-        bridge.ask(BridgeCalls.SSH_TRUST_HOST, SshTrustHostParams(seen.target.host, seen.target.port, seen.key))
+        bridge.ask(BridgeCalls.SSH_TRUST_HOST, SshTrustHostParams(seen.target.host, seen.target.port.toLong(), seen.key))
         configured(seen.target)
     }
 
     /** Logs in once with the app's key, so the user knows the public key reached `authorized_keys`. */
     suspend fun checkLogin() = step {
         val ready = setup.value?.step as? SshStep.Ready ?: return@step null
-        bridge.ask(BridgeCalls.SSH_CHECK_LOGIN, SshCheckLoginParams(ready.target.host, ready.target.user, ready.target.port))
+        bridge.ask(BridgeCalls.SSH_CHECK_LOGIN, SshCheckLoginParams(ready.target.host, ready.target.user, ready.target.port.toLong()))
         ready.copy(loginOk = true)
     }
 
@@ -106,7 +106,7 @@ class SshSetup(
     }
 
     private suspend fun configured(target: SshTarget): SshStep.Ready {
-        bridge.ask(BridgeCalls.SSH_CONFIGURE, SshConfigureParams(target.host, target.user, target.port))
+        bridge.ask(BridgeCalls.SSH_CONFIGURE, SshConfigureParams(target.host, target.user, target.port.toLong()))
         setup.update { it?.copy(remote = "${target.user}@${target.host}:${target.port}") }
         return SshStep.Ready(target, bridge.ask(BridgeCalls.SSH_PUBLIC_KEY).public)
     }

@@ -14,6 +14,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -189,6 +190,19 @@ class SettingsControlTest {
         assertEquals("config.yaml could not be read", ui.error)
         assertEquals(ApprovalMode.SMART, ui.approvals)
         assertEquals("concise", ui.personality)
+    }
+
+    /** The page holds a char limit as an [Int]: one past it is the page's error words, never a truncated number (V2). */
+    @Test
+    fun aLimitPastWhatThePageHoldsIsAnErrorNeverATruncatedNumber() = runTest {
+        readReply = DEFAULT_READ.replace("\"memory_char_limit\":2200", "\"memory_char_limit\":3000000000")
+
+        settings.open()
+
+        val ui = settings.state.value!!
+        assertNull(ui.config)
+        assertNotNull(ui.error)
+        assertFalse(ui.error!!, ui.error!!.contains("-1294967296"))
     }
 
     @Test

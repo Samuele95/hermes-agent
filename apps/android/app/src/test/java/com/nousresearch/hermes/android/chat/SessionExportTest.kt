@@ -1,5 +1,6 @@
 package com.nousresearch.hermes.android.chat
 
+import com.nousresearch.hermes.bridge.AppBridge
 import com.nousresearch.hermes.bridge.CoreError
 import com.nousresearch.hermes.bridge.contract.SessionExportReply
 import kotlinx.coroutines.CompletableDeferred
@@ -135,5 +136,14 @@ class SessionExportTest {
     @Test
     fun theRepliesSizeIsCarriedWhole() {
         assertEquals(ExportFile("/c/exports/a.json", "a.json", 42L), ExportFile.of(SessionExportReply("/c/exports/a.json", "a.json", 42)))
+        assertEquals(3_000_000_000L, ExportFile.of(SessionExportReply("/c/exports/a.json", "a.json", 3_000_000_000)).bytes)
+    }
+
+    /** A file past 2 GiB comes through the bridge with its own size: the share sheet gets it, never a decode failure. */
+    @Test
+    fun anExportPast2GiBComesThroughTheBridgeWhole() = runTest {
+        val bridge = AppBridge { _, _ -> """{"path":"/c/exports/a.json","name":"a.json","bytes":3000000000}""" }
+
+        assertEquals(ExportFile("/c/exports/a.json", "a.json", 3_000_000_000L), bridge.exportSession(StoredSessionId("db-1")))
     }
 }

@@ -4,8 +4,9 @@
 Python half, each with its request and reply; ``hermes_android.call`` holds the Python side to it at run
 time. This renders the same declaration into kotlinx serialization types and one typed descriptor per call,
 so the app cannot name an undeclared call or build a request the Python side would refuse. Types: string,
-integer, boolean, ``T?`` (present, may be null) for any type T, ``[T]`` (a list of T), and the contract's
-enums and records; anything else is a generation error.
+integer (a Kotlin ``Long``, as ``gen_kotlin_client`` renders the core's), boolean, ``T?`` (present, may be
+null) for any type T, ``[T]`` (a list of T), and the contract's enums and records; anything else is a
+generation error.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import json
 import sys
 from pathlib import Path
 
+from scripts.android.gen_kotlin_client import _PRIMITIVES as _CORE_PRIMITIVES
 from scripts.android.gen_kotlin_client import _camel, _constant, _doc, _kotlin_string
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -47,7 +49,9 @@ data object NoParams
 data object NoReply
 """
 
-_PRIMITIVES = {"string": "String", "integer": "Int", "boolean": "Boolean"}
+# The core protocol's own Kotlin types (gen_kotlin_client), so an integer is a Long on both sides; the bridge
+# contract has no number type.
+_PRIMITIVES = {kind: _CORE_PRIMITIVES[kind] for kind in ("string", "integer", "boolean")}
 
 
 def _type_name(call: str) -> str:

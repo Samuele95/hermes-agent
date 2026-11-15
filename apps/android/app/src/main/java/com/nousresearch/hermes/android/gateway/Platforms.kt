@@ -45,6 +45,6 @@ fun telegramLive(enabled: Boolean, tokenHeld: Boolean, seen: GatewaySeen, entry:
     !tokenHeld -> PlatformLive(PlatformState.NOT_CONFIGURED)
     seen.status != GatewayStatus.RUNNING -> PlatformLive(PlatformState.GATEWAY_OFF)
     // A null pid on either side is never a match (V9).
-    entry == null || seen.pid == null || entry.writerPid != seen.pid -> PlatformLive(PlatformState.PENDING_RESTART)
+    entry == null || seen.pid == null || entry.writerPid != seen.pid.toLong() -> PlatformLive(PlatformState.PENDING_RESTART)
     else -> PlatformLive(PlatformState.of(entry.state), entry.errorMessage, entry.updatedAt)
 }

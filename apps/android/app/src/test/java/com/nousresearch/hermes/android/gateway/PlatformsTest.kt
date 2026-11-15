@@ -6,7 +6,7 @@ import org.junit.Test
 
 /** The bot's live state: the core's own entry, believed only from the running gateway's pid (D39 F3, bet 7). */
 class PlatformsTest {
-    private fun entry(state: String?, pid: Int? = 42, message: String? = null) =
+    private fun entry(state: String?, pid: Long? = 42, message: String? = null) =
         PlatformEntry(state, message, pid, "2026-11-13T15:48:13.243611+00:00")
 
     private val running = GatewaySeen(GatewayStatus.RUNNING, pid = 42)

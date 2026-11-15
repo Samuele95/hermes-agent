@@ -5,6 +5,7 @@ import com.nousresearch.hermes.bridge.contract.CronRunsParams
 import com.nousresearch.hermes.bridge.contract.CronUpdateParams
 import com.nousresearch.hermes.bridge.contract.Pinned
 import com.nousresearch.hermes.bridge.contract.SaveCustomEndpointParams
+import com.nousresearch.hermes.bridge.contract.SessionExportParams
 import com.nousresearch.hermes.bridge.contract.SettingsWriteParams
 import com.nousresearch.hermes.bridge.contract.SkillsEnableParams
 import com.nousresearch.hermes.bridge.contract.SshHostKeyParams
@@ -72,17 +73,31 @@ class AppBridgeTest {
         val run = answering("""{"runs":[{"session_id":"cron_a1b2c3d4e5f6_20261113_090000","started_at":1794583456,"ended_at":null,"messages":4,"preview":null,"active":true}]}""")
             .ask(BridgeCalls.CRON_RUNS, CronRunsParams("a1b2c3d4e5f6", 20)).runs.single()
         assertNull(run.endedAt)
-        assertEquals(1794583456, run.startedAt)
+        assertEquals(1794583456L, run.startedAt)
         assertTrue(run.active)
 
         val ticker = answering("""{"heartbeat_age_s":null,"success_age_s":null,"last_error":null,"stale_after_s":200}""")
             .ask(BridgeCalls.CRON_SCHEDULER)
         assertNull(ticker.heartbeatAgeS)
-        assertEquals(200, ticker.staleAfterS)
+        assertEquals(200L, ticker.staleAfterS)
 
         val target = answering("""{"targets":[{"id":"telegram","name":"Telegram","home_set":false}]}""")
             .ask(BridgeCalls.CRON_DELIVERY_TARGETS).targets.single()
         assertEquals(false, target.homeSet)
+    }
+
+    /** The contract's `integer` is a Long, as the core protocol's is: an export past 2 GiB and a run after 2038 decode whole. */
+    @Test
+    fun aReplysIntegerPastInt32DecodesWhole() = runBlocking {
+        val export = answering("""{"path":"/c/exports/a.json","name":"a.json","bytes":3000000000}""")
+            .ask(BridgeCalls.SESSION_EXPORT, SessionExportParams("db-1"))
+        assertEquals(3_000_000_000L, export.bytes)
+
+        // 2040-01-01T00:00Z and one hour later: past 2^31 - 1 s (2038-01-19T03:14:07Z).
+        val run = answering("""{"runs":[{"session_id":"cron_a1b2c3d4e5f6_20400101_000000","started_at":2208988800,"ended_at":2208992400,"messages":4,"preview":null,"active":false}]}""")
+            .ask(BridgeCalls.CRON_RUNS, CronRunsParams("a1b2c3d4e5f6", 20)).runs.single()
+        assertEquals(2208988800L, run.startedAt)
+        assertEquals(2208992400L, run.endedAt)
     }
 
     @Test
@@ -94,7 +109,7 @@ class AppBridgeTest {
         val status = answering("""{"token":true,"allowed_user":"42","sdk":true,"enabled":false,"live":{"state":"fatal","error_message":"Conflict: terminated by other getUpdates request","writer_pid":12345,"updated_at":"2026-11-13T15:48:13.243611+00:00"}}""")
             .ask(BridgeCalls.TELEGRAM_STATUS)
         assertEquals(false, status.enabled)
-        assertEquals(12345, status.live!!.writerPid)
+        assertEquals(12345L, status.live!!.writerPid)
         assertEquals("fatal", status.live!!.state)
 
         val none = answering("""{"token":true,"allowed_user":"42","sdk":true,"enabled":false,"live":null}""")
@@ -122,7 +137,7 @@ class AppBridgeTest {
             .ask(BridgeCalls.SETTINGS_READ)
 
         assertEquals("settings_read" to "{}", sent.single())
-        assertEquals(300, read.approvalsTimeoutS)
+        assertEquals(300L, read.approvalsTimeoutS)
         assertEquals(listOf("git status"), read.commandAllowlist)
         assertEquals(false, read.userProfileEnabled)
         assertEquals("helpful", read.personalities.single().name)

@@ -19,8 +19,8 @@ import kotlin.coroutines.cancellation.CancellationException
  */
 data class ExportFile(val path: String, val name: String, val bytes: Long) {
     companion object {
-        /** The bridge's reply, read here only (§5); its `integer` size widens to a [Long] (D1). */
-        fun of(reply: SessionExportReply): ExportFile = ExportFile(reply.path, reply.name, reply.bytes.toLong())
+        /** The bridge's reply, read here only (§5); its `integer` size is already a [Long]. */
+        fun of(reply: SessionExportReply): ExportFile = ExportFile(reply.path, reply.name, reply.bytes)
     }
 }
 

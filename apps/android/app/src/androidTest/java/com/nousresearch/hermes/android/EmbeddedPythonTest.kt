@@ -289,7 +289,7 @@ class EmbeddedPythonTest {
             took["cron_scheduler"] = measureTimeMillis { ticker = EmbeddedBridge.ask(BridgeCalls.CRON_SCHEDULER) }
             val facts = ticker!!.let { "heartbeat ${it.heartbeatAgeS} s, success ${it.successAgeS} s, last error ${it.lastError != null}" }
             Log.i("J2Probe", "cron_scheduler: $facts")
-            assertEquals(facts, 200, ticker!!.staleAfterS)
+            assertEquals(facts, 200L, ticker!!.staleAfterS)
             assertTrue(facts, listOf(ticker!!.heartbeatAgeS, ticker!!.successAgeS).all { it == null || it >= 0 })
 
             var targets: List<DeliveryTarget> = emptyList()

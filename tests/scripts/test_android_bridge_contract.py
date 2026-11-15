@@ -13,6 +13,7 @@ import json
 import pytest
 
 from scripts.android import gen_bridge_contract as gen
+from scripts.android import gen_kotlin_client
 
 
 def test_the_committed_kotlin_is_current():
@@ -30,11 +31,28 @@ def test_a_call_is_a_typed_descriptor_over_its_request_and_reply():
     text = _render({"ssh_host_key": {"summary": "A host's key.", "params": {"host": "string", "port": "integer"},
                                      "reply": {"key_text": "string", "known": "boolean"}}})
 
-    assert "data class SshHostKeyParams(\n    val host: String,\n    val port: Int,\n)" in text
+    assert "data class SshHostKeyParams(\n    val host: String,\n    val port: Long,\n)" in text
     assert '@SerialName("key_text") val keyText: String,' in text
     assert "    val known: Boolean," in text
     assert '    /** A host\'s key. */\n    val SSH_HOST_KEY = BridgeCall("ssh_host_key", SshHostKeyParams.serializer(), ' \
            "SshHostKeyReply.serializer())" in text
+
+
+def test_an_integer_field_is_a_kotlin_long_as_the_core_protocols_are():
+    text = _render({"session_export": {"params": {},
+                                       "reply": {"bytes": "integer", "ended_at": "integer?", "sizes": "[integer]"}}})
+
+    assert "    val bytes: Long," in text  # an export past 2 GiB, a run stamped after 2038, decode whole
+    assert '@SerialName("ended_at") val endedAt: Long?,' in text
+    assert "    val sizes: List<Long>," in text
+    assert ": Int" not in text
+    assert gen._PRIMITIVES["integer"] == gen_kotlin_client._PRIMITIVES["integer"], (
+        "the two generators render integer differently")
+
+
+def test_a_number_field_still_fails_generation():
+    with pytest.raises(ValueError, match="unknown type"):  # the bridge contract has no number type
+        _render({"look": {"params": {}, "reply": {"ratio": "number"}}})
 
 
 def test_a_call_without_params_or_reply_fields_uses_the_shared_empty_objects():

@@ -60,8 +60,8 @@ data class ConfigSettings(val approvalTimeoutS: Int, val allowlist: List<String>
     companion object {
         /** The bridge's [reply], field for field (§5: no screen reads the wire type). Total. */
         fun of(reply: SettingsReadReply): ConfigSettings =
-            ConfigSettings(reply.approvalsTimeoutS, reply.commandAllowlist, reply.memoryEnabled, reply.userProfileEnabled,
-                           reply.memoryCharLimit, reply.userCharLimit,
+            ConfigSettings(Math.toIntExact(reply.approvalsTimeoutS), reply.commandAllowlist, reply.memoryEnabled,
+                           reply.userProfileEnabled, Math.toIntExact(reply.memoryCharLimit), Math.toIntExact(reply.userCharLimit),
                            reply.personalities.map { p: WirePersonality -> Personality(p.name, p.description) })
     }
 }
@@ -75,8 +75,8 @@ data class SettingsEdit(val approvalTimeoutS: Int? = null, val memoryEnabled: Bo
                         val memoryChars: Int? = null, val profileChars: Int? = null, val removeAllowed: List<String> = emptyList()) {
     /** The bridge's params for this change, field for field. */
     fun params(): SettingsWriteParams =
-        SettingsWriteParams(approvalsTimeoutS = approvalTimeoutS, memoryEnabled = memoryEnabled, userProfileEnabled = profileEnabled,
-                            memoryCharLimit = memoryChars, userCharLimit = profileChars, allowlistRemove = removeAllowed)
+        SettingsWriteParams(approvalsTimeoutS = approvalTimeoutS?.toLong(), memoryEnabled = memoryEnabled, userProfileEnabled = profileEnabled,
+                            memoryCharLimit = memoryChars?.toLong(), userCharLimit = profileChars?.toLong(), allowlistRemove = removeAllowed)
 }
 
 /**

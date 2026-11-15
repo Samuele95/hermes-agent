@@ -100,12 +100,14 @@ private const val PREVIEW_CUT = 103  // tools/cronjob_job_args.py: prompt[:100] 
 
 /**
  * The core ticker's own record: seconds since its last heartbeat and its last good tick (null: no stamp, so the age
- * cannot be told), its last error (redacted), and the core's threshold past which a heartbeat is stale.
+ * cannot be told), its last error (redacted), and the core's threshold past which a heartbeat is stale. An age past
+ * [Int] fails the read, never truncated.
  */
 data class TickerFacts(val heartbeatAgeS: Int?, val successAgeS: Int?, val lastError: String?, val staleAfterS: Int) {
     companion object {
         fun of(reply: CronSchedulerReply): TickerFacts =
-            TickerFacts(reply.heartbeatAgeS, reply.successAgeS, reply.lastError, reply.staleAfterS)
+            TickerFacts(reply.heartbeatAgeS?.let(Math::toIntExact), reply.successAgeS?.let(Math::toIntExact),
+                        reply.lastError, Math.toIntExact(reply.staleAfterS))
     }
 }
 
@@ -159,7 +161,8 @@ const val RUNS_SHOWN = 20
 /**
  * One past run of a job, as the core keeps it: its own stored session [sessionId] (the app never reads the job
  * out of it, EJ-62), when it began and ended (epoch s; [endedAt] null: no end recorded), its [messages], the
- * core's [preview] of its first prompt, and [active]: no end and active in the last 300 s (the core's window).
+ * core's [preview] of its first prompt, and [active]: no end and active in the last 300 s (the core's window). A
+ * count past [Int] fails the read, never truncated.
  */
 data class JobRun(val sessionId: StoredSessionId, val startedAt: Long, val endedAt: Long?, val messages: Int,
                   val preview: String?, val active: Boolean) {
@@ -168,7 +171,7 @@ data class JobRun(val sessionId: StoredSessionId, val startedAt: Long, val ended
         fun of(row: CronRun): JobRun? {
             if (row.sessionId.isBlank()) return null
             // No check of the id's shape: the core's query already binds it to the job.
-            return JobRun(StoredSessionId(row.sessionId), row.startedAt.toLong(), row.endedAt?.toLong(), row.messages,
+            return JobRun(StoredSessionId(row.sessionId), row.startedAt, row.endedAt, Math.toIntExact(row.messages),
                           row.preview?.trim()?.ifEmpty { null }, row.active)
         }
     }
@@ -365,7 +368,7 @@ fun JobForm.changesFrom(job: Job): CronUpdateParams? {
     val deliver = delivery.takeIf { it != job.delivery }?.wire()
     val repeat = if (repeat == job.times) null else repeat ?: 0
     if (name == null && prompt == null && schedule == null && deliver == null && repeat == null) return null
-    return CronUpdateParams(jobId = job.id.value, name = name, schedule = schedule, prompt = prompt, deliver = deliver, repeat = repeat)
+    return CronUpdateParams(jobId = job.id.value, name = name, schedule = schedule, prompt = prompt, deliver = deliver, repeat = repeat?.toLong())
 }
 
 /**

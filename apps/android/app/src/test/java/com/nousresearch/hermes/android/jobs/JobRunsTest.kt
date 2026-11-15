@@ -18,6 +18,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -112,6 +113,26 @@ class JobRunsTest {
         assertEquals(RunPhase.UNFINISHED, JobRun.of(CronRun(NEW_ID, 1, null, 1, null, false))!!.phase)
         assertEquals(RunPhase.ENDED, JobRun.of(CronRun(NEW_ID, 1, 2, 1, null, false))!!.phase)
         assertEquals(RunPhase.ENDED, JobRun.of(CronRun(NEW_ID, 1, 2, 1, null, true))!!.phase)  // an end wins
+    }
+
+    /** A run stamped after 2038-01-19T03:14:07Z (2^31 - 1 s) reaches the sheet with its own times, and fails none of the others. */
+    @Test
+    fun aRunAfter2038ReachesTheSheetWhole() = runTest {
+        // 2040-01-01T00:00Z and one hour later.
+        runsReply = """{"runs":[{"session_id":"$NEW_ID","started_at":2208988800,"ended_at":2208992400,"messages":3,"preview":"Summarise the news","active":false}]}"""
+        control.open()
+
+        control.showRuns(j1)
+
+        assertEquals(RunsView(j1, listOf(JobRun(StoredSessionId(NEW_ID), 2208988800L, 2208992400L, 3, "Summarise the news", active = false)),
+                              loaded = true), ui.runs)
+        assertNull(ui.error)
+    }
+
+    /** A run's message count is an [Int] on the sheet: one past it fails the read in words, never a truncated count. */
+    @Test
+    fun aRunsMessageCountPastIntIsRefusedNeverTruncated() {
+        assertThrows(ArithmeticException::class.java) { JobRun.of(CronRun(NEW_ID, 1, null, 3_000_000_000, null, false)) }
     }
 
     @Test
