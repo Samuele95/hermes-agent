@@ -211,6 +211,26 @@ class SettingsScreenTest {
         compose.onNodeWithTag("settings-restart").assertDoesNotExist()
     }
 
+    /** Restart is off with every other control while a write or a Remove confirmation runs; the note stays (improve #2). */
+    @Test
+    fun whileAWriteOrARemovalRunsRestartIsOffAndTheNoteStays() {
+        var state by mutableStateOf(SettingsUi(ApprovalMode.SMART, "concise", CFG, nextStart = true, busy = true))
+        compose.setContent { SettingsScreen(state, actions, onClose = {}) }
+
+        compose.onNodeWithTag("settings-next-start").performScrollTo().assertExists()
+        compose.onNodeWithTag("settings-restart").performScrollTo().assertIsNotEnabled().performClick()
+        assertEquals("a write runs: no restart", 0, restarts)
+
+        state = state.copy(busy = false)
+        compose.onNodeWithTag("settings-restart").performScrollTo().assertIsEnabled().performClick()
+        assertEquals("idle: Restart restarts", 1, restarts)
+
+        state = state.copy(confirmRemove = null, busy = true)  // as confirmRemove() admits a removal (removing(), SettingsControl.kt:27)
+        compose.onNodeWithTag("settings-next-start").performScrollTo().assertExists()
+        compose.onNodeWithTag("settings-restart").performScrollTo().assertIsNotEnabled().performClick()
+        assertEquals("a removal runs: no restart", 1, restarts)
+    }
+
     @Test
     fun theMemorySwitchesShowTheCoresStateAndHandOverOneField() {
         show(SettingsUi(ApprovalMode.SMART, "concise", CFG.copy(profileEnabled = false)))

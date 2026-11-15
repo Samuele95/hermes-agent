@@ -168,7 +168,7 @@ private fun PersonalityRow(current: String, offered: List<Personality>, enabled:
     }
 }
 
-/** The always-allowed commands, each with Remove (asks first), and the gateway's note while a removal waits for its next start. */
+/** The always-allowed commands, each with Remove (asks first), and the gateway's note with Restart while a removal waits for its next start; every button is off while a write runs. */
 @Composable
 private fun Allowlist(allowed: List<String>, nextStart: Boolean, enabled: Boolean, actions: SettingsActions) {
     Text(stringResource(R.string.allowed_title), Modifier.padding(top = 16.dp), style = MaterialTheme.typography.bodyLarge)
@@ -186,7 +186,7 @@ private fun Allowlist(allowed: List<String>, nextStart: Boolean, enabled: Boolea
     if (nextStart) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Hint(stringResource(R.string.allowed_next_start), Modifier.weight(1f).testTag("settings-next-start"))
-            TextButton(actions.restartGateway, Modifier.testTag("settings-restart")) { Text(stringResource(R.string.gateway_restart)) }
+            TextButton(actions.restartGateway, Modifier.testTag("settings-restart"), enabled = enabled) { Text(stringResource(R.string.gateway_restart)) }
         }
     }
 }
