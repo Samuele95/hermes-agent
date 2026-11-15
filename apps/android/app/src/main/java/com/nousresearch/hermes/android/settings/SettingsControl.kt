@@ -21,14 +21,14 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlin.coroutines.cancellation.CancellationException
 
 /** One write admitted: busy, or null when not (the page closed, or a write already running). */
-private fun SettingsUi.writing(): SettingsUi? = if (busy) null else copy(busy = true, error = null)
+private fun SettingsUi.writing(): SettingsUi? = if (busy) null else copy(busy = true, error = null, outcome = null)
 
 /** The asked removal admitted: busy with the question gone, or null when not (busy, or nothing asked). */
-private fun SettingsUi.removing(): SettingsUi? = if (busy || confirmRemove == null) null else copy(confirmRemove = null, busy = true, error = null)
+private fun SettingsUi.removing(): SettingsUi? = if (busy || confirmRemove == null) null else copy(confirmRemove = null, busy = true, error = null, outcome = null)
 
 /** The asked provider removal admitted: busy with the question gone, or null when not (busy, or nothing asked). */
 private fun SettingsUi.removingProvider(): SettingsUi? =
-    if (busy || confirmProvider == null) null else copy(confirmProvider = null, busy = true, error = null)
+    if (busy || confirmProvider == null) null else copy(confirmProvider = null, busy = true, error = null, outcome = null)
 
 /**
  * What the page may do with provider auth, which `ProviderSetup` owns alone (DC-M20, EJ-5): list the connected
@@ -45,7 +45,8 @@ class ProviderAccess(val connected: suspend () -> List<ConnectedProvider>, val r
  * `config.set`; the approval timeout, the allowlist and the four `memory.*` keys through the app's `settings_write`
  * ([bridge], under the app's config lock). The invariants (§2.4): the page shows only what the core last answered, so
  * every accepted write is followed by a re-read that replaces what is shown ([approvals] keeps today's rule, D4: the
- * mode `config.set` accepted); a write is one [SettingsEdit] or one `config.set`, one at a time (a second tap while one
+ * mode `config.set` accepted); a re-read that fails after an accepted write keeps the snapshot and says it was saved
+ * but not confirmed, apart from a refused write ([WriteOutcome], architect #4); a write is one [SettingsEdit] or one `config.set`, one at a time (a second tap while one
  * runs sends nothing, EJ-78); a removal asks first ([askRemove]) and removes only the pattern asked about; the
  * personality is written without a session (DC-M17: Desktop's "for new sessions"; with a session id the core would
  * splice a pivot into the open chat). The page repeats none of the bridge's bounds (D5): a refusal shows its words.
@@ -115,7 +116,10 @@ class SettingsControl(private val core: CoreGateway, private val bridge: AppBrid
         }
     }
 
-    /** Writes [change] through `settings_write`, then shows the re-read whole (EJ-17); a refusal re-reads nothing. */
+    /**
+     * Writes [change] through `settings_write`, then shows the re-read whole (EJ-17); a refusal re-reads nothing, and a
+     * re-read that fails keeps what is shown and says the write was saved ([WriteOutcome]).
+     */
     suspend fun edit(change: SettingsEdit) {
         if (!admitted()) return
         finish { reread(change) }
@@ -125,7 +129,7 @@ class SettingsControl(private val core: CoreGateway, private val bridge: AppBrid
     fun askRemove(key: String?) {
         screen.update { ui ->
             if (ui == null || ui.busy) ui
-            else ui.copy(confirmRemove = key?.takeIf { it in ui.config?.allowlist.orEmpty() }, confirmProvider = null, error = null)
+            else ui.copy(confirmRemove = key?.takeIf { it in ui.config?.allowlist.orEmpty() }, confirmProvider = null, error = null, outcome = null)
         }
     }
 
@@ -147,7 +151,7 @@ class SettingsControl(private val core: CoreGateway, private val bridge: AppBrid
         screen.update { ui ->
             if (ui == null || ui.busy) ui
             else ui.copy(confirmProvider = slug?.takeIf { s -> ui.connected.orEmpty().any { it.slug == s && it.removable } },
-                         confirmRemove = null, error = null)
+                         confirmRemove = null, error = null, outcome = null)
         }
     }
 
@@ -182,17 +186,33 @@ class SettingsControl(private val core: CoreGateway, private val bridge: AppBrid
     /** Admits one write into an open, idle page in one atomic step. */
     private fun admitted(): Boolean = screen.getAndUpdate { it?.writing() ?: it }?.writing() != null
 
-    /** `settings_write` [change]; once accepted, [applied] runs with the gateway seen now, and the re-read replaces the shown settings. */
+    /**
+     * `settings_write` [change], then the re-read, each in its own try (architect #4, EJ-77): a write that fails is
+     * [WriteOutcome.Refused] and nothing else runs; once it is accepted, [applied] runs with the gateway seen now, and
+     * the re-read replaces the shown settings, or, when it fails, the snapshot stays with [WriteOutcome.AppliedUnconfirmed].
+     * A cancellation is rethrown ([forUser]).
+     */
     private suspend inline fun reread(change: SettingsEdit, applied: (GatewaySeen) -> Unit = {}): (SettingsUi) -> SettingsUi {
-        bridge.ask(BridgeCalls.SETTINGS_WRITE, change.params())
+        try {
+            bridge.ask(BridgeCalls.SETTINGS_WRITE, change.params())
+        } catch (failed: Exception) {
+            val words = forUser(failed)
+            return { it.copy(outcome = WriteOutcome.Refused(words)) }
+        }
         applied(seen())
-        val config = ConfigSettings.of(bridge.ask(BridgeCalls.SETTINGS_READ))
+        val config = try {
+            ConfigSettings.of(bridge.ask(BridgeCalls.SETTINGS_READ))
+        } catch (failed: Exception) {
+            val words = forUser(failed)
+            return { it.copy(outcome = WriteOutcome.AppliedUnconfirmed(words)) }
+        }
         return { it.copy(config = config) }
     }
 
     /**
-     * The one tail of an admitted write: [act] writes and returns how the page shows the core's answer. A refusal (or
-     * any failure) shows its words and changes nothing else; either way the page is idle again.
+     * The one tail of an admitted write: [act] writes and returns how the page shows the core's answer. A failure [act]
+     * did not handle itself shows its words in [SettingsUi.error] (`reread` reports its own, as [SettingsUi.outcome]) and
+     * changes nothing else; either way the page is idle again.
      */
     private suspend inline fun finish(act: () -> (SettingsUi) -> SettingsUi) {
         val shown: (SettingsUi) -> SettingsUi = try {

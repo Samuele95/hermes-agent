@@ -35,6 +35,7 @@ import com.nousresearch.hermes.android.settings.SettingsActions
 import com.nousresearch.hermes.android.settings.SettingsEdit
 import com.nousresearch.hermes.android.settings.SettingsScreen
 import com.nousresearch.hermes.android.settings.SettingsUi
+import com.nousresearch.hermes.android.settings.WriteOutcome
 import com.nousresearch.hermes.bridge.protocol.ConfigGetParams
 import com.nousresearch.hermes.bridge.protocol.Methods
 import java.io.File
@@ -244,6 +245,24 @@ class SettingsScreenTest {
     }
 
     @Test
+    fun aWriteSavedButNotConfirmedSaysSoApartFromARefusal() {
+        show(SettingsUi(ApprovalMode.SMART, "concise", CFG, outcome = WriteOutcome.AppliedUnconfirmed("Something went wrong (IOException).")))
+
+        compose.onNodeWithTag("settings-unconfirmed").performScrollTo()
+            .assertTextEquals("Saved, but the page could not confirm it — reopen to check. Something went wrong (IOException).")
+        compose.onNodeWithTag("settings-error").assertDoesNotExist()
+        compose.onNodeWithTag("memory-switch").performScrollTo().assertIsEnabled()  // not busy: the page stays usable
+    }
+
+    @Test
+    fun aRefusedWriteShowsItsWordsAsTheError() {
+        show(SettingsUi(ApprovalMode.SMART, "concise", CFG, outcome = WriteOutcome.Refused("The approval timeout must be at least 1 second.")))
+
+        compose.onNodeWithTag("settings-error").performScrollTo().assertTextEquals("The approval timeout must be at least 1 second.")
+        compose.onNodeWithTag("settings-unconfirmed").assertDoesNotExist()
+    }
+
+    @Test
     fun theProvidersSectionListsEachConnectedOneWithRemove() {
         show(SettingsUi(ApprovalMode.SMART, "concise", CFG, connected = listOf(NOUS, COPILOT, ENDPOINT)))
 
@@ -412,7 +431,7 @@ class SettingsScreenTest {
             assertEquals(config.approvalTimeoutS + 1, settings.state.value?.config?.approvalTimeoutS)
 
             settings.edit(SettingsEdit(approvalTimeoutS = 0))
-            assertEquals("The approval timeout must be at least 1 second.", settings.state.value?.error)
+            assertEquals(WriteOutcome.Refused("The approval timeout must be at least 1 second."), settings.state.value?.outcome)
             assertEquals(config.approvalTimeoutS + 1, settings.state.value?.config?.approvalTimeoutS)
         } finally {
             settings.personality(personality)

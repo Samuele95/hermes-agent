@@ -298,6 +298,7 @@
     <string name="profile_chars">Profile budget</string>
     <string name="unit_characters">characters</string>
     <string name="settings_new_chats">Changes apply to new chats; an open chat keeps what it started with.</string>
+    <string name="settings_unconfirmed">Saved, but the page could not confirm it — reopen to check. %1$s</string>
     <string name="settings_save">Save</string>
     <string name="providers_title">Providers</string>
     <string name="providers_explain">The providers Hermes holds a key or sign-in for on this phone.</string>

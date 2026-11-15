@@ -80,6 +80,21 @@ data class SettingsEdit(val approvalTimeoutS: Int? = null, val memoryEnabled: Bo
 }
 
 /**
+ * How the page's last `settings_write` ended when it did not end in a fresh re-read (architect #4, EJ-77): the two
+ * calls fail for different reasons, and the user is told which.
+ */
+sealed interface WriteOutcome {
+    /** The core's or the bridge's words. */
+    val words: String
+
+    /** The write itself failed: nothing changed, and the page shows what it showed. */
+    data class Refused(override val words: String) : WriteOutcome
+
+    /** The write was accepted but the re-read after it failed: `config.yaml` holds the change, the page the snapshot before it. */
+    data class AppliedUnconfirmed(override val words: String) : WriteOutcome
+}
+
+/**
  * The settings page. [approvals] is null when the core's mode could not be read: no mode is shown as the one in force.
  * [personality] is the core's word (a name, or [NO_PERSONALITY]) and [config] its `settings_read`, each null when it
  * could not be read. [connected] the core's connected providers, null when they could not be read (D5).
@@ -87,12 +102,14 @@ data class SettingsEdit(val approvalTimeoutS: Int? = null, val memoryEnabled: Bo
  * [confirmRemove] the allowlist pattern a removal waits to be confirmed for; [confirmProvider] the provider slug a
  * removal waits to be confirmed for (D4): one question at a time. [nextStart] while a removal waits for the always-on
  * gateway's next start (the pid it was made under still runs; F4, Dv31). [busy] while one write runs; [error] the
- * core's words for the last failure.
+ * words for the last failure of a read, a `config.set` or a provider removal; [outcome] how the last `settings_write`
+ * (an edit or an allowlist removal) ended when its re-read did not replace what is shown (D1). At most one of the two
+ * is set.
  */
 data class SettingsUi(val approvals: ApprovalMode? = null, val personality: String? = null, val config: ConfigSettings? = null,
                       val connected: List<ConnectedProvider>? = null, val about: About? = null, val confirmRemove: String? = null,
                       val confirmProvider: String? = null, val nextStart: Boolean = false, val busy: Boolean = false,
-                      val error: String? = null)
+                      val error: String? = null, val outcome: WriteOutcome? = null)
 
 /** One skill as the core lists it (`skills_list`): [enabled] is the global `skills.disabled` list's answer (D7). */
 data class SkillRow(val name: String, val description: String, val category: String?, val enabled: Boolean) {

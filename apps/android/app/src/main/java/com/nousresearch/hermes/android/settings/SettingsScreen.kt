@@ -59,7 +59,7 @@ class SettingsActions(val approvals: (ApprovalMode) -> Unit, val personality: (S
  * mode, the timeout, the always-allowed commands), Memory, Providers (each connected one with Remove, which asks
  * first), Skills (a row that opens the skills page), and About (the build, with Copy details). It shows only what the core last answered: a part the
  * core could not read is absent (the mode keeps "none selected, still choosable"), and while one write runs every
- * control is off.
+ * control is off. A write saved but not confirmed says so apart from a refusal.
  */
 @Composable
 fun SettingsScreen(state: SettingsUi, actions: SettingsActions, onClose: () -> Unit, modifier: Modifier = Modifier) {
@@ -114,6 +114,13 @@ fun SettingsScreen(state: SettingsUi, actions: SettingsActions, onClose: () -> U
                 trailing = { Chevron() }) { actions.openSkills() }
         state.about?.let { AboutSection(it, enabled, actions.copy) }
         state.error?.let { Hint(it, Modifier.padding(top = 12.dp).testTag("settings-error"), color = MaterialTheme.colorScheme.error) }
+        when (val outcome = state.outcome) {
+            is WriteOutcome.Refused ->
+                Hint(outcome.words, Modifier.padding(top = 12.dp).testTag("settings-error"), color = MaterialTheme.colorScheme.error)
+            is WriteOutcome.AppliedUnconfirmed ->
+                Hint(stringResource(R.string.settings_unconfirmed, outcome.words), Modifier.padding(top = 12.dp).testTag("settings-unconfirmed"))
+            null -> Unit
+        }
     }
     state.confirmRemove?.let { RemoveDialog(it, enabled = !state.busy, actions) }
     state.confirmProvider?.let { slug ->

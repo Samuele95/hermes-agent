@@ -210,10 +210,70 @@ class SettingsControlTest {
         settings.edit(SettingsEdit(approvalTimeoutS = 0))
 
         val ui = settings.state.value!!
-        assertEquals("The approval timeout must be at least 1 second.", ui.error)
+        assertEquals(WriteOutcome.Refused("The approval timeout must be at least 1 second."), ui.outcome)
+        assertNull(ui.error)
         assertEquals(CFG, ui.config)
         assertFalse(ui.busy)
         assertEquals(1, reads())
+    }
+
+    @Test
+    fun anAcceptedWriteWhoseReReadFailsIsSavedButUnconfirmedAndKeepsWhatWasShown() = runTest {
+        settings.open()
+        readReply = UNREADABLE
+
+        settings.edit(SettingsEdit(approvalTimeoutS = 120))
+
+        val ui = settings.state.value!!
+        assertEquals(WriteOutcome.AppliedUnconfirmed("config.yaml could not be read"), ui.outcome)
+        assertNull("a saved write is not a refusal", ui.error)
+        assertEquals("neither blanked nor patched from the edit", CFG, ui.config)
+        assertFalse(ui.busy)
+        assertEquals(1, writes().size)
+        assertEquals("the re-read was tried", 2, reads())
+    }
+
+    @Test
+    fun theNextWriteOrQuestionClearsTheLastOutcome() = runTest {
+        settings.open()
+        readReply = UNREADABLE
+        settings.edit(SettingsEdit(approvalTimeoutS = 120))
+        assertEquals(WriteOutcome.AppliedUnconfirmed("config.yaml could not be read"), settings.state.value?.outcome)
+
+        readReply = DEFAULT_READ.replace("\"approvals_timeout_s\":300", "\"approvals_timeout_s\":120")
+        settings.edit(SettingsEdit(approvalTimeoutS = 120))
+        assertNull(settings.state.value?.outcome)
+        assertEquals(120, settings.state.value?.config?.approvalTimeoutS)
+
+        writeAnswer = """{"error":"The approval timeout must be at least 1 second."}"""
+        settings.edit(SettingsEdit(approvalTimeoutS = 0))
+        assertEquals(WriteOutcome.Refused("The approval timeout must be at least 1 second."), settings.state.value?.outcome)
+
+        settings.approvals(ApprovalMode.MANUAL)
+        assertNull(settings.state.value?.outcome)
+        assertNull(settings.state.value?.error)
+
+        settings.edit(SettingsEdit(approvalTimeoutS = 0))
+        assertEquals(WriteOutcome.Refused("The approval timeout must be at least 1 second."), settings.state.value?.outcome)
+        settings.askRemove("docker *")
+        assertNull(settings.state.value?.outcome)
+    }
+
+    @Test
+    fun reopeningAfterAnUnconfirmedWriteShowsTheFreshRead() = runTest {
+        settings.open()
+        readReply = UNREADABLE
+        settings.edit(SettingsEdit(approvalTimeoutS = 120))
+        assertEquals(WriteOutcome.AppliedUnconfirmed("config.yaml could not be read"), settings.state.value?.outcome)
+        readReply = DEFAULT_READ.replace("\"approvals_timeout_s\":300", "\"approvals_timeout_s\":120")
+
+        settings.close()
+        settings.open()
+
+        val ui = settings.state.value!!
+        assertNull(ui.outcome)
+        assertNull(ui.error)
+        assertEquals(120, ui.config?.approvalTimeoutS)
     }
 
     @Test
@@ -292,6 +352,24 @@ class SettingsControlTest {
     }
 
     @Test
+    fun anUnconfirmedRemovalStillWaitsForTheGatewaysNextStart() = runTest {
+        seenNow = GatewaySeen(GatewayStatus.RUNNING, pid = 7)
+        settings.open()
+        readReply = UNREADABLE
+
+        settings.askRemove("docker *")
+        settings.confirmRemove()
+
+        val ui = settings.state.value!!
+        assertEquals(WriteOutcome.AppliedUnconfirmed("config.yaml could not be read"), ui.outcome)
+        assertEquals("the snapshot before the removal stays", CFG, ui.config)
+        assertTrue("the write landed, and the gateway holds the old list", ui.nextStart)
+        assertNull(ui.confirmRemove)
+        assertFalse(ui.busy)
+        assertEquals(1, writes().size)
+    }
+
+    @Test
     fun aRefusedRemovalShowsItsWordsKeepsTheListAndMarksNoNextStart() = runTest {
         seenNow = GatewaySeen(GatewayStatus.RUNNING, pid = 7)
         settings.open()
@@ -301,7 +379,8 @@ class SettingsControlTest {
         settings.confirmRemove()
 
         val ui = settings.state.value!!
-        assertEquals("The always-allowed list could not be read; nothing was changed.", ui.error)
+        assertEquals(WriteOutcome.Refused("The always-allowed list could not be read; nothing was changed."), ui.outcome)
+        assertNull(ui.error)
         assertEquals(CFG, ui.config)
         assertNull(ui.confirmRemove)
         assertFalse(ui.busy)
@@ -331,6 +410,24 @@ class SettingsControlTest {
         assertEquals(1, writes().size)
         assertNull(settings.state.value?.confirmRemove)
         assertFalse(settings.state.value!!.busy)
+    }
+
+    @Test
+    fun aCancelledWriteLeavesThePageIdleWithNoOutcome() = runTest {
+        settings.open()
+        writeGate = CompletableDeferred()
+
+        val running = launch { settings.edit(SettingsEdit(memoryChars = 100)) }
+        runCurrent()
+        assertTrue(settings.state.value!!.busy)
+        running.cancel()
+        running.join()
+
+        val ui = settings.state.value!!
+        assertFalse(ui.busy)
+        assertNull("a cancellation is not a refusal", ui.outcome)
+        assertNull(ui.error)
+        assertEquals(1, reads())
     }
 
     // Providers (F10): listed when the page opens; a removal asks first and goes through provider setup's one forget path.
@@ -489,6 +586,9 @@ class SettingsControlTest {
     }
 
     companion object {
+        /** `settings_read`'s answer when `config.yaml` cannot be read. */
+        const val UNREADABLE = """{"error":"config.yaml could not be read"}"""
+
         /** `settings_read`'s answer: the core's defaults, two always-allowed commands and two personalities. */
         const val DEFAULT_READ = """{"approvals_timeout_s":300,"command_allowlist":["git status","docker *"],"memory_enabled":true,
             "user_profile_enabled":true,"memory_char_limit":2200,"user_char_limit":1375,
