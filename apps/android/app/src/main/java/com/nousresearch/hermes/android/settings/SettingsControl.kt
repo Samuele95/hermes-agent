@@ -47,7 +47,7 @@ class ProviderAccess(val connected: suspend () -> List<ConnectedProvider>, val r
  * every accepted write is followed by a re-read that replaces what is shown ([approvals] keeps today's rule, D4: the
  * mode `config.set` accepted); a re-read that fails after an accepted write keeps the snapshot and says it was saved
  * but not confirmed, apart from a refused write ([WriteOutcome], architect #4); a write is one [SettingsEdit] or one `config.set`, one at a time (a second tap while one
- * runs sends nothing, EJ-78); a removal asks first ([askRemove]) and removes only the pattern asked about; the
+ * runs sends nothing, EJ-78); [open] is admitted the same way, so a re-read never overlaps a write (improve #6); a removal asks first ([askRemove]) and removes only the pattern asked about; the
  * personality is written without a session (DC-M17: Desktop's "for new sessions"; with a session id the core would
  * splice a pivot into the open chat). The page repeats none of the bridge's bounds (D5): a refusal shows its words.
  *
@@ -76,17 +76,35 @@ class SettingsControl(private val core: CoreGateway, private val bridge: AppBrid
 
     /**
      * Reads the mode, the personality, the bridge's settings, the connected providers and About, each on its own: a
-     * part that fails is null, and the first failure's words show.
+     * part that fails is null, and the first failure's words show. Admitted like a write, in one atomic step (improve
+     * #6, EJ-17): a page busy with a write admits no open (nothing is read, its busy stays); a page already showing is
+     * re-read busy, so no write starts on the snapshot it replaces, and stays closed if it was closed meanwhile; a
+     * closed page's read never replaces a page another open showed and a write made busy since.
      */
     suspend fun open() {
-        var error: String? = null
-        val keep: (String) -> Unit = { if (error == null) error = it }
-        val mode = orNull(keep) { ApprovalMode.of(core.call(Methods.CONFIG_GET, ConfigGetParams(key = KEY)).value) }
-        val personality = orNull(keep) { core.call(Methods.CONFIG_GET, ConfigGetParams(key = PERSONALITY)).value }
-        val config = orNull(keep) { ConfigSettings.of(bridge.ask(BridgeCalls.SETTINGS_READ)) }
-        val connected = orNull(keep) { providers.connected() }
-        val shown = orNull(keep) { about() }
-        screen.value = SettingsUi(mode, personality, config, connected, shown, nextStart = mark(seen()) != null, error = error)
+        val before = screen.getAndUpdate { it?.writing() ?: it }  // one atomic step: a re-read and a write never overlap
+        if (before?.busy == true) return  // a write runs: this open sends nothing and leaves it running
+        val held = before != null
+        val fresh = try {
+            var error: String? = null
+            val keep: (String) -> Unit = { if (error == null) error = it }
+            val mode = orNull(keep) { ApprovalMode.of(core.call(Methods.CONFIG_GET, ConfigGetParams(key = KEY)).value) }
+            val personality = orNull(keep) { core.call(Methods.CONFIG_GET, ConfigGetParams(key = PERSONALITY)).value }
+            val config = orNull(keep) { ConfigSettings.of(bridge.ask(BridgeCalls.SETTINGS_READ)) }
+            val connected = orNull(keep) { providers.connected() }
+            val shown = orNull(keep) { about() }
+            SettingsUi(mode, personality, config, connected, shown, nextStart = mark(seen()) != null, error = error)
+        } catch (cancelled: CancellationException) {
+            if (held) screen.update { it?.copy(busy = false) }  // as finish: a cancelled re-read leaves the page idle
+            throw cancelled
+        }
+        screen.update { now ->
+            when {
+                held -> now?.let { fresh }       // a page closed while it re-read stays closed (D5)
+                now?.busy == true -> now         // another open showed it and a write runs on it: that write ends it (D4)
+                else -> fresh
+            }
+        }
     }
 
     /**

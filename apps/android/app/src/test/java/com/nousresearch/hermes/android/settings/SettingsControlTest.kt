@@ -52,6 +52,7 @@ class SettingsControlTest {
     private var readReply = DEFAULT_READ
     private var writeAnswer = """{"applied":true}"""
     private var writeGate: CompletableDeferred<Unit>? = null  // a write that suspends until completed
+    private var readGate: CompletableDeferred<Unit>? = null  // the next settings_read alone suspends until completed
     private val bridgeCalls = mutableListOf<Pair<String, String>>()
     private var seenNow = GatewaySeen(GatewayStatus.STOPPED)
     private var providerRows = ROWS  // what provider setup lists as connected
@@ -66,7 +67,7 @@ class SettingsControlTest {
     private val settings = SettingsControl(core, bridge = { function, arg ->
         bridgeCalls += function to arg
         when (function) {
-            "settings_read" -> readReply
+            "settings_read" -> { readGate?.let { readGate = null; it.await() }; readReply }
             "settings_write" -> { writeGate?.await(); writeAnswer }
             else -> error("unexpected $function")
         }
@@ -461,6 +462,125 @@ class SettingsControlTest {
         assertEquals(1, reads())
     }
 
+    // An open is admitted like a write (improve #6, EJ-17): it never drops a running write's busy, nor lets one start on what it replaces.
+
+    @Test
+    fun aSecondOpenWhileAWriteRunsReadsNothingAndLeavesItBusy() = runTest {
+        settings.open()
+        core.calls.clear()
+        writeGate = CompletableDeferred()
+        val running = launch { settings.edit(SettingsEdit(memoryChars = 100)) }
+        runCurrent()
+        assertTrue(settings.state.value!!.busy)
+
+        settings.open()
+
+        val ui = settings.state.value!!
+        assertTrue("the write still runs", ui.busy)
+        assertNull(ui.confirmRemove)
+        assertNull(ui.confirmProvider)
+        assertEquals("the open sent nothing to the core", emptyList<Any>(), core.calls)
+        assertEquals(1, reads())
+        assertEquals(1, aboutReads)
+        assertEquals(1, connectedReads)
+        settings.edit(SettingsEdit(approvalTimeoutS = 9))
+        readReply = MEMORY_100
+        writeGate!!.complete(Unit)
+        running.join()
+
+        val after = settings.state.value!!
+        assertFalse(after.busy)
+        assertEquals("the write's result landed", 100, after.config?.memoryChars)
+        assertNull(after.outcome)
+        assertEquals(1, writes().size)
+        assertEquals(2, reads())
+    }
+
+    @Test
+    fun anOpenThatEndsAfterAnotherShowedThePageLeavesTheWriteOnItBusy() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        readGate = gate
+        val first = launch { settings.open() }
+        runCurrent()
+        assertNull("the first open waits in its read", settings.state.value)
+        settings.open()  // the second tap reads ungated and shows the page
+        writeGate = CompletableDeferred()
+        val running = launch { settings.edit(SettingsEdit(memoryChars = 100)) }
+        runCurrent()
+        assertTrue(settings.state.value!!.busy)
+
+        gate.complete(Unit)
+        first.join()
+
+        assertTrue("the first open's late read left the running write busy", settings.state.value!!.busy)
+        settings.edit(SettingsEdit(approvalTimeoutS = 9))
+        readReply = MEMORY_100
+        writeGate!!.complete(Unit)
+        running.join()
+        val ui = settings.state.value!!
+        assertFalse(ui.busy)
+        assertEquals(100, ui.config?.memoryChars)
+        assertEquals(1, writes().size)
+    }
+
+    @Test
+    fun aReReadOfTheOpenPageLetsNoWriteStartOnWhatItReplaces() = runTest {
+        settings.open()
+        val gate = CompletableDeferred<Unit>()
+        readGate = gate
+        readReply = DEFAULT_READ.replace("\"approvals_timeout_s\":300", "\"approvals_timeout_s\":120")
+        val again = launch { settings.open() }
+        runCurrent()
+
+        assertTrue("the page re-reads busy", settings.state.value!!.busy)
+        settings.edit(SettingsEdit(memoryChars = 100))
+        settings.askRemove("docker *")
+        gate.complete(Unit)
+        again.join()
+
+        val ui = settings.state.value!!
+        assertFalse(ui.busy)
+        assertEquals(120, ui.config?.approvalTimeoutS)
+        assertEquals("no write started on the replaced snapshot", emptyList<Any>(), writes())
+        assertNull(ui.confirmRemove)
+    }
+
+    @Test
+    fun aCancelledReReadLeavesThePageIdleAsItWas() = runTest {
+        settings.open()
+        val gate = CompletableDeferred<Unit>()
+        readGate = gate
+        val again = launch { settings.open() }
+        runCurrent()
+        assertTrue("the page re-reads busy", settings.state.value!!.busy)
+
+        again.cancel()
+        again.join()
+
+        val ui = settings.state.value!!
+        assertFalse("a cancelled re-read leaves the page idle", ui.busy)
+        assertEquals(CFG, ui.config)
+        assertNull(ui.error)
+        assertNull(ui.outcome)
+        settings.edit(SettingsEdit(memoryChars = 100))
+        assertEquals(1, writes().size)
+    }
+
+    @Test
+    fun aPageClosedWhileItReReadsStaysClosed() = runTest {
+        settings.open()
+        val gate = CompletableDeferred<Unit>()
+        readGate = gate
+        val again = launch { settings.open() }
+        runCurrent()
+
+        settings.close()
+        gate.complete(Unit)
+        again.join()
+
+        assertNull("a page closed while it re-read stays closed", settings.state.value)
+    }
+
     // Providers (F10): listed when the page opens; a removal asks first and goes through provider setup's one forget path.
 
     @Test
@@ -631,6 +751,7 @@ class SettingsControlTest {
         val ENDPOINT = ConnectedProvider("dgx", "DGX", removable = false, current = false)
         val ROWS = listOf(NOUS, COPILOT, ENDPOINT)
 
+        val MEMORY_100 = DEFAULT_READ.replace("\"memory_char_limit\":2200", "\"memory_char_limit\":100")  // a write's re-read
         val CFG = ConfigSettings(300, listOf("git status", "docker *"), true, true, 2200, 1375,
                                  listOf(Personality("helpful", "You are a helpful, friendly AI assistant."),
                                         Personality("concise", "You are a concise assistant. Keep responses brief a...")))
