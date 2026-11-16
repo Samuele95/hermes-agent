@@ -262,7 +262,10 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
 
     /** The runtime id of the core session this chat sends to (the id its frames carry, never a drawer row's key); the chat must be open. */
     val sessionId: RuntimeSessionId
-        get() = checkNotNull(synchronized(lock) { live.ref?.runtime }) { "open() the chat first" }
+        get() = checkNotNull(openSessionId) { "open() the chat first" }
+
+    /** The runtime id of the chat's core session, or null before the first `open()` (the model picker's read, D12). */
+    val openSessionId: RuntimeSessionId? get() = synchronized(lock) { live.ref?.runtime }
 
     init {
         // Collect before the first request: the core does not replay events.

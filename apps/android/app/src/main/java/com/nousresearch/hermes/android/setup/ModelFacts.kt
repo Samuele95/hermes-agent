@@ -113,9 +113,11 @@ fun ProviderFacts.asOf(nowMs: Long): ProviderFacts {
                 is UsageWindow.Unavailable, is UsageWindow.Unknown -> line
             }
         },
-        models = models.mapValues { (_, facts) -> facts.copy(resetsAt = facts.resetsAt?.takeIf(live)) }
-            .filterValues { it != ModelFacts() })
+        models = models.mapValues { (_, facts) -> facts.asOf(nowMs) }.filterValues { it != ModelFacts() })
 }
+
+/** This model's facts as of a later clock [nowMs]: a reset already past is dropped, as [ProviderFacts.asOf] drops it. */
+fun ModelFacts.asOf(nowMs: Long): ModelFacts = copy(resetsAt = resetsAt?.takeIf(liveAt(nowMs)))
 
 private val ProviderUsageWindow.percent: Int get() = usedPercent.roundToInt().coerceIn(0, 100)
 

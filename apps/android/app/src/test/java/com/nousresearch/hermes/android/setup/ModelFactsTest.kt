@@ -181,6 +181,18 @@ class ModelFactsTest {
         assertTrue(facts("""["a"]""", """"limit":{"scope":"account","resets_at":"after lunch"}""").asOf(later).limited)
     }
 
+    /** One model's facts as of a later clock, by the same rule (the chat's picker reads one row at a time, models-08). */
+    @Test
+    fun aModelsPassedResetIsDroppedAsOfALaterClock() {
+        val flash = ModelFacts(resetsAt = "2026-11-15T09:00:00Z")
+        assertEquals("ahead of the clock: kept", flash, flash.asOf(NOW))
+        assertEquals("past: dropped", ModelFacts(), flash.asOf(NOW + 2 * 3_600_000L))
+        val priced = ModelFacts(input = "$1.00", output = "$2.00", locked = true, resetsAt = "2026-11-15T09:00:00Z")
+        assertEquals("only the reset goes", ModelFacts(input = "$1.00", output = "$2.00", locked = true), priced.asOf(NOW + 2 * 3_600_000L))
+        val unreadable = ModelFacts(resetsAt = "after lunch")
+        assertEquals("an unreadable time stands", unreadable, unreadable.asOf(NOW + 2 * 3_600_000L))
+    }
+
     /** The same reset reads against the clock it is given: tomorrow's loses its date once the clock reaches that day (improve #8). */
     @Test
     fun aResetReadsAgainstTheClockItIsGiven() {
