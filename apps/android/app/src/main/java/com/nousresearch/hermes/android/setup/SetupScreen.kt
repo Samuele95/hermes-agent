@@ -20,9 +20,12 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -44,11 +47,13 @@ import com.nousresearch.hermes.android.ui.CodeFont
 import com.nousresearch.hermes.android.ui.Chevron
 import com.nousresearch.hermes.android.ui.Hermes
 import com.nousresearch.hermes.bridge.contract.ServerKind
+import kotlinx.coroutines.delay
 
 /**
  * Provider setup: pick a provider, paste its key when it needs one, pick a model; or find a model server by its address
  * (or on the Wi-Fi network), pick one of its models, and edit or delete the endpoints saved before. A typed model id goes
- * to [onCustomModel]. Stateless but for the fields.
+ * to [onCustomModel]. Stateless but for the fields. [now]: the wall clock the core's reset times are read against, as
+ * `ProviderSetup`'s (a test passes its own).
  */
 @Composable
 fun SetupScreen(setup: Setup, onPick: (String) -> Unit, onKey: (ByteArray) -> Unit, onModel: (String, Boolean) -> Unit,
@@ -56,7 +61,8 @@ fun SetupScreen(setup: Setup, onPick: (String) -> Unit, onKey: (ByteArray) -> Un
                 onEndpoint: (name: String, baseUrl: String, model: String, key: ByteArray?) -> Unit = { _, _, _, _ -> },
                 onOpenUrl: (String) -> Unit = {}, onForget: () -> Unit = {},
                 onFindServer: (address: String, key: ByteArray?, model: String) -> Unit = { _, _, _ -> }, onSearchNetwork: () -> Unit = {},
-                onEditEndpoint: (String) -> Unit = {}, onDeleteEndpoint: (String) -> Unit = {}, onCustomModel: (String) -> Unit = {}) {
+                onEditEndpoint: (String) -> Unit = {}, onDeleteEndpoint: (String) -> Unit = {}, onCustomModel: (String) -> Unit = {},
+                now: () -> Long = System::currentTimeMillis) {
     val step = setup.step
     // The provider list is the first page (the brand mark heads it, as the desktop's first run); later steps go back.
     val first = step is SetupStep.Loading || step is SetupStep.Providers
@@ -93,7 +99,7 @@ fun SetupScreen(setup: Setup, onPick: (String) -> Unit, onKey: (ByteArray) -> Un
             }
             is SetupStep.Key -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) { KeyField(step.provider, enabled = !setup.busy, onKey) }
             is SetupStep.Models -> {
-                ModelPicker(step.provider, setup, onModel, onCustomModel, onClose, Modifier.weight(1f))
+                ModelPicker(step.provider, setup, onModel, onCustomModel, onClose, now, Modifier.weight(1f))
                 if (step.keyHeld) {
                     TextButton(onForget, Modifier.testTag("forget-key"), enabled = !setup.busy) {
                         Text(stringResource(R.string.setup_forget_key, step.provider.name), color = MaterialTheme.colorScheme.error)
@@ -223,16 +229,29 @@ private fun kindLabel(kind: ServerKind): String = stringResource(when (kind) {
     ServerKind.SERVER -> R.string.setup_kind_server
 })
 
+/** How often an open picker reads the wall clock again (improve #8): a reset it shows is at most this stale. */
+private const val CLOCK_TICK_MS = 60_000L
+
 /**
  * The provider's models to pick from, each with what the core says about it (its price, a Pro lock, its own reset), under
  * the provider's notes; a locked model's tap explains the lock and chooses nothing. The ids the user added follow, then
  * "Add custom model…"; with neither a catalog nor added ids, the field shows at once. The core's note on a typed id it
- * took shows with Done ([onDone]).
+ * took shows with Done ([onDone]). Its reset times are read against [now], again for each list and every minute.
  */
 @Composable
 private fun ModelPicker(provider: ProviderChoice, setup: Setup, onModel: (String, Boolean) -> Unit, onCustomModel: (String) -> Unit,
-                        onDone: () -> Unit, modifier: Modifier) {
-    val nowMs = remember(provider) { System.currentTimeMillis() }
+                        onDone: () -> Unit, now: () -> Long, modifier: Modifier) {
+    val clock by rememberUpdatedState(now)
+    // The clock the core's reset times are read against: read again for each list shown (a refresh lands as a new
+    // showing, an equal provider too) and every minute while the picker is open, never kept from its first composition.
+    var nowMs by remember(provider, setup.showing) { mutableLongStateOf(clock()) }
+    LaunchedEffect(provider, setup.showing) {
+        while (true) {
+            delay(CLOCK_TICK_MS)
+            nowMs = clock()
+        }
+    }
+    val facts = provider.facts.asOf(nowMs)  // a reset now past ends what it timed (ModelFacts.asOf)
     setup.notice?.let {
         Hint(it, Modifier.testTag("setup-notice"))
         PrimaryButton(stringResource(R.string.setup_done), onDone, Modifier.padding(vertical = 8.dp).testTag("setup-done"))
@@ -243,7 +262,7 @@ private fun ModelPicker(provider: ProviderChoice, setup: Setup, onModel: (String
                       enabled = !setup.busy)
     }
     if (provider.models.isEmpty() && provider.custom.isEmpty()) {
-        ProviderNotes(provider, nowMs)
+        ProviderNotes(provider.name, facts, nowMs)
         // The core lists no models for this provider: the user names one.
         CustomModelField(provider, setup, onCustomModel)
     } else {
@@ -252,18 +271,18 @@ private fun ModelPicker(provider: ProviderChoice, setup: Setup, onModel: (String
         LazyColumn(modifier) {
             item {
                 SectionCaption(provider.name, Modifier.padding(top = 0.dp))
-                ProviderNotes(provider, nowMs)
+                ProviderNotes(provider.name, facts, nowMs)
             }
             items(provider.models, key = { it }) { model ->
-                val facts = provider.facts.models[model] ?: ModelFacts()
-                ListRow(model, Modifier.testTag("model-$model"), detail = detailOf(facts, nowMs), enabled = !setup.busy,
-                        trailing = if (facts.locked) {
+                val modelFacts = facts.models[model] ?: ModelFacts()
+                ListRow(model, Modifier.testTag("model-$model"), detail = detailOf(modelFacts, nowMs), enabled = !setup.busy,
+                        trailing = if (modelFacts.locked) {
                             {
                                 Text(stringResource(R.string.setup_pro).uppercase(), Modifier.testTag("pro-$model"),
                                      style = MaterialTheme.typography.labelSmall, color = Hermes.colors.textTertiary)
                             }
                         } else null) {
-                    if (facts.locked) explained = model else onModel(model, false)
+                    if (modelFacts.locked) explained = model else onModel(model, false)
                 }
                 if (explained == model) Hint(stringResource(R.string.setup_pro_needs), Modifier.testTag("pro-explained"))
             }
@@ -303,17 +322,16 @@ private fun CustomModelField(provider: ProviderChoice, setup: Setup, onCustomMod
 
 /**
  * The provider's notes above its models, each only when the core reported it: its warning, an account limit, its usage,
- * each account in its own state's words.
+ * each account in its own state's words, as of the picker's clock.
  */
 @Composable
-private fun ProviderNotes(provider: ProviderChoice, nowMs: Long) {
-    val facts = provider.facts
+private fun ProviderNotes(name: String, facts: ProviderFacts, nowMs: Long) {
     if (facts.warning == null && !facts.limited && facts.usage.isEmpty()) return
     Column(Modifier.padding(bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         facts.warning?.let { Hint(it, Modifier.testTag("provider-warning")) }
         if (facts.limited) {
-            Hint(facts.limitedUntil?.let { stringResource(R.string.setup_limited_until, provider.name, resetTime(it, nowMs)) }
-                     ?: stringResource(R.string.setup_limited, provider.name),
+            Hint(facts.limitedUntil?.let { stringResource(R.string.setup_limited_until, name, resetTime(it, nowMs)) }
+                     ?: stringResource(R.string.setup_limited, name),
                  Modifier.testTag("provider-limited"))
         }
         if (facts.usage.isNotEmpty()) {

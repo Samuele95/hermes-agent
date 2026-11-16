@@ -35,6 +35,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.text.SimpleDateFormat
+import java.util.Locale
 
 /** The setup screen shows the core's providers and models and hands a pasted key over without keeping it. */
 @RunWith(AndroidJUnit4::class)
@@ -44,6 +46,7 @@ class SetupScreenTest {
 
     private val deepseek = ProviderChoice("deepseek", "DeepSeek", "DEEPSEEK_API_KEY", ready = false, models = emptyList())
     private val picked = mutableListOf<String>()
+    private var clock: () -> Long = System::currentTimeMillis
 
     private fun show(setup: Setup) = show { setup }
 
@@ -62,10 +65,13 @@ class SetupScreenTest {
                             (model.takeIf { it.isNotBlank() }?.let { " model:$it" } ?: "")
                     },
                     onSearchNetwork = { picked += "search" }, onEditEndpoint = { picked += "edit $it" },
-                    onDeleteEndpoint = { picked += "delete $it" }, onCustomModel = { picked += "custom:$it" })
+                    onDeleteEndpoint = { picked += "delete $it" }, onCustomModel = { picked += "custom:$it" }, now = { clock() })
     }
 
     private val dgx = SavedEndpoint("dgx", "DGX", "http://spark-98d1:11434/v1", "gemma4:12b-it-q8_0", true)
+
+    /** [at] (`yyyy-MM-ddTHH:mm`) on the phone's own wall clock, as the core writes a time with no offset. */
+    private fun local(at: String): Long = SimpleDateFormat("yyyy-MM-dd'T'HH:mm", Locale.ROOT).parse(at)!!.time
 
     @Test
     fun aProviderIsPickedFromTheCoresList() {
@@ -152,6 +158,47 @@ class SetupScreenTest {
         compose.onNodeWithTag("provider-usage")
             .assert(hasText("home: Limited · work: Limited until 2099-01-01 10:00 · old: Sign in again · spare: usage unavailable"))
             .assert(!hasText("% left", substring = true))
+    }
+
+    /**
+     * An open picker reads the clock again every minute and for each list it is shown, so a reset already past no longer
+     * reads as upcoming and tomorrow's loses its date once tomorrow comes (improve #8). No offset: the phone's own wall time.
+     */
+    @Test
+    fun anOpenPickerReadsTheClockAgainSoAPassedResetIsNoLongerUpcoming() {
+        var wall = local("2026-11-15T08:00")
+        clock = { wall }
+        val facts = ProviderFacts(limited = true, limitedUntil = "2026-11-15T09:00:00",
+                                  usage = listOf(UsageWindow.Known("Session", 63, "2026-11-15T09:00:00")),
+                                  models = mapOf("v4" to ModelFacts(resetsAt = "2026-11-15T09:00:00"),
+                                                 "v5" to ModelFacts(resetsAt = "2026-11-16T10:00:00")))
+        val provider = deepseek.copy(ready = true, models = listOf("v4", "v5"), facts = facts)
+        var setup by mutableStateOf(Setup(SetupStep.Models(provider)))
+        show { setup }
+
+        compose.onNodeWithTag("provider-limited")
+            .assert(hasText("DeepSeek hit its usage limit. It resets at 09:00; you can still pick a model for after."))
+        compose.onNodeWithTag("provider-usage").assert(hasText("Session: 37% left, resets 09:00"))
+        compose.onNodeWithTag("model-v4").assert(hasAnyDescendant(hasText("resets 09:00")))
+        compose.onNodeWithTag("model-v5").assert(hasAnyDescendant(hasText("resets 2026-11-16 10:00")))
+
+        // The next morning, the picker still open: nothing shows it before its minute is up.
+        compose.mainClock.autoAdvance = false
+        wall = local("2026-11-16T07:00")
+        compose.mainClock.advanceTimeBy(30_000)
+        compose.onNodeWithTag("provider-limited").assertExists()
+
+        compose.mainClock.advanceTimeBy(31_000)
+        compose.onNodeWithTag("provider-limited").assertDoesNotExist()
+        compose.onNodeWithTag("provider-usage").assert(hasText("Session: usage unavailable"))
+        compose.onNodeWithTag("model-v4").assert(!hasAnyDescendant(hasText("resets ", substring = true)))
+        compose.onNodeWithTag("model-v5").assert(hasAnyDescendant(hasText("resets 10:00")))
+
+        // A list shown again (a new showing, the same facts) reads the clock at once, not at the next minute.
+        wall = local("2026-11-16T11:00")
+        setup = Setup(SetupStep.Models(provider))
+        compose.mainClock.advanceTimeByFrame()
+        compose.onNodeWithTag("model-v5").assert(!hasAnyDescendant(hasText("resets ", substring = true)))
     }
 
     @Test

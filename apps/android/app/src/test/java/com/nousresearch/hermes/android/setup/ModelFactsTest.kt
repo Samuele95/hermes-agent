@@ -150,4 +150,42 @@ class ModelFactsTest {
         assertEquals("02:00", resetTime("2026-11-16T01:00:00+00:00", NOW + 14 * 3_600_000L, ROME))
         assertEquals("10:00", resetTime("2026-11-15T10:00:00", NOW, ROME))
     }
+
+    /** An open picker reads its facts against its own, later clock (improve #8): a reset now past ends what it timed. */
+    @Test
+    fun aResetThePickersClockHasPassedIsNoLongerUpcoming() {
+        val later = NOW + 2 * 3_600_000L  // 10:00Z
+        val account = facts("""["a"]""", """"limit":{"scope":"account","resets_at":"2026-11-15T09:00:00+00:00"},
+            "usage":{"windows":[{"label":"Session","used_percent":63,"resets_at":"2026-11-15T09:00:00+00:00"},
+                                {"label":"Week","used_percent":20,"resets_at":"2026-11-20T00:00:00+00:00"}]}""")
+        assertEquals("as of the clock it was built at, nothing changes", account, account.asOf(NOW))
+        val shown = account.asOf(later)
+        assertFalse(shown.limited)
+        assertNull(shown.limitedUntil)
+        assertEquals(listOf(UsageWindow.Unknown("Session"), UsageWindow.Known("Week", 20, "2026-11-20T00:00:00+00:00")), shown.usage)
+
+        val models = facts("""["a","b","c"]""", """"limit":{"scope":"models","models":{"a":"2026-11-15T09:00:00+00:00",
+            "b":"2026-11-16T10:00:00+00:00","c":"2026-11-15T09:00:00+00:00"}},
+            "pricing":{"c":{"input":"$1.00","output":"$2.00","free":false}}""").asOf(later).models
+        assertNull(models["a"])
+        assertEquals("2026-11-16T10:00:00+00:00", models["b"]?.resetsAt)
+        assertEquals(ModelFacts(input = "$1.00", output = "$2.00"), models["c"])
+
+        val pool = facts("""["a"]""", """"usage":{"accounts":[
+            {"id":"1","label":"home","state":"limited","resets_at":"2026-11-15T09:00:00+00:00"},
+            {"id":"2","label":"old","state":"unavailable"}]}""").asOf(later).usage
+        assertEquals(listOf(UsageWindow.Unknown("home"), UsageWindow.Unavailable("old")), pool)
+
+        // A limit with no time, or one the app cannot read, stands: the core has not said it is over.
+        assertTrue(facts("""["a"]""", """"limit":{"scope":"account"}""").asOf(later).limited)
+        assertTrue(facts("""["a"]""", """"limit":{"scope":"account","resets_at":"after lunch"}""").asOf(later).limited)
+    }
+
+    /** The same reset reads against the clock it is given: tomorrow's loses its date once the clock reaches that day (improve #8). */
+    @Test
+    fun aResetReadsAgainstTheClockItIsGiven() {
+        val at = "2026-11-16T10:00:00+00:00"  // 11:00 in Rome, tomorrow
+        assertEquals("2026-11-16 11:00", resetTime(at, NOW, ROME))
+        assertEquals("11:00", resetTime(at, NOW + 16 * 3_600_000L, ROME))  // 01:00 in Rome on the 16th: the same day
+    }
 }

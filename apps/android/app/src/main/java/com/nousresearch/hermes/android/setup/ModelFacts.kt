@@ -54,6 +54,9 @@ data class ProviderFacts(val warning: String? = null, val limited: Boolean = fal
     }
 }
 
+/** Whether the core's ISO time [at] is still ahead of [nowMs]; absent or unreadable stands (the core has not said it is over). */
+private fun liveAt(nowMs: Long): (String?) -> Boolean = { at -> at == null || (epochMs(at)?.let { it > nowMs } ?: true) }
+
 /**
  * The facts in [row], as of the wall clock [nowMs]. Total: a field it cannot read is absent.
  * - A blank warning is none.
@@ -67,7 +70,7 @@ data class ProviderFacts(val warning: String? = null, val limited: Boolean = fal
  *   accounts, the live windows show tightest first; a rolled-over one is dropped.
  */
 fun ProviderFacts.Companion.of(row: ModelOptionProvider, nowMs: Long): ProviderFacts {
-    val live = { at: String? -> at == null || (epochMs(at)?.let { it > nowMs } ?: true) }
+    val live = liveAt(nowMs)
     val limit = row.limit
     val limited = limit?.scope == "account" && live(limit.resetsAt)
     val locked = row.unavailableModels.orEmpty().toSet()
@@ -87,6 +90,31 @@ fun ProviderFacts.Companion.of(row: ModelOptionProvider, nowMs: Long): ProviderF
     }
     return ProviderFacts(warning = row.warning?.trim()?.takeIf { it.isNotEmpty() }, limited = limited,
                          limitedUntil = limit?.resetsAt.takeIf { limited }, usage = usage, models = models)
+}
+
+/**
+ * These facts as of a later wall clock [nowMs], by [of]'s own rule, so an open picker never shows a reset already past
+ * as upcoming (improve #8; Desktop judges `providerLimit` / `poolUsage` against `Date.now()` at each render):
+ * - an account limit whose time has passed is no limit;
+ * - a model's passed reset is dropped (a model left with no fact drops out, as in [of]);
+ * - a usage line whose reset has passed reads not known: a passed reset is not fresh quota, and these lines do not
+ *   say whether they are a pool's accounts (whose line must stay) or the provider's windows.
+ * Absent or unreadable times stand, as in [of]. A new value: these facts are never patched (EJ-17).
+ */
+fun ProviderFacts.asOf(nowMs: Long): ProviderFacts {
+    val live = liveAt(nowMs)
+    val over = limited && !live(limitedUntil)
+    return ProviderFacts(
+        warning = warning, limited = limited && !over, limitedUntil = limitedUntil.takeIf { !over },
+        usage = usage.map { line ->
+            when (line) {
+                is UsageWindow.Known -> if (live(line.resetsAt)) line else UsageWindow.Unknown(line.label)
+                is UsageWindow.Limited -> if (live(line.resetsAt)) line else UsageWindow.Unknown(line.label)
+                is UsageWindow.Unavailable, is UsageWindow.Unknown -> line
+            }
+        },
+        models = models.mapValues { (_, facts) -> facts.copy(resetsAt = facts.resetsAt?.takeIf(live)) }
+            .filterValues { it != ModelFacts() })
 }
 
 private val ProviderUsageWindow.percent: Int get() = usedPercent.roundToInt().coerceIn(0, 100)
