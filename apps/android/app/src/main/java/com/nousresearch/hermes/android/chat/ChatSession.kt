@@ -69,6 +69,7 @@ import java.util.concurrent.atomic.AtomicLong
  * one, nothing is exported.
  * [log] hears what the chat notes for diagnosis only, never shown: a drained queue item the core put in its own queue
  * (/architect #5); it must not throw.
+ * [clock] is the wall clock (epoch ms) a message's time and a turn's length are read from; tests fix it.
  */
 class ChatSession(private val core: CoreGateway, private val turns: TurnHost, private val scope: CoroutineScope,
                   private val keepSecret: suspend (name: String, value: ByteArray) -> Unit,
@@ -78,7 +79,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
                   private val queues: QueueStore = QueueStore.inMemory(),
                   private val providerFailed: suspend () -> Unit = {},
                   private val exporter: suspend (StoredSessionId) -> ExportFile = { throw SetupRefusal(NOTHING_TO_EXPORT) },
-                  private val log: (String) -> Unit = {}) {
+                  private val log: (String) -> Unit = {}, private val clock: () -> Long = System::currentTimeMillis) {
     companion object {
         /** The session's source, which is also the agent's platform; "android" keeps the CLI toolsets. */
         const val SOURCE = "android"
@@ -127,12 +128,13 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
 
         /**
          * The queue's head on its way, when nothing runs or is about to, in a session the chat may write to: its bubble
-         * and its leaving the queue in one value, with its words to send; else this and null (inv. 3, inv. 4).
+         * (sent [at], epoch ms: the time it went out) and its leaving the queue in one value, with its words to send;
+         * else this and null (inv. 3, inv. 4).
          */
-        fun draining(): Pair<Live, String?> {
+        fun draining(at: Long): Pair<Live, String?> {
             if (chat.busy || chat.compressing || chat.runOwned) return this to null
             val (item, rest) = queue.next() ?: return this to null
-            return copy(chat = chat.sent(item.text), queue = rest) to item.text
+            return copy(chat = chat.sent(item.text, at), queue = rest) to item.text
         }
 
         /**
@@ -140,10 +142,11 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
          * completed the head goes out ([draining]; Desktop drains whenever idle and not parked, so a missed edge cannot
          * strand it, `use-composer-queue.ts:580-594`); after anything else (a refused prompt, a late refusal, a notice
          * since) it pauses, so Resume shows (DC-M6). Busy, paused, or nothing but the edited item: this and null.
+         * [at] is the time a head that goes out is sent.
          */
-        fun settled(): Pair<Live, String?> = when {
+        fun settled(at: Long): Pair<Live, String?> = when {
             ref == null || chat.busy || queue.next() == null -> this to null
-            chat.endedComplete -> draining()
+            chat.endedComplete -> draining(at)
             else -> paused() to null
         }
 
@@ -187,7 +190,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         var drained: String? = null
         val (before, after, toSave) = synchronized(lock) {
             val before = live
-            live = next(before).settled().let { (settled, text) -> drained = text; settled }
+            live = next(before).settled(clock()).let { (settled, text) -> drained = text; settled }
             shown.value = live.chat
             shownQueue.value = live.queue
             Triple(before, live, recordQueue(before, live))
@@ -590,11 +593,11 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
                 now.chat.runOwned -> now.copy(chat = now.chat.notice(RUN_STILL_OWNED))  // viewing only: nothing goes out (V5)
                 busySend != null -> {
                     session = ref.runtime; correction = now.chat.nextId to busySend
-                    now.copy(chat = now.chat.correcting(text, busySend))  // the user's words at once (inv. 2)
+                    now.copy(chat = now.chat.correcting(text, busySend, clock()))  // the user's words at once (inv. 2)
                 }
                 now.chat.running && now.chat.busyMode == BusyMode.QUEUE && now.chat.queueable -> now.queued(text)  // the app's queue (M2's D3)
                 now.chat.busy -> now
-                else -> { session = ref.runtime; now.copy(chat = now.chat.sent(text)) }
+                else -> { session = ref.runtime; now.copy(chat = now.chat.sent(text, clock())) }
             }
         }
         val to = session ?: return  // V5: a second tap before the turn started
@@ -708,7 +711,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
             if (now.ref?.runtime != session || again?.index != target.index || again.text != target.text) now
             else {
                 shownBefore = now.chat.entries
-                now.copy(chat = (if (rowId != null) now.chat.rewound(target) else now.chat).sent(target.text))
+                now.copy(chat = (if (rowId != null) now.chat.rewound(target) else now.chat).sent(target.text, clock()))
             }
         }
         val before = shownBefore ?: return
@@ -855,7 +858,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         change { now ->
             val ref = now.ref ?: return@change now
             val queue = step(now.queue) ?: return@change now
-            now.copy(queue = queue).draining().let { (next, text) -> text?.let { drained = ref.runtime to it }; next }
+            now.copy(queue = queue).draining(clock()).let { (next, text) -> text?.let { drained = ref.runtime to it }; next }
         }
         drained?.let { (session, text) -> scope.launch { submit(session, text, queued = true) } }
     }
@@ -874,7 +877,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
             if (ref == null || item == null || now.queue.editing == id || mode == null) now
             else {
                 steer = Triple(ref.runtime, now.chat.nextId, item.text to mode)
-                now.copy(chat = now.chat.correcting(item.text, mode), queue = now.queue.removed(id).copy(paused = false))
+                now.copy(chat = now.chat.correcting(item.text, mode, clock()), queue = now.queue.removed(id).copy(paused = false))
             }
         }
         val (session, bubble, words) = steer ?: return
@@ -925,13 +928,13 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         var drained: String? = null  // the queue's head, sent as this turn ends
         val (before, after) = change { now ->
             if (now.ref?.runtime != session) now
-            else now.copy(ref = now.ref.seen(event), chat = now.chat.reduce(event)).withdrawn()
+            else now.copy(ref = now.ref.seen(event), chat = now.chat.reduce(event, clock)).withdrawn()
                 .also { reply = it.chat.entries.lastOrNull() as? Entry.Reply }.resettled()
                 .let { next ->
                     // The turn's end is busy going false, with or without a running edge (D1); decided here, once (inv. 3).
                     when {
                         !now.chat.busy || next.chat.busy -> next  // not this turn's end, or a resend took it (D6)
-                        next.chat.endedComplete -> next.draining().also { drained = it.second }.first
+                        next.chat.endedComplete -> next.draining(clock()).also { drained = it.second }.first
                         else -> next.paused()  // stopped, failed, an error frame
                     }
                 }

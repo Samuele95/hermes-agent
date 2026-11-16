@@ -8,6 +8,10 @@ import com.nousresearch.hermes.bridge.protocol.SessionCompressResult
 import com.nousresearch.hermes.bridge.protocol.TranscriptMessage
 import com.nousresearch.hermes.bridge.protocol.TurnStatus
 import com.nousresearch.hermes.bridge.protocol.Usage
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
 /** One item of a chat's transcript. */
@@ -22,19 +26,81 @@ sealed interface Entry {
      * The user's words; [rowId] is the core's durable row for them once the core names it (null: unproven, never "none").
      * [mode]: the busy mode they were sent by while a turn ran, a correction (null: a prompt); [correction]: the core's
      * answer to it once it came.
+     * [at]: when the user sent it, epoch ms: the core's row time for a stored row, the app's clock at the send for a live
+     * one; null: not known.
      */
     data class User(val text: String, val rowId: Long? = null, override val stableId: Long, val mode: BusyMode? = null,
-                    val correction: Correction? = null) : Entry
+                    val correction: Correction? = null, val at: Long? = null) : Entry
 
     /** The agent's commentary between tool calls, sealed as its own segment while its turn runs on (not its answer). */
     data class Interim(val text: String, override val stableId: Long) : Entry
 
-    /** The agent's answer; [reasoning] is the model's reasoning for it, when the core shows reasoning. */
+    /**
+     * The agent's answer; [reasoning] is the model's reasoning for it, when the core shows reasoning.
+     * [rowId]: the core's durable row for it, from the completion's `persisted_turn` or the stored row (null: unproven,
+     * as [User.rowId]). [at]: when it completed, epoch ms: the core's row time for a stored row, the app's clock at the
+     * completion for a live one; null: not known. [tookMs]: the turn's length on the app's clock, only for a turn whose
+     * `message.start` this process saw (invariant 7, bet 16); null otherwise. [reactions]: the user's own, as the core
+     * stored them (D4, D51).
+     */
     data class Reply(val text: String, val status: TurnStatus, val error: String? = null, val reasoning: String? = null,
-                     override val stableId: Long) : Entry
+                     override val stableId: Long, val rowId: Long? = null, val at: Long? = null, val tookMs: Long? = null,
+                     val reactions: List<Reaction> = emptyList()) : Entry
 
+    /**
+     * A tool the agent called, [summary] what the core said of it once [done]. Its detail, as `tool.start` /
+     * `tool.complete` or the stored row carried it, lives here so every copy of the chat shares it (EJ-17): [args] the
+     * arguments the agent sent (the completion's when it named them: the truth); [result] its output as the core sent it,
+     * JSON text for a structured one, at most [RESULT_CAP] (invariant 6; null: none came, or the history did not keep
+     * it); [diff] the edit it made (null: none); [durationS] how long it ran, in the core's seconds (null: not measured,
+     * as for a stored row); [failed] the core's own rule said it failed ([failedOf]).
+     */
     data class Tool(val id: String, val name: String, val summary: String? = null, val done: Boolean = false,
-                    override val stableId: Long) : Entry
+                    override val stableId: Long, val args: JsonObject? = null, val result: String? = null, val diff: String? = null,
+                    val durationS: Double? = null, val failed: Boolean = false) : Entry {
+        /** The output is here to show: a live completion always carries one; the history keeps it for a few tools only (D6). */
+        val resultKept: Boolean get() = result != null
+
+        companion object {
+            /** The most of a tool's output a row keeps, in UTF-8 bytes, [TRIMMED] included (invariant 6, DC-P5). */
+            const val RESULT_CAP = 32 * 1024
+
+            /** What ends an output cut at [RESULT_CAP] (D8). */
+            const val TRIMMED = "\n\n… output trimmed"
+
+            /**
+             * The core's [result] as the row keeps it: a string as it is, anything else as its compact JSON text (EJ-62);
+             * over [RESULT_CAP] it is cut on a character boundary and ends with [TRIMMED]. Null or JSON null: null.
+             */
+            fun resultOf(result: JsonElement?): String? {
+                if (result == null || result is JsonNull) return null
+                val text = (result as? JsonPrimitive)?.takeIf { it.isString }?.content ?: result.toString()
+                val bytes = text.encodeToByteArray()
+                if (bytes.size <= RESULT_CAP) return text
+                var cut = RESULT_CAP - TRIMMED.encodeToByteArray().size
+                while (cut > 0 && (bytes[cut].toInt() and 0xC0) == 0x80) cut--  // never into a character
+                return bytes.decodeToString(0, cut) + TRIMMED
+            }
+
+            /**
+             * The core's [result] says the call failed, by the core's own rule (`tool_progress._tool_result_needs_user`, D7):
+             * `success` or `ok` false, a non-blank `error`, or a non-zero integer `exit_code`. The result is an object,
+             * or a string holding one (a stored row's raw content); anything else did not fail.
+             */
+            fun failedOf(result: JsonElement?): Boolean {
+                val fields = when (result) {
+                    is JsonObject -> result
+                    is JsonPrimitive -> result.takeIf { it.isString }
+                        ?.let { runCatching { Json.parseToJsonElement(it.content) }.getOrNull() } as? JsonObject
+                    else -> null
+                } ?: return false
+                fun isFalse(key: String) = (fields[key] as? JsonPrimitive)?.let { !it.isString && it.content == "false" } == true
+                val error = (fields["error"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+                val code = (fields["exit_code"] as? JsonPrimitive)?.takeUnless { it.isString || it is JsonNull }?.content?.toLongOrNull()
+                return isFalse("success") || isFalse("ok") || !error.isNullOrBlank() || (code != null && code != 0L)
+            }
+        }
+    }
 
     /** Something the chat tells the user; [opens] is a place it offers to go (none: words only). */
     data class Notice(val text: String, val opens: NoticeShortcut? = null, override val stableId: Long) : Entry
@@ -64,13 +130,15 @@ data class Retry(val index: Int, val text: String, val rowId: Long?)
  * (inv. 6, bet 8).
  * [wall]: the out-of-credits wall the chat's last failed turn hit, as the core described it; set by a completion
  * carrying `billing`, gone with the next turn that completes, a session switch or Dismiss (inv. 5, DC-M12).
+ * [turnStartedAt]: the app's clock at the `message.start` of the turn now running, as this process saw it; null: no
+ * turn, or one whose start it did not see (a resumed turn), so its reply is not timed (invariant 7).
  */
 data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? = null, val activity: String? = null,
                 val prompts: List<Prompt> = emptyList(), val reasoning: String? = null, val model: String? = null,
                 val todos: TodoList? = null, val meter: ContextMeter? = null, val submitted: Boolean = false,
                 val compressing: Boolean = false, val runOwned: Boolean = false,
                 val nextId: Long = entries.maxOfOrNull { it.stableId + 1 } ?: 0, val busyMode: BusyMode? = null,
-                val offer: IncomingText? = null, val wall: BillingWall? = null) {
+                val offer: IncomingText? = null, val wall: BillingWall? = null, val turnStartedAt: Long? = null) {
     val running: Boolean get() = streaming != null
 
     /** A turn runs or is about to: from the prompt's send to the turn's end (GoF-State; improve #4). */
@@ -99,13 +167,14 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
         busyMode?.takeIf { running && prompts.isEmpty() && !compressing && !runOwned }
             ?.let { if (it == BusyMode.STEER) BusyMode.STEER else BusyMode.INTERRUPT }
 
-    fun sent(text: String): Chat = adding { Entry.User(text, stableId = it) }.copy(submitted = true)
+    /** The user's prompt [text], sent at [at] (epoch ms; null: not known), on its way. */
+    fun sent(text: String, at: Long? = null): Chat = adding { Entry.User(text, stableId = it, at = at) }.copy(submitted = true)
 
     /** The entry [id] leaves the transcript (a correction now waiting in the queue, D10); none leaves the chat as it is. */
     fun without(id: Long): Chat = if (entries.none { it.stableId == id }) this else copy(entries = entries.filterNot { it.stableId == id })
 
-    /** A correction sent by [mode] while the turn runs: the user's words at once, nothing submitted (inv. 2). */
-    fun correcting(text: String, mode: BusyMode): Chat = adding { Entry.User(text, stableId = it, mode = mode) }
+    /** A correction sent by [mode] at [at] (epoch ms) while the turn runs: the user's words at once, nothing submitted (inv. 2). */
+    fun correcting(text: String, mode: BusyMode, at: Long? = null): Chat = adding { Entry.User(text, stableId = it, mode = mode, at = at) }
 
     /** The correction [id] takes the core's [outcome]; no such entry leaves the chat as it is. */
     fun corrected(id: Long, outcome: Correction): Chat =
@@ -162,11 +231,14 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
     fun restored(messages: List<TranscriptMessage>): Chat =
         transcriptOf(messages, nextId).let { copy(entries = it, nextId = nextId + it.size) }
 
-    /** The chat after one event of its session. A payload the app cannot read leaves it unchanged. */
-    fun reduce(event: CoreEvent): Chat = runCatching { apply(event) }.getOrDefault(this)
+    /**
+     * The chat after one event of its session. A payload the app cannot read leaves it unchanged. [clock] is the wall
+     * clock (epoch ms) a turn's start and a reply's time are read from, once per event that needs it (EJ-5).
+     */
+    fun reduce(event: CoreEvent, clock: () -> Long = System::currentTimeMillis): Chat = runCatching { apply(event, clock) }.getOrDefault(this)
 
-    private fun apply(event: CoreEvent): Chat = when (event.type) {
-        Events.MESSAGE_START.name -> copy(streaming = "", submitted = false)
+    private fun apply(event: CoreEvent, clock: () -> Long): Chat = when (event.type) {
+        Events.MESSAGE_START.name -> copy(streaming = "", submitted = false, turnStartedAt = clock())
         Events.MESSAGE_DELTA.name -> copy(streaming = streaming.orEmpty() + event.decode(Events.MESSAGE_DELTA)!!.text)
         // Commentary beside tool calls: sealed with the core's words, the buffer emptied (never null: the turn runs on).
         Events.MESSAGE_INTERIM.name -> event.decode(Events.MESSAGE_INTERIM)!!.text.trim()
@@ -174,10 +246,19 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
         Events.REASONING_DELTA.name -> copy(reasoning = reasoning.orEmpty() + event.decode(Events.REASONING_DELTA)!!.text)
         // A preview of reasoning the core will not stream: it stands in until the completion's own.
         Events.REASONING_AVAILABLE.name -> if (reasoning.isNullOrEmpty()) copy(reasoning = event.decode(Events.REASONING_AVAILABLE)!!.text) else this
-        Events.MESSAGE_COMPLETE.name -> complete(event.decode(Events.MESSAGE_COMPLETE)!!)
-        Events.TOOL_START.name -> event.decode(Events.TOOL_START)!!.let { start -> adding { Entry.Tool(start.toolId, start.name, stableId = it) } }
+        Events.MESSAGE_COMPLETE.name -> complete(event.decode(Events.MESSAGE_COMPLETE)!!, clock())
+        Events.TOOL_START.name -> event.decode(Events.TOOL_START)!!.let { start ->
+            adding { Entry.Tool(start.toolId, start.name, stableId = it, args = start.args) }
+        }
+        // The completion's args are the truth (a start's todos may be a partial merge, tool_progress.py:297).
         Events.TOOL_COMPLETE.name -> event.decode(Events.TOOL_COMPLETE)!!.let { done ->
-            copy(entries = entries.map { if (it is Entry.Tool && it.id == done.toolId) it.copy(summary = done.summary, done = true) else it })
+            copy(entries = entries.map {
+                if (it is Entry.Tool && it.id == done.toolId) {
+                    it.copy(summary = done.summary, done = true, args = done.args ?: it.args, result = Entry.Tool.resultOf(done.result),
+                            diff = done.inlineDiff?.takeIf { d -> d.isNotBlank() }, durationS = done.durationS,
+                            failed = Entry.Tool.failedOf(done.result))
+                } else it
+            })
                 .planned(done.revision?.let { revision -> done.todos?.let { TodoList.of(it, revision) } })  // an unversioned list is not taken (D3)
         }
         Events.TODO_UPDATED.name -> event.decode(Events.TODO_UPDATED)!!.let { planned(TodoList.of(it.todos, it.revision)) }
@@ -189,7 +270,8 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
         }
         // The core may end a turn with `error` alone (a refused @-reference, an ownership refusal, a crash), and the
         // TUI treats every `error` as the end of the turn: so does the chat, keeping the message as a notice.
-        Events.ERROR.name -> notice(event.decode(Events.ERROR)!!.message).copy(streaming = null, activity = null, reasoning = null, submitted = false)
+        Events.ERROR.name -> notice(event.decode(Events.ERROR)!!.message)
+            .copy(streaming = null, activity = null, reasoning = null, submitted = false, turnStartedAt = null)
         Events.REQUEST_CANCEL.name -> settled(event.decode(Events.REQUEST_CANCEL)!!.id)
         Events.APPROVAL_CANCELLED.name -> event.decode(Events.APPROVAL_CANCELLED)!!.requestIds.toSet().let { ids ->
             copy(prompts = prompts.filterNot { it is Prompt.Approval && it.requestId in ids })
@@ -197,15 +279,18 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
         else -> this
     }
 
-    private fun complete(done: MessageCompletePayload): Chat {
+    /** The turn's end at [at] (epoch ms): its reply, timed when this process saw the turn start (invariant 7). */
+    private fun complete(done: MessageCompletePayload, at: Long): Chat {
         // The completed text is authoritative; a structured (parts) completion keeps what was streamed.
         val text = (done.text as? JsonPrimitive)?.takeIf { it.isString }?.content ?: streaming.orEmpty()
         val thought = done.reasoning?.takeIf { it.isNotBlank() } ?: reasoning?.takeIf { it.isNotBlank() }
         val status = done.status ?: TurnStatus.COMPLETE
         // A wall describes the last turn: a newer one replaces it, and a turn that completes takes it away; a stopped
         // or otherwise failed turn leaves it (inv. 5, D5).
-        val ended = adding { Entry.Reply(text, status, done.error, thought, it) }
-            .copy(streaming = null, activity = null, reasoning = null, submitted = false,
+        val tookMs = turnStartedAt?.let { started -> (at - started).coerceAtLeast(0) }  // only a start this process saw (inv. 7)
+        val rowId = done.persistedTurn?.finalAssistantRowId
+        val ended = adding { Entry.Reply(text, status, done.error, thought, it, rowId = rowId, at = at, tookMs = tookMs) }
+            .copy(streaming = null, activity = null, reasoning = null, submitted = false, turnStartedAt = null,
                   wall = done.billing?.let { BillingWall.of(it) } ?: wall.takeUnless { status == TurnStatus.COMPLETE })
             .measured(done.usage)
         return done.persistedTurn?.userRowId?.let(ended::boundUser) ?: ended

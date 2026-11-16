@@ -8,8 +8,13 @@ import com.nousresearch.hermes.bridge.protocol.SessionCompressResult
 import com.nousresearch.hermes.bridge.protocol.TurnStatus
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -20,6 +25,12 @@ class ChatTest {
         CoreEvent(type, "s1", payload?.let { Json.parseToJsonElement(it) })
 
     private fun Chat.after(vararg events: CoreEvent): Chat = events.fold(this) { chat, e -> chat.reduce(e) }
+
+    /** The fixed wall clock the timed reduces read (epoch ms); a test moves it on. */
+    private var clockMs = 1_763_300_000_000L
+
+    /** [events] reduced, each read against [clockMs] as it is then. */
+    private fun Chat.timed(vararg events: CoreEvent): Chat = events.fold(this) { c, e -> c.reduce(e) { clockMs } }
 
     private fun Chat.answered(text: String): Chat = after(event("message.start"), event("message.complete", """{"text":"$text","status":"complete"}"""))
 
@@ -42,7 +53,7 @@ class ChatTest {
         val done = streaming.reduce(event("message.complete", """{"text":"Hello","status":"complete"}"""))
 
         assertFalse(done.running)
-        assertEquals(listOf(Entry.User("hi", stableId = 0), Entry.Reply("Hello", TurnStatus.COMPLETE, stableId = 1)), done.entries)
+        assertEquals(listOf(Entry.User("hi", stableId = 0), Entry.Reply("Hello", TurnStatus.COMPLETE, stableId = 1)), done.entries.untimed())
     }
 
     @Test
@@ -90,7 +101,7 @@ class ChatTest {
         val done = reasoning.reduce(event("message.complete", """{"text":"Because.","status":"complete"}"""))
 
         assertEquals(null, done.reasoning)
-        assertEquals(Entry.Reply("Because.", TurnStatus.COMPLETE, reasoning = "Thinking.", stableId = 1), done.entries.last())
+        assertEquals(Entry.Reply("Because.", TurnStatus.COMPLETE, reasoning = "Thinking.", stableId = 1), done.entries.last().untimed())
     }
 
     @Test
@@ -123,7 +134,7 @@ class ChatTest {
         val chat = Chat().after(event("message.start"), event("message.delta", """{"text":"Draft"}"""),
                                 event("message.complete", """{"text":"Final answer"}"""))
 
-        assertEquals(Entry.Reply("Final answer", TurnStatus.COMPLETE, stableId = 0), chat.entries.single())
+        assertEquals(Entry.Reply("Final answer", TurnStatus.COMPLETE, stableId = 0), chat.entries.single().untimed())
     }
 
     @Test
@@ -131,7 +142,7 @@ class ChatTest {
         val chat = Chat().after(event("message.start"), event("message.delta", """{"text":"Streamed"}"""),
                                 event("message.complete", """{"text":[{"type":"text","text":"Streamed"}]}"""))
 
-        assertEquals(Entry.Reply("Streamed", TurnStatus.COMPLETE, stableId = 0), chat.entries.single())
+        assertEquals(Entry.Reply("Streamed", TurnStatus.COMPLETE, stableId = 0), chat.entries.single().untimed())
     }
 
     @Test
@@ -139,7 +150,7 @@ class ChatTest {
         val chat = Chat().after(event("message.start"),
                                 event("message.complete", """{"text":"","status":"error","error":"provider unreachable"}"""))
 
-        assertEquals(Entry.Reply("", TurnStatus.ERROR, error = "provider unreachable", stableId = 0), chat.entries.single())
+        assertEquals(Entry.Reply("", TurnStatus.ERROR, error = "provider unreachable", stableId = 0), chat.entries.single().untimed())
     }
 
     @Test
@@ -258,7 +269,7 @@ class ChatTest {
         assertEquals(listOf(Entry.User("what day is it?", stableId = 0), Entry.Interim("Let me check.", 1),
                             Entry.Tool("t1", "terminal", "Mon 3 Nov", done = true, stableId = 2),
                             Entry.Reply("It is Monday.", TurnStatus.COMPLETE, stableId = 3)),
-                     done.entries)
+                     done.entries.untimed())
         assertFalse(done.running)
     }
 
@@ -312,7 +323,7 @@ class ChatTest {
     fun theCoreNamesThePromptsRowWhenItsTurnCompletes() {
         val named = Chat().sent("hi").after(event("message.start"), event("message.complete",
             """{"text":"Hello","persisted_turn":{"row_ids":[7,8],"complete":true,"user_row_id":7}}"""))
-        assertEquals(listOf(Entry.User("hi", 7, 0), Entry.Reply("Hello", TurnStatus.COMPLETE, stableId = 1)), named.entries)
+        assertEquals(listOf(Entry.User("hi", 7, 0), Entry.Reply("Hello", TurnStatus.COMPLETE, stableId = 1)), named.entries.untimed())
 
         // A completion without the receipt leaves the prompt unproven.
         val unnamed = Chat().sent("hi").after(event("message.start"), event("message.complete", """{"text":"Hello"}"""))
@@ -418,8 +429,12 @@ class ChatTest {
                                          "args":{"action":"create","schedule":"every 2m","prompt":"Say tick."},
                                          "result":{"success":true,"job_id":"ab12","gateway_running":false}}"""))
 
-        // The reducer is a function of (Chat, event): the gateway's notice is ChatSession's to add (FP, D39 F11).
-        assertEquals(listOf(Entry.Tool("t1", "cronjob_manage", summary = "created", done = true, stableId = 0)), scheduled.entries)
+        // The reducer is a function of (Chat, event): the gateway's notice is ChatSession's to add (FP, D39 F11). The row
+        // keeps the call's detail (P3).
+        assertEquals(listOf(Entry.Tool("t1", "cronjob_manage", summary = "created", done = true, stableId = 0,
+                                       args = Json.parseToJsonElement("""{"action":"create","schedule":"every 2m","prompt":"Say tick."}""").jsonObject,
+                                       result = """{"success":true,"job_id":"ab12","gateway_running":false}""")),
+                     scheduled.entries)
         assertEquals(Chat(listOf(Entry.Notice("x", null, 0))), Chat().notice("x"))
     }
 
@@ -589,5 +604,120 @@ class ChatTest {
         assertEquals(nous.entries, dismissed.entries)
         val plain = Chat()
         assertSame(plain, plain.withoutWall())
+    }
+
+    /** The tool row [id] of this chat. */
+    private fun Chat.tool(id: String): Entry.Tool = entries.filterIsInstance<Entry.Tool>().single { it.id == id }
+
+    /** A tool [id] named [name] starts and completes with [result] (any JSON value, built as the core sends it). */
+    private fun Chat.toolRan(id: String, name: String, result: String): Chat =
+        after(event("tool.start", """{"tool_id":"$id","name":"$name"}"""),
+              event("tool.complete", buildJsonObject { put("tool_id", id); put("name", name); put("result", result) }.toString()))
+
+    @Test
+    fun aToolRowKeepsTheArgumentsOutputDiffAndDurationTheCoreSent() {
+        val started = Chat().after(event("message.start"),
+                                   event("tool.start", """{"tool_id":"t1","name":"terminal","context":"ls -la","args":{"command":"ls -la"}}"""))
+        val running = started.tool("t1")
+        assertEquals("ls -la", running.args!!["command"]!!.jsonPrimitive.content)
+        assertFalse(running.done)
+        assertNull(running.result)
+        assertFalse(running.resultKept)
+
+        val ran = started.reduce(event("tool.complete", """{"tool_id":"t1","name":"terminal","args":{"command":"ls -la"},"duration_s":0.42,
+                                                            "result":{"output":"a.txt\nb.txt","exit_code":0,"error":null}}""")).tool("t1")
+        assertEquals(0.42, ran.durationS!!, 0.0)
+        assertFalse(ran.failed)
+        assertTrue(ran.resultKept)
+        // A structured result stays readable JSON text, for the row's detail to read (EJ-62).
+        assertEquals("a.txt\nb.txt", Json.parseToJsonElement(ran.result!!).jsonObject["output"]!!.jsonPrimitive.content)
+
+        val patched = started.after(event("tool.start", """{"tool_id":"t2","name":"patch"}"""),
+                                    event("tool.complete", """{"tool_id":"t2","name":"patch","inline_diff":"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-1\n+2",
+                                                              "result":{"success":true}}"""))
+        assertEquals("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-1\n+2", patched.tool("t2").diff)
+        val noOp = started.after(event("tool.start", """{"tool_id":"t2","name":"patch"}"""),
+                                 event("tool.complete", """{"tool_id":"t2","name":"patch","inline_diff":"","result":{"success":true}}"""))
+        assertNull("an empty diff is none", noOp.tool("t2").diff)
+
+        val read = started.after(event("tool.start", """{"tool_id":"t3","name":"web_extract"}"""),
+                                 event("tool.complete", """{"tool_id":"t3","name":"web_extract","result":"plain words"}"""))
+        assertEquals("plain words", read.tool("t3").result)
+    }
+
+    @Test
+    fun aFailedCallIsMarkedByTheCoresOwnRule() {
+        fun failed(json: String) = Entry.Tool.failedOf(Json.parseToJsonElement(json))
+
+        for (json in listOf("""{"output":"","exit_code":1,"error":null}""", """{"error":"boom"}""", """{"success":false}""",
+                            """{"ok":false}""", "\"{\\\"exit_code\\\":2}\"")) assertTrue(json, failed(json))
+        for (json in listOf("""{"output":"ok","exit_code":0,"error":null}""", """{"exit_code":true}""", """{"error":"  "}""",
+                            "\"Error: plain words\"", "null")) assertFalse(json, failed(json))
+
+        val ran = Chat().after(event("tool.start", """{"tool_id":"t1","name":"terminal"}"""),
+                               event("tool.complete", """{"tool_id":"t1","name":"terminal","result":{"output":"","exit_code":1,"error":null}}"""))
+        assertTrue(ran.tool("t1").failed)
+    }
+
+    @Test
+    fun aToolOutputIsCappedAt32KiBAndSaysItWasTrimmed() {
+        val atCap = "a".repeat(32 * 1024)
+        assertEquals("at the cap is not over it", atCap, Chat().toolRan("t1", "terminal", atCap).tool("t1").result)
+
+        val long = Chat().toolRan("t1", "terminal", "a".repeat(40_000)).tool("t1").result!!
+        assertEquals(Entry.Tool.RESULT_CAP, long.encodeToByteArray().size)
+        assertTrue(long.endsWith(Entry.Tool.TRIMMED))
+        assertTrue(long.removeSuffix(Entry.Tool.TRIMMED).all { it == 'a' })
+
+        val wide = Chat().toolRan("t1", "terminal", "é".repeat(20_000)).tool("t1").result!!  // 40 000 bytes of 2-byte characters
+        assertTrue(wide.encodeToByteArray().size <= Entry.Tool.RESULT_CAP)
+        assertFalse("never a split character", '\uFFFD' in wide)
+        assertTrue(wide.endsWith(Entry.Tool.TRIMMED))
+        assertTrue(wide.removeSuffix(Entry.Tool.TRIMMED).all { it == 'é' })
+    }
+
+    @Test
+    fun aReplyTakesItsRowIdTheClocksTimeAndTheLengthOfATurnItSawStart() {
+        val started = Chat().sent("hi", at = clockMs).timed(event("message.start"))
+        assertEquals(1_763_300_000_000, started.turnStartedAt)
+        clockMs += 38_000
+
+        val done = started.timed(event("message.complete", """{"text":"Hello","status":"complete","persisted_turn":{"row_ids":[10,11],
+                                                               "complete":true,"user_row_id":10,"final_assistant_row_id":11}}"""))
+
+        assertEquals(listOf(Entry.User("hi", 10, 0, at = 1_763_300_000_000),
+                            Entry.Reply("Hello", TurnStatus.COMPLETE, stableId = 1, rowId = 11, at = 1_763_300_038_000, tookMs = 38_000)),
+                     done.entries)
+        assertNull(done.turnStartedAt)
+    }
+
+    @Test
+    fun aTurnWhoseStartTheChatDidNotSeeIsNotTimed() {
+        val resumed = Chat(streaming = "").timed(event("message.complete", """{"text":"Hello"}""")).entries.last() as Entry.Reply
+        assertNull("a resumed turn in flight", resumed.tookMs)
+        assertEquals(clockMs, resumed.at)
+
+        val afterError = Chat().timed(event("message.start"), event("error", """{"message":"boom"}"""))
+        assertNull(afterError.turnStartedAt)
+        clockMs += 5_000
+        val late = afterError.timed(event("message.complete", """{"text":"x"}""")).entries.last() as Entry.Reply
+        assertNull("an error ended the turn it timed", late.tookMs)
+
+        val started = Chat().timed(event("message.start"))
+        clockMs += 2_000
+        val stopped = started.timed(event("message.complete", """{"text":"","status":"interrupted"}""")).entries.last() as Entry.Reply
+        assertEquals("a stopped turn ran, so it is timed", 2_000L, stopped.tookMs)
+    }
+
+    @Test
+    fun aPromptAndACorrectionTakeTheTimeTheyWereSent() {
+        assertEquals(5L, (Chat().sent("hi", at = 5L).entries.single() as Entry.User).at)
+        assertNull("no clock given: unknown, never 0", (Chat().sent("hi").entries.single() as Entry.User).at)
+
+        val corrected = Chat().correcting("metric", BusyMode.STEER, at = 6L)
+        val correction = corrected.entries.single() as Entry.User
+        assertEquals(6L, correction.at)
+        assertEquals("a correction sent as a prompt keeps the time it was written", 6L,
+                     (corrected.prompted(correction.stableId).entries.single() as Entry.User).at)
     }
 }
