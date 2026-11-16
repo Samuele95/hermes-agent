@@ -24,7 +24,8 @@ class SkillsControlTest {
         /** The core's `skills_list` answer for [rows]. */
         fun list(rows: List<SkillRow>): String = rows.joinToString(",", """{"skills":[""", "]}") { r ->
             val category = r.category?.let { "\"$it\"" } ?: "null"
-            """{"name":"${r.name}","description":"${r.description}","category":$category,"enabled":${r.enabled}}"""
+            """{"name":"${r.name}","description":"${r.description}","category":$category,"enabled":${r.enabled},""" +
+                """"provenance":"bundled","uses":0}"""
         }
 
         val LIST = list(ROWS)

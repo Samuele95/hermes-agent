@@ -30,6 +30,12 @@
       "llamacpp",
       "vllm",
       "server"
+    ],
+    "Provenance": [
+      "hub",
+      "bundled",
+      "external",
+      "agent"
     ]
   },
   "records": {
@@ -72,7 +78,9 @@
       "name": "string",
       "description": "string",
       "category": "string?",
-      "enabled": "boolean"
+      "enabled": "boolean",
+      "provenance": "Provenance",
+      "uses": "integer"
     }
   },
   "calls": {
@@ -375,7 +383,7 @@
       }
     },
     "skills_list": {
-      "summary": "Every skill Hermes can use on this phone, in the core's listing order, with its description, its category (null when it has none) and whether the global skills.disabled list leaves it on.",
+      "summary": "Every skill Hermes can use on this phone, in the core's listing order, with its description, its category (null when it has none), whether the global skills.disabled list leaves it on, where it came from (the REST route's classification: hub, else bundled, else external, else agent) and how often it was used (views, uses and patches, the core's activity_count).",
       "params": {},
       "reply": {
         "skills": "[SkillEntry]"
@@ -400,6 +408,22 @@
         "path": "string",
         "name": "string",
         "bytes": "integer"
+      }
+    },
+    "skills_archived": {
+      "summary": "The skills in skills/.archive/, by archive directory name, sorted (tools.skill_usage.list_archived_skill_names).",
+      "params": {},
+      "reply": {
+        "names": "[string]"
+      }
+    },
+    "skills_restore": {
+      "summary": "Moves an archived skill back as `hermes curator restore` does (tools.skill_usage.restore_skill, as the user) and answers the list re-read; a refused restore is answered in the core's words and moves nothing.",
+      "params": {
+        "name": "string"
+      },
+      "reply": {
+        "skills": "[SkillEntry]"
       }
     }
   },

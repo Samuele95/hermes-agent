@@ -1,5 +1,6 @@
 package com.nousresearch.hermes.android.settings
 
+import com.nousresearch.hermes.bridge.contract.Provenance
 import com.nousresearch.hermes.bridge.contract.SkillEntry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -36,6 +37,6 @@ class SkillGroupTest {
 
     @Test
     fun aRowIsTheBridgesEntryFieldForField() {
-        assertEquals(SkillRow("arxiv", "Search arXiv.", null, false), SkillRow.of(SkillEntry("arxiv", "Search arXiv.", null, false)))
+        assertEquals(SkillRow("arxiv", "Search arXiv.", null, false), SkillRow.of(SkillEntry("arxiv", "Search arXiv.", null, false, Provenance.BUNDLED, 0)))
     }
 }

@@ -87,7 +87,7 @@ class CoreCompositionTest {
                                         "error_message":null,"writer_pid":7,"updated_at":"2026-11-13T00:00:00+00:00"}}"""
                 "cron_warm_delivery_targets" -> { coreCallsAtWarm = core.calls.map { it.first }; "{}" }
                 "settings_read" -> SettingsControlTest.DEFAULT_READ
-                "skills_list" -> """{"skills":[{"name":"arxiv","description":"Search arXiv.","category":"research","enabled":true}]}"""
+                "skills_list" -> """{"skills":[{"name":"arxiv","description":"Search arXiv.","category":"research","enabled":true,"provenance":"bundled","uses":0}]}"""
                 "session_export" -> """{"path":"/data/app-files/cache/exports/session-db1.json","name":"session-db1.json","bytes":42}"""
                 else -> "{}"
             }

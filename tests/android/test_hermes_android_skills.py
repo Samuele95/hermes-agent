@@ -1,9 +1,12 @@
-"""Skills turned on or off through the app's own bridge pair (batch-3 F11, DC-M18; row capabilities-04).
+"""Skills turned on or off, and archived skills restored, through the app's own bridge calls (batch-3 F11,
+DC-M18; batch-4 F10, DC-P20; rows capabilities-04, capabilities-02, capabilities-06).
 
 ``config.set`` has no ``skills.*`` key and ``skills.manage list`` drops disabled skills, so the Skills page reads
-with ``skills_list`` (the REST route's listing: every skill, with the global ``skills.disabled`` answer) and writes
-with ``skills_enable(names, enabled)``: one ``_config.mutate`` (E5), never ``.env``, and never the core's essential
-skills (``agent.skill_utils.ESSENTIAL_SKILLS``), which a request to turn off alone is refused in the core's words.
+with ``skills_list`` (the REST route's listing: every skill, with the global ``skills.disabled`` answer, where it came
+from and how often it was used) and writes with ``skills_enable(names, enabled)``: one ``_config.mutate`` (E5), never
+``.env``, and never the core's essential skills (``agent.skill_utils.ESSENTIAL_SKILLS``), which a request to turn off
+alone is refused in the core's words. ``skills_archived`` / ``skills_restore`` list ``skills/.archive/`` and move a
+skill back as ``hermes curator restore`` does, as the user, refused in the core's words.
 """
 
 from __future__ import annotations
@@ -93,12 +96,16 @@ def _stamp(path):
 
 def test_the_list_is_every_installed_skill_with_its_category_and_state(skills_tree):
     assert _listing() == [
-        {"name": "plain", "description": "A plain skill", "category": None, "enabled": True},
-        {"name": "codex", "description": "Delegate to Codex", "category": "autonomous-ai-agents", "enabled": True},
+        {"name": "plain", "description": "A plain skill", "category": None, "enabled": True,
+         "provenance": "agent", "uses": 0},
+        {"name": "codex", "description": "Delegate to Codex", "category": "autonomous-ai-agents", "enabled": True,
+         "provenance": "agent", "uses": 0},
         {"name": "hermes-agent", "description": "Hermes's own manual", "category": "autonomous-ai-agents",
-         "enabled": True},
-        {"name": "arxiv", "description": "Search arXiv", "category": "research", "enabled": True},
-        {"name": "scholar", "description": "Search Scholar", "category": "research", "enabled": True},
+         "enabled": True, "provenance": "agent", "uses": 0},
+        {"name": "arxiv", "description": "Search arXiv", "category": "research", "enabled": True,
+         "provenance": "agent", "uses": 0},
+        {"name": "scholar", "description": "Search Scholar", "category": "research", "enabled": True,
+         "provenance": "agent", "uses": 0},
     ]
 
 
@@ -226,3 +233,120 @@ def test_a_write_waits_for_the_apps_config_lock(skills_tree):
     raw = _raw()
     assert "a" in raw["providers"]
     assert raw["skills"]["disabled"] == ["arxiv"]
+
+
+# --- provenance and uses (batch-4 F10, row capabilities-02: GET /api/skills's classification) ---
+
+def _provenance_tree(home, tmp_path):
+    """The five seeded local skills, plus: arxiv bundled, codex hub-installed, scholar both (hub wins), one external
+    skill under a skills.external_dirs entry, and usage counts for arxiv and plain."""
+    skills = home / "skills"
+    (skills / ".bundled_manifest").write_text("arxiv:abc123\nscholar:def456\n", encoding="utf-8")
+    (skills / ".hub").mkdir(parents=True, exist_ok=True)
+    (skills / ".hub" / "lock.json").write_text(json.dumps({"installed": {
+        "codex": {"source": "github", "install_path": "autonomous-ai-agents/codex"},
+        "scholar": {"source": "github", "install_path": "research/scholar"}}}), encoding="utf-8")
+    external = tmp_path / "external-skills"
+    _write_skill(external, "tools/mounted", "A mounted skill")
+    (skills / ".usage.json").write_text(json.dumps({
+        "arxiv": {"use_count": 2, "view_count": 3, "patch_count": 1},
+        "plain": {"view_count": 4}}), encoding="utf-8")
+    _seed(home, SEEDED.replace("external_dirs: []", f"external_dirs: [{external}]"))
+
+
+def test_each_skill_says_where_it_came_from_and_how_often_it_was_used(skills_tree, tmp_path):
+    _provenance_tree(skills_tree, tmp_path)
+
+    rows = {row["name"]: row for row in _listing()}
+
+    assert {name: row["provenance"] for name, row in rows.items()} == {
+        "plain": "agent", "codex": "hub", "hermes-agent": "agent", "arxiv": "bundled", "scholar": "hub",
+        "mounted": "external"}
+    assert {name: row["uses"] for name, row in rows.items()} == {
+        "plain": 4, "codex": 0, "hermes-agent": 0, "arxiv": 6, "scholar": 0, "mounted": 0}
+
+
+def test_a_switch_answers_the_same_provenance_and_uses(skills_tree, tmp_path):
+    _provenance_tree(skills_tree, tmp_path)
+
+    rows = {row["name"]: row for row in _enable(["arxiv"], False)["skills"]}
+
+    assert rows["arxiv"]["provenance"] == "bundled" and rows["arxiv"]["uses"] == 6
+    assert rows["arxiv"]["enabled"] is False
+    assert rows["mounted"]["provenance"] == "external"
+
+
+# --- the archive (batch-4 F10, row capabilities-06, DC-P20: hermes curator restore, in-app) ---
+
+def _archived() -> list[str]:
+    return json.loads(hermes_android.call("skills_archived", ""))["names"]
+
+
+def _restore(name: str) -> dict:
+    return json.loads(hermes_android.call("skills_restore", json.dumps({"name": name})))
+
+
+def _archive(name: str):
+    from tools import skill_usage, skills_tool
+
+    skill_usage.mark_agent_created(name)
+    ok, msg = skill_usage.archive_skill(name)
+    assert ok, msg
+    skills_tool.clear_skills_cache()
+
+
+def test_an_archived_skill_is_listed_and_restored_into_the_list(skills_tree):
+    assert _archived() == []
+    _archive("plain")
+
+    assert _archived() == ["plain"]
+    assert "plain" not in {row["name"] for row in _listing()}
+
+    reply = _restore("plain")
+
+    assert "plain" in {row["name"] for row in reply["skills"]}
+    assert (skills_tree / "skills" / "plain" / "SKILL.md").is_file()
+    assert _archived() == []
+
+
+def _tree(path):
+    return sorted(str(p.relative_to(path)) for p in path.rglob("*"))
+
+
+def test_a_name_the_archive_lacks_is_refused_in_the_cores_words_and_moves_nothing(skills_tree):
+    _archive("plain")
+    before = _tree(skills_tree / "skills")
+
+    assert _restore("nope") == {"error": "skill 'nope' not found in archive"}
+
+    assert _tree(skills_tree / "skills") == before
+
+
+def test_a_skill_now_bundled_is_refused_in_the_cores_words_and_moves_nothing(skills_tree):
+    _archive("plain")
+    (skills_tree / "skills" / ".bundled_manifest").write_text("plain:abc\n", encoding="utf-8")
+    before = _tree(skills_tree / "skills")
+
+    assert _restore("plain") == {
+        "error": "skill 'plain' is now bundled; restore would shadow the upstream version"}
+
+    assert _tree(skills_tree / "skills") == before
+    assert _archived() == ["plain"]
+
+
+def test_a_restore_runs_as_the_user_and_the_actor_is_reset_after_a_raise(skills_tree, monkeypatch):
+    from tools import skill_ledger, skill_usage
+
+    seen = []
+
+    def fake(name):
+        seen.append(skill_ledger._actor_override.get())
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(skill_usage, "restore_skill", fake)
+
+    with pytest.raises(RuntimeError):
+        _restore("plain")
+
+    assert seen == ["user"]
+    assert skill_ledger._actor_override.get() is None

@@ -62,6 +62,14 @@ enum class ServerKind {
 }
 
 @Serializable
+enum class Provenance {
+    @SerialName("hub") HUB,
+    @SerialName("bundled") BUNDLED,
+    @SerialName("external") EXTERNAL,
+    @SerialName("agent") AGENT,
+}
+
+@Serializable
 data class FoundServer(
     @SerialName("base_url") val baseUrl: String,
     val kind: ServerKind,
@@ -114,6 +122,8 @@ data class SkillEntry(
     val description: String,
     val category: String?,
     val enabled: Boolean,
+    val provenance: Provenance,
+    val uses: Long,
 )
 
 @Serializable
@@ -414,6 +424,21 @@ data class SessionExportReply(
     val bytes: Long,
 )
 
+@Serializable
+data class SkillsArchivedReply(
+    val names: List<String>,
+)
+
+@Serializable
+data class SkillsRestoreParams(
+    val name: String,
+)
+
+@Serializable
+data class SkillsRestoreReply(
+    val skills: List<SkillEntry>,
+)
+
 /** Every call the app may make into its Python half. */
 object BridgeCalls {
     /** The interpreter facts the app shows, and the core's release date (hermes_cli.__release_date__): the core's version on a phone, where get_version_info() has no stamp and no git and answers 'unknown'. */
@@ -478,12 +503,16 @@ object BridgeCalls {
     val SETTINGS_READ = BridgeCall("settings_read", NoParams.serializer(), SettingsReadReply.serializer())
     /** Changes only the given settings in config.yaml under the app's config lock (null leaves a field as it is; never .env); allowlist_remove takes those patterns out and makes this process stop honouring them at once, the gateway at its next start. applied says whether config.yaml changed; a timeout below 1, a negative limit, or a removal while command_allowlist on disk is not a list of strings is refused in words, with nothing written and nothing reconciled. */
     val SETTINGS_WRITE = BridgeCall("settings_write", SettingsWriteParams.serializer(), SettingsWriteReply.serializer())
-    /** Every skill Hermes can use on this phone, in the core's listing order, with its description, its category (null when it has none) and whether the global skills.disabled list leaves it on. */
+    /** Every skill Hermes can use on this phone, in the core's listing order, with its description, its category (null when it has none), whether the global skills.disabled list leaves it on, where it came from (the REST route's classification: hub, else bundled, else external, else agent) and how often it was used (views, uses and patches, the core's activity_count). */
     val SKILLS_LIST = BridgeCall("skills_list", NoParams.serializer(), SkillsListReply.serializer())
     /** Turns the named skills on or off in config.yaml's global skills.disabled under the app's config lock (never .env), then answers the list re-read; the core's essential skills are never turned off: a request to turn off only those is refused in the core's words, and among others they stay on. */
     val SKILLS_ENABLE = BridgeCall("skills_enable", SkillsEnableParams.serializer(), SkillsEnableReply.serializer())
     /** Writes the stored session's file into the app's cache (TMPDIR/exports/<title>-<id8>.json, replacing the previous export) as the core's GET /api/sessions/{id}/export streams it: the session row, then every message incl. inactive ones, paged by 500; a session with no stored row yet is refused in words and nothing is written. */
     val SESSION_EXPORT = BridgeCall("session_export", SessionExportParams.serializer(), SessionExportReply.serializer())
+    /** The skills in skills/.archive/, by archive directory name, sorted (tools.skill_usage.list_archived_skill_names). */
+    val SKILLS_ARCHIVED = BridgeCall("skills_archived", NoParams.serializer(), SkillsArchivedReply.serializer())
+    /** Moves an archived skill back as `hermes curator restore` does (tools.skill_usage.restore_skill, as the user) and answers the list re-read; a refused restore is answered in the core's words and moves nothing. */
+    val SKILLS_RESTORE = BridgeCall("skills_restore", SkillsRestoreParams.serializer(), SkillsRestoreReply.serializer())
 
     /** The calls that may wait on the network (`blocking` in the contract): EmbeddedPython runs them on their own thread. */
     val BLOCKING: Set<String> = setOf("probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check")

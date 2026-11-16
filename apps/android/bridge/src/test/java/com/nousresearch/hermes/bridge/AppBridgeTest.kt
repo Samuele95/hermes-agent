@@ -145,7 +145,8 @@ class AppBridgeTest {
 
     @Test
     fun aSkillsSwitchSendsItsNamesAndDecodesTheCoresList() = runBlocking {
-        val skills = answering("""{"skills":[{"name":"plain","description":"","category":null,"enabled":false},{"name":"arxiv","description":"Search arXiv.","category":"research","enabled":true}]}""")
+        val skills = answering("""{"skills":[{"name":"plain","description":"","category":null,"enabled":false,"provenance":"agent","uses":0},""" +
+                """{"name":"arxiv","description":"Search arXiv.","category":"research","enabled":true,"provenance":"bundled","uses":6}]}""")
             .ask(BridgeCalls.SKILLS_ENABLE, SkillsEnableParams(listOf("arxiv", "scholar"), false)).skills
 
         val (function, arg) = sent.single()

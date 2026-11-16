@@ -437,3 +437,15 @@ def session_export(arg: str) -> str:
     from hermes_android import export
 
     return export.export(arg)
+
+
+def skills_archived(arg: str) -> str:
+    from hermes_android import skills
+
+    return skills.archived(arg)
+
+
+def skills_restore(arg: str) -> str:
+    from hermes_android import skills
+
+    return skills.restore(arg)
