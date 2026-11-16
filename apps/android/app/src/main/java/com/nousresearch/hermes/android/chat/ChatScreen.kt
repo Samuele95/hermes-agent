@@ -84,6 +84,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nousresearch.hermes.android.R
 import com.nousresearch.hermes.android.entry.IncomingText
+import com.nousresearch.hermes.android.setup.ModelRow
 import com.nousresearch.hermes.android.setup.Readiness
 import com.nousresearch.hermes.android.ui.Hermes
 import com.nousresearch.hermes.android.ui.HermesIcons
@@ -108,6 +109,14 @@ class ExportActions(val export: () -> Unit, val dismiss: () -> Unit)
 class StatusActions(val open: () -> Unit, val close: () -> Unit)
 
 /**
+ * What the chat's model picker does (models-08): [open] it from the pill, [close] it, [query] the field, [addCustom]
+ * turn the field into a model id, [pick] a row (switch this chat to it), [confirm] or [keep] when the core asks first,
+ * and [addProvider] close it and open Setup (where the default model is set).
+ */
+class ModelActions(val open: () -> Unit, val close: () -> Unit, val query: (String) -> Unit, val addCustom: () -> Unit,
+                   val pick: (ModelRow) -> Unit, val confirm: () -> Unit, val keep: () -> Unit, val addProvider: () -> Unit)
+
+/**
  * A chat in the desktop's shape: the transcript is the page, replies flat across it and the user's words in
  * bubbles, the composer at the bottom naming the model, and a drawer with the sessions and the app's other places.
  * It holds only the draft; [onSend] gets the trimmed text, [onRetry] runs the last prompt again. [onSessions] hears the drawer open (load the sessions)
@@ -123,6 +132,8 @@ class StatusActions(val open: () -> Unit, val close: () -> Unit)
  * the composer until dismissed ([onDismissWall]); its action opens the core's page through [onOpenUrl], else setup (models-23).
  * The top bar's ⋮ menu offers Status ([statusActions]; [status] is that sheet while it is open) and Export of the chat's own
  * session ([exportActions]; [exportUi] shows one on its way and a failure's words); without their actions there is no menu.
+ * [models] is this chat's model picker while it is open and [modelActions] what it does: a ready pill opens it; without
+ * them the pill opens setup (models-08).
  * [now] is the wall clock a message's time is read against when a tap shows it (a test passes its own), as `SetupScreen`'s.
  */
 @Composable
@@ -134,7 +145,8 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
                queueActions: QueueActions? = null, onOfferTaken: (IncomingText) -> Unit = {}, readiness: Readiness? = null,
                onCheckReadiness: (() -> Unit)? = null, onOpenUrl: ((String) -> Unit)? = null, onDismissWall: () -> Unit = {},
                exportUi: ExportUi = ExportUi(), exportActions: ExportActions? = null, status: StatusUi? = null,
-               statusActions: StatusActions? = null, now: () -> Long = System::currentTimeMillis) {
+               statusActions: StatusActions? = null, models: PickerUi? = null, modelActions: ModelActions? = null,
+               now: () -> Long = System::currentTimeMillis) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var picked by remember { mutableIntStateOf(0) }  // a conversation picked in the drawer is shown from its end (V5)
@@ -174,10 +186,11 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
             // The messages that wait for a turn's end, in the order they go out (chat-19).
             queueActions?.takeIf { queue.items.isNotEmpty() }?.let { QueuePanel(queue, chat.busy, chat.steerMode != null, it) }
             Composer(chat, onSend, onStop, places?.setup, contextActions?.open, queueActions?.add, chat.offer, onOfferTaken, places?.newChat,
-                     readiness, onCheckReadiness)
+                     readiness, onCheckReadiness, modelActions?.open)
             context?.let { ContextSheet(it, running = chat.busy, compressing = chat.compressing, onCompress = contextActions?.compress ?: {},
                                           onClose = contextActions?.close ?: {}) }
             status?.let { StatusSheet(it, onClose = statusActions?.close ?: {}) }
+            models?.let { ui -> modelActions?.let { ModelSwitchSheet(ui, it, chat.model, now) } }
             exportUi.error?.let { ExportFailed(it, onDismiss = exportActions?.dismiss ?: {}) }
         }
     }
@@ -519,13 +532,13 @@ private fun Problem(text: String, modifier: Modifier = Modifier) {
  * session the chat may write to (D12); in queue mode it is the only send control, and the field says "Queue message".
  * An [offer] another app shared joins the draft once, after the user's own words (D6), and goes back to [onOfferTaken];
  * a strip says nothing is sent until Send, with [onNewChat] beside it, while those words are in the field (bet 8).
- * The model pill carries [readiness]'s mark (none while null); while it is not ready a tap opens the core's words,
- * setup and [onCheckReadiness] instead of setup (D5, D6).
+ * The model pill carries [readiness]'s mark (none while null); a ready pill opens [onModels], this chat's model picker,
+ * else setup; while it is not ready a tap opens the core's words, setup and [onCheckReadiness] (D5, D6).
  */
 @Composable
 private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, onSetup: (() -> Unit)?, onContext: (() -> Unit)?,
                      onQueue: ((String) -> Unit)?, offer: IncomingText?, onOfferTaken: (IncomingText) -> Unit, onNewChat: (() -> Unit)?,
-                     readiness: Readiness?, onCheckReadiness: (() -> Unit)?) {
+                     readiness: Readiness?, onCheckReadiness: (() -> Unit)?, onModels: (() -> Unit)?) {
     var draft by rememberSaveable { mutableStateOf("") }
     var shared by rememberSaveable { mutableStateOf(false) }  // the draft holds words another app shared
     var cut by rememberSaveable { mutableStateOf(false) }
@@ -570,7 +583,7 @@ private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, o
                     val asks = readiness is Readiness.NeedsSetup || readiness is Readiness.Unavailable || readiness == Readiness.Unknown
                     var words by remember { mutableStateOf(false) }
                     val said = readiness?.let { stringResource(stateWord(it)) }
-                    Row(Modifier.clip(CircleShape).clickable { if (asks) words = true else onSetup() }.testTag("open-setup")
+                    Row(Modifier.clip(CircleShape).clickable { if (asks) words = true else (onModels ?: onSetup)() }.testTag("open-setup")
                             .then(said?.let { Modifier.semantics { stateDescription = it } } ?: Modifier)
                             .padding(horizontal = 8.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically) {

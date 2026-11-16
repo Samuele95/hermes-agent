@@ -20,6 +20,10 @@ import com.nousresearch.hermes.android.chat.ExportActions
 import com.nousresearch.hermes.android.chat.ExportUi
 import com.nousresearch.hermes.android.chat.StatusActions
 import com.nousresearch.hermes.android.chat.StatusUi
+import com.nousresearch.hermes.android.chat.ModelActions
+import com.nousresearch.hermes.android.chat.PickerUi
+import com.nousresearch.hermes.android.setup.ModelCatalog
+import com.nousresearch.hermes.android.setup.ModelRow
 import com.nousresearch.hermes.bridge.protocol.ContextCategory
 import com.nousresearch.hermes.bridge.protocol.SessionContextBreakdownResult
 import androidx.compose.ui.test.assert
@@ -1070,6 +1074,39 @@ class ChatScreenTest {
 
         assertEquals(1, opened)
         compose.onNodeWithTag("readiness-words").assertDoesNotExist()
+    }
+
+    @Test
+    fun aReadyPillOpensThisChatsModelPickerAndItsAddProviderOpensSetup() {
+        var opened = 0
+        var setups = 0
+        var ui by mutableStateOf<PickerUi?>(null)
+        var readiness by mutableStateOf<Readiness>(Readiness.Ready("deepseek", "m"))
+        val actions = ModelActions(open = { opened++ }, close = {}, query = {}, addCustom = {}, pick = {}, confirm = {}, keep = {},
+                                   addProvider = { setups++ })
+        compose.setContent {
+            ChatScreen(Chat(model = "kimi-k2"), onSend = {}, places = ChatPlaces(setup = { setups++ }), readiness = readiness,
+                       models = ui, modelActions = actions)
+        }
+
+        compose.onNodeWithTag("open-setup").performClick()
+        assertEquals("a ready pill opens this chat's picker, not setup", 1, opened)
+        assertEquals(0, setups)
+        compose.onNodeWithTag("models-sheet").assertDoesNotExist()
+
+        readiness = Readiness.Unavailable("No usable credentials found for deepseek.")
+        compose.onNodeWithTag("open-setup").performClick()
+        compose.onNodeWithTag("readiness-words").assertTextEquals("No usable credentials found for deepseek.")
+        assertEquals("not ready: the core's words first", 1, opened)
+        assertEquals(0, setups)
+        compose.onNodeWithTag("readiness-setup").performClick()
+        assertEquals("the words' Setup still opens setup", 1, setups)
+
+        readiness = Readiness.Ready("deepseek", "m")
+        ui = PickerUi(catalog = ModelCatalog(listOf(ModelRow("deepseek", "DeepSeek", "deepseek-v4-pro", current = true))))
+        compose.onNodeWithTag("models-sheet").assertExists()
+        compose.onNodeWithTag("models-add-provider").performClick()
+        assertEquals(2, setups)
     }
 
     // The out-of-credits wall above the composer: one way to act and Dismiss, the composer still usable (models-23).

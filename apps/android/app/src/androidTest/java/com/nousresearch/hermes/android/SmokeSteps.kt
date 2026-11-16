@@ -48,7 +48,12 @@ class SmokeSteps(private val compose: ComposeTestRule) {
     fun setUpEndpoint() {
         val baseUrl = requireNotNull(args.getString("baseUrl")) { "no endpoint given: run scripts/smoke.sh" }
         compose.waitUntil(120_000) { shown("setup") || shown("draft") }
-        if (!shown("setup")) compose.onNodeWithTag("open-setup").performClick()
+        if (!shown("setup")) {
+            compose.onNodeWithTag("open-setup").performClick()
+            // A ready pill opens this chat's model picker; its Add provider opens setup (D14).
+            compose.waitUntil(60_000) { shown("setup") || shown("models-add-provider") }
+            if (!shown("setup")) compose.onNodeWithTag("models-add-provider").performClick()
+        }
         compose.waitUntil(60_000) { shown("add-endpoint") }
         compose.onNodeWithTag("add-endpoint").performClick()
         // The model is typed: the field stays editable beside the list Find server fills.

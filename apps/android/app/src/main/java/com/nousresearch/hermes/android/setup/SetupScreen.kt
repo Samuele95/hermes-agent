@@ -230,7 +230,7 @@ private fun kindLabel(kind: ServerKind): String = stringResource(when (kind) {
 })
 
 /** How often an open picker reads the wall clock again (improve #8): a reset it shows is at most this stale. */
-private const val CLOCK_TICK_MS = 60_000L
+internal const val CLOCK_TICK_MS = 60_000L
 
 /**
  * The provider's models to pick from, each with what the core says about it (its price, a Pro lock, its own reset), under
@@ -354,7 +354,7 @@ private fun ProviderNotes(name: String, facts: ProviderFacts, nowMs: Long) {
 
 /** A model row's detail: its price in Desktop onboarding's words (or "Free"), and when its own limit resets. */
 @Composable
-private fun detailOf(facts: ModelFacts, nowMs: Long): String? = listOfNotNull(
+internal fun detailOf(facts: ModelFacts, nowMs: Long): String? = listOfNotNull(
     when {
         facts.free -> stringResource(R.string.setup_price_free)
         facts.input != null || facts.output != null -> stringResource(R.string.setup_price, facts.input ?: "?", facts.output ?: "?")

@@ -12,6 +12,7 @@ import com.nousresearch.hermes.android.chat.ChatSession
 import com.nousresearch.hermes.android.chat.ContextPanel
 import com.nousresearch.hermes.android.chat.SessionExport
 import com.nousresearch.hermes.android.chat.SessionHistory
+import com.nousresearch.hermes.android.chat.ModelSwitch
 import com.nousresearch.hermes.android.chat.StatusPanel
 import com.nousresearch.hermes.android.chat.queueFiles
 import com.nousresearch.hermes.android.entry.IncomingText
@@ -64,7 +65,7 @@ sealed interface CoreState {
 /** The pages the chat opens, each a controller with nullable state (F12): one holder, not ten positional fields. */
 data class Pages(val settings: SettingsControl, val skills: SkillsControl, val jobs: JobsControl, val telegram: TelegramSetup,
                  val ssh: SshSetup, val history: SessionHistory, val context: ContextPanel, val export: SessionExport,
-                 val status: StatusPanel)
+                 val status: StatusPanel, val models: ModelSwitch)
 
 /**
  * Owns the embedded core for the whole process. Activities come and go (rotation, the task being
@@ -237,6 +238,11 @@ class HermesApplication : Application() {
     /** Runs one Status-sheet action on the app's scope, so it outlives the activity that asked for it. */
     fun status(action: suspend StatusPanel.() -> Unit) {
         scope.launch { (state.value as? CoreState.Ready)?.pages?.status?.action() }
+    }
+
+    /** Runs one model-picker action on the app's scope, so it outlives the activity that asked for it. */
+    fun models(action: suspend ModelSwitch.() -> Unit) {
+        scope.launch { (state.value as? CoreState.Ready)?.pages?.models?.action() }
     }
 
     /** Runs one settings action on the app's scope, so it outlives the activity that asked for it. */

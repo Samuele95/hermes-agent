@@ -7,6 +7,7 @@ import com.nousresearch.hermes.android.chat.Notifier
 import com.nousresearch.hermes.android.chat.QueueStore
 import com.nousresearch.hermes.android.chat.SessionExport
 import com.nousresearch.hermes.android.chat.SessionHistory
+import com.nousresearch.hermes.android.chat.ModelSwitch
 import com.nousresearch.hermes.android.chat.StatusPanel
 import com.nousresearch.hermes.android.chat.exportSession
 import com.nousresearch.hermes.android.gateway.GatewaySeen
@@ -95,6 +96,7 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps
     val context = ContextPanel(meter = { chat.state.value.meter }, breakdown = chat::breakdown, compress = chat::compress, compressing = { chat.state.value.compressing })
     val export = SessionExport(export = chat::export)
     val status = StatusPanel(status = chat::status)
+    val models = ModelSwitch(gateway, session = { chat.openSessionId?.value }, custom = deps.customModels)
     // Undispatched: setup is showing before the core is Ready, so the chat never flashes first.
     if (setup.needed()) scope.launch(start = CoroutineStart.UNDISPATCHED) { setup.open() }
     val facts = bridge.ask(BridgeCalls.RUNTIME_FACTS)
@@ -111,6 +113,6 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps
                            Pages(SettingsControl(gateway, bridge, deps.seen, ProviderAccess(setup::connected, setup::remove), about),
                                  SkillsControl(bridge), JobsControl(gateway, bridge, deps.seen, continueInChat = chat::resume),
                                  TelegramSetup(deps.secrets, bridge, deps.seen), SshSetup(deps.secrets, bridge), history, context,
-                                 export, status),
+                                 export, status, models),
                            "Python ${facts.python} · SQLite ${facts.sqlite} $fts")
 }

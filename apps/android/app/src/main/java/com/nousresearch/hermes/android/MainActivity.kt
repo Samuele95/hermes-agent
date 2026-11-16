@@ -47,6 +47,7 @@ import com.nousresearch.hermes.android.chat.ChatPlaces
 import com.nousresearch.hermes.android.chat.ChatScreen
 import com.nousresearch.hermes.android.chat.ContextActions
 import com.nousresearch.hermes.android.chat.ExportActions
+import com.nousresearch.hermes.android.chat.ModelActions
 import com.nousresearch.hermes.android.chat.StatusActions
 import com.nousresearch.hermes.android.chat.PromptAnswers
 import com.nousresearch.hermes.android.chat.QueueActions
@@ -104,6 +105,7 @@ class MainActivity : ComponentActivity() {
                             val skills by state.pages.skills.state.collectAsState()
                             val exported by state.pages.export.state.collectAsState()
                             val status by state.pages.status.state.collectAsState()
+                            val models by state.pages.models.state.collectAsState()
                             // Whichever page shows: a finished export goes to the share sheet each time the activity is started, until one
                             // opened it (D8, architect #2); one no app can take waits no longer (N15); no key changes at a stop, so the
                             // lifecycle, not a key, brings the retry.
@@ -180,6 +182,12 @@ class MainActivity : ComponentActivity() {
                                        exportActions = ExportActions(export = { app.export { export(null) } }, dismiss = state.pages.export::dismiss),
                                        status = status,
                                        statusActions = StatusActions(open = { app.status { open() } }, close = state.pages.status::close),
+                                       models = models,
+                                       modelActions = ModelActions(open = { app.models { open() } }, close = state.pages.models::close,
+                                                                   query = state.pages.models::query, addCustom = state.pages.models::addCustom,
+                                                                   pick = { row -> app.models { pick(row) } }, confirm = { app.models { confirm() } },
+                                                                   keep = state.pages.models::keep,
+                                                                   addProvider = { state.pages.models.close(); app.setup { open() } }),
                                        onSend = { text ->
                                 if (Build.VERSION.SDK_INT >= 33 &&
                                     checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
