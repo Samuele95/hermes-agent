@@ -75,17 +75,12 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.nousresearch.hermes.android.R
 import com.nousresearch.hermes.android.entry.IncomingText
 import com.nousresearch.hermes.android.setup.Readiness
-import com.nousresearch.hermes.android.ui.CodeFont
 import com.nousresearch.hermes.android.ui.Hermes
 import com.nousresearch.hermes.android.ui.HermesIcons
 import com.nousresearch.hermes.android.ui.PrimaryButton
@@ -115,8 +110,8 @@ class StatusActions(val open: () -> Unit, val close: () -> Unit)
  * and close; [sessionActions] is the rows' menu (rename, delete). [contextActions] opens the context sheet from the meter,
  * compresses and closes it; [context] is that sheet while it is open. [places] are where the drawer, the top bar, the
  * model pill and a notice's shortcut lead. The transcript follows a streaming reply only while the reader is at its end;
- * Jump brings it back (chat-17). [onCopy] puts an answer, one of the user's messages or a code block on the clipboard
- * (chat-09, chat-10); without it nothing offers Copy. [queue] is the chat's queue of unsent messages, shown above the
+ * Jump brings it back (chat-17). [onCopy] puts an answer, one of the user's messages, a code block or a part of a tool
+ * call on the clipboard (chat-09, chat-10, chat-08); without it nothing offers Copy. [queue] is the chat's queue of unsent messages, shown above the
  * composer with each row's actions, and [queueActions] what they do and what the composer's Queue button adds to it
  * (chat-19); without them the chat offers no queue. [chat]'s offer is taken into the composer's draft once and handed
  * back to [onOfferTaken]; the strip above the field offers [places]' New chat. [readiness] marks the model pill (F6);
@@ -377,7 +372,7 @@ private fun EntryRow(entry: Entry, onCopy: ((String) -> Unit)?, retry: (() -> Un
         }
         // Commentary reads like the agent's words, without the reply's reasoning fold (and, later, its actions).
         is Entry.Interim -> Column(Modifier.fillMaxWidth().testTag("entry-interim")) { Reply(entry.text, onCopy) }
-        is Entry.Tool -> ToolRow(entry)
+        is Entry.Tool -> ToolRow(entry, onCopy)
         is Entry.Notice -> Column(Modifier.fillMaxWidth().testTag("entry-notice"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Problem(entry.text)
             // The way to turn the gateway on (D39 F11), when the chat has one; the words name the drawer path either way.
@@ -445,21 +440,6 @@ private fun label(mode: BusyMode): Int = when (mode) {
     BusyMode.INTERRUPT -> R.string.chat_redirect
     BusyMode.STEER -> R.string.chat_steer
     BusyMode.QUEUE -> error("queue mode shows Stop alone")  // Chat.busySend leaves it out (D3)
-}
-
-/** A tool the agent ran: one quiet line, its name in the code face. */
-@Composable
-private fun ToolRow(tool: Entry.Tool) {
-    val muted = MaterialTheme.colorScheme.onSurfaceVariant
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(HermesIcons.Tool, null, Modifier.size(14.dp), tint = Hermes.colors.textTertiary)
-        Text(buildAnnotatedString {
-            withStyle(SpanStyle(fontFamily = CodeFont, fontSize = 13.sp)) { append(tool.name) }
-            tool.summary?.takeIf { tool.done && it.isNotBlank() }?.let { withStyle(SpanStyle(color = muted)) { append(" — $it") } }
-        }, Modifier.weight(1f, fill = false).padding(start = 8.dp), style = MaterialTheme.typography.bodyMedium, maxLines = 1,
-             overflow = TextOverflow.Ellipsis)
-        if (!tool.done) CircularProgressIndicator(Modifier.padding(start = 8.dp).size(12.dp), strokeWidth = 1.5.dp, color = muted)
-    }
 }
 
 @Composable

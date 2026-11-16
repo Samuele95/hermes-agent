@@ -65,6 +65,11 @@ import com.nousresearch.hermes.android.chat.TodoStatus
 import com.nousresearch.hermes.bridge.protocol.TurnStatus
 import com.nousresearch.hermes.bridge.CoreEvent
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import com.nousresearch.hermes.android.chat.transcriptOf
+import com.nousresearch.hermes.bridge.protocol.TranscriptMessage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -1212,5 +1217,111 @@ class ChatScreenTest {
         compose.onNodeWithTag("chat-export").assertIsNotEnabled()
         compose.onNodeWithTag("chat-status").assertIsEnabled()
         assertEquals(0, exported)
+    }
+
+    /** The core's real `inline_diff` for an edit: ANSI colour on every line under its review header (P4 D4). */
+    private val coreDiff = "  ┊ review diff\n\u001b[38;2;180;160;255ma/a.txt → b/a.txt\u001b[0m\n" +
+        "\u001b[38;2;120;120;140m@@ -1,2 +1,2 @@\u001b[0m\n\u001b[38;2;255;255;255;48;2;120;20;20m-old\u001b[0m\n" +
+        "\u001b[38;2;255;255;255;48;2;20;90;20m+new\u001b[0m\n\u001b[38;2;150;150;150m same\u001b[0m"
+
+    @Test
+    fun aToolRowOpensIntoItsCommandOutputAndPayloadAndEachCopies() {
+        val copies = mutableListOf<String>()
+        val tool = Entry.Tool("t1", "terminal", done = true, stableId = 1, args = buildJsonObject { put("command", "ls -la") },
+                              result = """{"output":"a.txt\nb.txt","exit_code":0,"error":null}""", durationS = 0.42)
+        compose.setContent { ChatScreen(Chat(listOf(Entry.User("list", stableId = 0), tool)), onSend = {}, onCopy = { copies += it }) }
+
+        // Collapsed: one line with how long it took, nothing of what it printed.
+        compose.onNodeWithTag("tool-duration", useUnmergedTree = true).assertTextEquals("420ms")
+        compose.onNodeWithTag("tool-detail").assertDoesNotExist()
+        compose.onNodeWithText("a.txt", substring = true).assertDoesNotExist()
+        compose.onNodeWithTag("tool-row").assertHasClickAction()
+
+        compose.onNodeWithTag("tool-row").performClick()
+        compose.onNodeWithTag("tool-command").assert(hasText("ls -la", substring = true))
+        compose.onNodeWithText("exit 0").assertExists()
+        compose.onNodeWithTag("tool-output").assertTextEquals("a.txt\nb.txt")
+        compose.onNodeWithTag("tool-payload").assertDoesNotExist()  // behind its disclosure (DC-P6)
+
+        compose.onNodeWithTag("copy-command").performClick()
+        compose.onNodeWithTag("copy-output").performClick()
+        assertEquals(listOf("ls -la", "a.txt\nb.txt"), copies)
+
+        compose.onNodeWithTag("tool-payload-toggle").performClick()
+        compose.onNodeWithTag("tool-payload").assert(hasText("Arguments", substring = true))
+        compose.onNodeWithTag("copy-payload").performClick()
+        assertTrue(copies.last(), copies.last().startsWith("Arguments:\n"))
+
+        compose.onNodeWithTag("tool-row").performClick()
+        compose.onNodeWithTag("tool-detail").assertDoesNotExist()
+    }
+
+    @Test
+    fun aFileEditShowsItsDiffAndItsSize() {
+        val copies = mutableListOf<String>()
+        val tool = Entry.Tool("t2", "patch", done = true, stableId = 1, args = buildJsonObject { put("path", "a.txt") },
+                              result = """{"success":true}""", diff = coreDiff)
+        compose.setContent { ChatScreen(Chat(listOf(Entry.User("edit", stableId = 0), tool)), onSend = {}, onCopy = { copies += it }) }
+
+        compose.onNodeWithTag("tool-diff-stats", useUnmergedTree = true).assert(hasText("+1", substring = true))
+            .assert(hasText("−1", substring = true))
+
+        compose.onNodeWithTag("tool-row").performClick()
+        compose.onNodeWithTag("tool-diff").assert(hasText("-old", substring = true)).assert(hasText("+new", substring = true))
+            .assert(!hasText("\u001b", substring = true)).assert(!hasText("review diff", substring = true))
+        compose.onNodeWithTag("tool-not-kept").assertDoesNotExist()
+        compose.onNodeWithTag("copy-diff").performClick()
+        assertEquals(listOf("a/a.txt → b/a.txt\n@@ -1,2 +1,2 @@\n-old\n+new\n same"), copies)
+    }
+
+    @Test
+    fun aSearchShowsItsQueryAndHitsAndItsSummaryAlreadyNamesTheDuration() {
+        val copies = mutableListOf<String>()
+        val tool = Entry.Tool("t3", "web_search", "Did 1 search in 0.8s", done = true, stableId = 1, args = buildJsonObject { put("query", "kotlin flow") },
+                              result = """{"success":true,"data":{"web":[{"title":"Flow","url":"https://kotlinlang.org/flow","description":"Cold streams","position":1}]}}""",
+                              durationS = 0.8)
+        compose.setContent { ChatScreen(Chat(listOf(Entry.User("look", stableId = 0), tool)), onSend = {}, onCopy = { copies += it }) }
+
+        compose.onNodeWithText("web_search — Did 1 search in 0.8s", substring = true).assertExists()
+        compose.onNodeWithTag("tool-duration", useUnmergedTree = true).assertDoesNotExist()  // the summary says it (D6)
+
+        compose.onNodeWithTag("tool-row").performClick()
+        listOf("kotlin flow", "Flow", "https://kotlinlang.org/flow").forEach { compose.onNodeWithText(it).assertExists() }
+        compose.onNodeWithTag("copy-results").performClick()
+        assertEquals(listOf("Flow\nhttps://kotlinlang.org/flow\nCold streams"), copies)
+    }
+
+    @Test
+    fun anOldChatsToolSaysItsOutputWasNotKept() {
+        val rows = Json { ignoreUnknownKeys = true }.decodeFromString(ListSerializer(TranscriptMessage.serializer()),
+            """[{"role":"tool","name":"terminal","tool_call_id":"c1","context":"ls","args":{"command":"ls"}}]""")
+        compose.setContent { ChatScreen(Chat(transcriptOf(rows, 0)), onSend = {}, onCopy = {}) }
+
+        compose.onNodeWithTag("tool-row").performClick()
+        compose.onNodeWithTag("tool-command").assert(hasText("ls", substring = true))
+        compose.onNodeWithTag("tool-not-kept").assertTextEquals("Output not kept for this tool.")
+        compose.onNodeWithTag("tool-output").assertDoesNotExist()
+        compose.onNodeWithTag("copy-output").assertDoesNotExist()
+        compose.onNodeWithTag("tool-payload-toggle").assertExists()
+    }
+
+    @Test
+    fun aRunningRowOpensToItsCommandAndStaysOpenAsTheTranscriptGrows() {
+        val user = Entry.User("wait", stableId = 0)
+        val tool = Entry.Tool("t4", "terminal", stableId = 1, args = buildJsonObject { put("command", "sleep 5") })
+        var chat by mutableStateOf(Chat(listOf(user, tool)))
+        compose.setContent { ChatScreen(chat, onSend = {}, onCopy = {}) }
+
+        compose.onNodeWithTag("tool-row").performClick()
+        compose.onNodeWithTag("tool-command").assert(hasText("sleep 5", substring = true))
+        compose.onNodeWithTag("tool-not-kept").assertDoesNotExist()  // it is running, not forgotten
+
+        chat = chat.copy(entries = listOf(user, tool.copy(done = true, result = """{"output":"done","exit_code":0}""", durationS = 5.0)))
+        compose.onNodeWithTag("tool-detail").assertExists()
+        compose.onNodeWithTag("tool-output").assertTextEquals("done")
+
+        chat = chat.copy(entries = chat.entries + Entry.Reply("Slept.", TurnStatus.COMPLETE, stableId = 2))
+        compose.onNodeWithText("Slept.").assertExists()
+        compose.onNodeWithTag("tool-detail").assertExists()  // the open flag follows the entry's id
     }
 }

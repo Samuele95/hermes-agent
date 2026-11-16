@@ -40,6 +40,9 @@ data class HermesColors(
     val widget: Color,
     val textTertiary: Color,
     val code: CodeColors,
+    /** A diff's added and removed lines and its +N −N (Desktop's emerald / rose). */
+    val added: Color,
+    val removed: Color,
     val dark: Boolean,
 )
 
@@ -78,11 +81,13 @@ private val LightTokens = HermesColors(userBubble = Color(0xFFDAE7FD), userBubbl
                                        // Comments take the desktop's contrast remap of the theme's #6e7781 (shiki-config.ts:19-21).
                                        code = CodeColors(keyword = Color(0xFFCF222E), string = Color(0xFF0A3069),
                                                          number = Color(0xFF0550AE), comment = Color(0xFF57606A)),
+                                       added = Color(0xFF059669), removed = Color(0xFFE11D48),  // emerald-600 / rose-600
                                        dark = false)
 private val DarkTokens = HermesColors(userBubble = Color(0xFF07162C), userBubbleBorder = Color(0xFF30363D), stroke = Color(0xFF30363D),
                                       widget = Color(0xFF161B22), textTertiary = Color(0xFF6E7681),
                                       code = CodeColors(keyword = Color(0xFFF47067), string = Color(0xFF96D0FF),
                                                         number = Color(0xFF6CB6FF), comment = Color(0xFF768390)),
+                                      added = Color(0xFF34D399), removed = Color(0xFFFB7185),  // emerald-400 / rose-400
                                       dark = true)
 
 /** JetBrains Mono, bundled like the desktop's (SIL OFL 1.1), for code and commands. */
