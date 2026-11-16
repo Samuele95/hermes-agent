@@ -25,13 +25,21 @@ import com.nousresearch.hermes.bridge.contract.SkillsEnableParams
 import com.nousresearch.hermes.bridge.contract.TelegramEnableParams
 import com.nousresearch.hermes.bridge.contract.TelegramStatusReply
 import com.nousresearch.hermes.bridge.protocol.ClientCapabilitiesParams
+import com.nousresearch.hermes.bridge.protocol.CommandDispatchParams
+import com.nousresearch.hermes.bridge.protocol.CommandsCatalogParams
+import com.nousresearch.hermes.bridge.protocol.CompleteSlashParams
 import com.nousresearch.hermes.bridge.protocol.CronAction
 import com.nousresearch.hermes.bridge.protocol.CronManageParams
+import com.nousresearch.hermes.bridge.protocol.DispatchType
 import com.nousresearch.hermes.bridge.protocol.Events
+import com.nousresearch.hermes.bridge.protocol.LearningEditParams
+import com.nousresearch.hermes.bridge.protocol.LearningNodeParams
+import com.nousresearch.hermes.bridge.protocol.MessageReactParams
 import com.nousresearch.hermes.bridge.protocol.Method
 import com.nousresearch.hermes.bridge.protocol.Methods
 import com.nousresearch.hermes.bridge.protocol.PingParams
 import com.nousresearch.hermes.bridge.protocol.PingResult
+import com.nousresearch.hermes.bridge.protocol.ReactionAuthor
 import com.nousresearch.hermes.bridge.protocol.SessionCloseParams
 import com.nousresearch.hermes.bridge.protocol.SessionContextBreakdownParams
 import com.nousresearch.hermes.bridge.protocol.SessionCorrectionParams
@@ -40,6 +48,10 @@ import com.nousresearch.hermes.bridge.protocol.SessionDeleteParams
 import com.nousresearch.hermes.bridge.protocol.SessionStatusParams
 import com.nousresearch.hermes.bridge.protocol.SessionTitleParams
 import com.nousresearch.hermes.bridge.protocol.SetupRuntimeCheckParams
+import com.nousresearch.hermes.bridge.protocol.SkillsReloadParams
+import com.nousresearch.hermes.bridge.protocol.ToolsAction
+import com.nousresearch.hermes.bridge.protocol.ToolsConfigureParams
+import com.nousresearch.hermes.bridge.protocol._SessionScoped
 import java.io.File
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -460,6 +472,135 @@ class EmbeddedPythonTest {
             if (original != null) config.writeBytes(original) else config.delete()
             took["skills_list warm"] = measureTimeMillis { assertEquals(was, EmbeddedBridge.ask(BridgeCalls.SKILLS_LIST).skills) }
             Log.i("M11Probe", "took ms: $took")
+        }
+    }
+
+    @Test
+    fun theSkillToolsetReactionAndSlashCallsAnswerOnThePhone() = runBlocking {
+        core // the interpreter starts with the core, outside the calls' timeouts
+        val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext
+        val tag = System.nanoTime()
+        val nope = "p1-no-such-skill-$tag"
+
+        // Skills: no session, nothing written. A refused write is an answer, never an error.
+        val github = withTimeout(60_000) { core.call(Methods.LEARNING_DETAIL, LearningNodeParams(id = "github")) }
+        assertTrue(github.message, github.ok)
+        assertEquals("skill", github.kind)
+        assertTrue(github.content, github.content!!.startsWith("---"))
+        val missing = withTimeout(60_000) { core.call(Methods.LEARNING_DETAIL, LearningNodeParams(id = nope)) }
+        assertEquals(missing.message, false, missing.ok)
+        assertEquals("skill '$nope' not found", missing.message)
+        // The frontmatter is checked before any lookup or write.
+        val malformed = withTimeout(60_000) { core.call(Methods.LEARNING_EDIT, LearningEditParams(id = nope, content = "not a skill")) }
+        assertEquals(malformed.message, false, malformed.ok)
+        assertEquals("SKILL.md must start with YAML frontmatter (---). See existing skills for format.", malformed.message)
+        val unarchived = withTimeout(60_000) { core.call(Methods.LEARNING_DELETE, LearningNodeParams(id = nope)) }
+        assertEquals(unarchived.message, false, unarchived.ok)
+        assertEquals("skill '$nope' not found", unarchived.message)
+        val reload = withTimeout(60_000) { core.call(Methods.SKILLS_RELOAD, SkillsReloadParams()) }
+        val printed = reload.output.lines()
+        Log.i("P1Probe", "reload first=${printed.first()} last=${printed.last()} total=${reload.result.total}")
+        assertTrue("only ${reload.result.total} skills", reload.result.total >= 50)
+        assertEquals(reload.output, "Reloading skills...", printed.first())
+        assertEquals(reload.output, "${reload.result.total} skill(s) available", printed.last())
+
+        // Toolsets: the list names no tools (D3), and an empty switch is refused before config.yaml is read.
+        val config = File(app.filesDir, ".hermes/config.yaml")
+        val original = config.takeIf { it.exists() }?.readBytes()
+        try {
+            val rows = withTimeout(60_000) { core.call(Methods.TOOLSETS_LIST, _SessionScoped()) }.toolsets
+            Log.i("P1Probe", "toolsets=${rows.size} first=${rows.firstOrNull()}")
+            assertTrue("no toolsets", rows.isNotEmpty())
+            assertTrue("$rows", rows.all { it.tools == null })
+            val empty = assertThrows(CoreError::class.java) {
+                runBlocking {
+                    withTimeout(60_000) {
+                        core.call(Methods.TOOLS_CONFIGURE, ToolsConfigureParams(action = ToolsAction.ENABLE, names = emptyList()))
+                    }
+                }
+            }
+            assertEquals(4018 to "names required", empty.code to empty.message)
+            assertTrue("a refused switch changed config.yaml", original.contentEquals(config.takeIf { it.exists() }?.readBytes()))
+        } finally {
+            // The shared phone gets config.yaml back as it was.
+            val now = config.takeIf { it.exists() }?.readBytes()
+            if (!original.contentEquals(now)) {
+                if (original != null) config.writeBytes(original) else config.delete()
+            }
+        }
+
+        // Slash: no session. A skill is never dispatched: that bumps its use count.
+        val catalog = withTimeout(60_000) { core.call(Methods.COMMANDS_CATALOG, CommandsCatalogParams()) }
+        val skills = catalog.skills!!
+        Log.i("P1Probe", "catalog skills=${skills.size} skill_count=${catalog.skillCount} github=${skills["/github"]}")
+        assertTrue("${skills.keys}", "/github" in skills)
+        assertEquals(skills.size.toLong(), catalog.skillCount)
+        assertTrue("only ${catalog.skillCount} skills", catalog.skillCount >= 50)
+        assertTrue("no pairs", catalog.pairs!!.isNotEmpty())
+        val completed = withTimeout(60_000) { core.call(Methods.COMPLETE_SLASH, CompleteSlashParams(text = "/git")) }.items!!
+        Log.i("P1Probe", "complete /git: ${completed.map { it.text to it.kind }}")
+        assertTrue("$completed", completed.any { it.kind == "skill" && it.text.trim().trimStart('/').startsWith("github") })
+        val queued = withTimeout(60_000) {
+            core.call(Methods.COMMAND_DISPATCH, CommandDispatchParams(name = "queue", arg = "p1 probe $tag"))
+        }
+        assertEquals(DispatchType.SEND, queued.type)
+        assertEquals("p1 probe $tag", queued.message)
+        val unknown = assertThrows(CoreError::class.java) {
+            runBlocking {
+                withTimeout(60_000) { core.call(Methods.COMMAND_DISPATCH, CommandDispatchParams(name = "p1-no-such-command-$tag")) }
+            }
+        }
+        assertEquals(unknown.message, 4018, unknown.code)
+
+        // Reaction: one live session, closed only after its pre-warm settled
+        // (aSessionIsTitledClosedAndDeletedThroughTheGeneratedCalls).
+        val settled = Channel<String>(Channel.UNLIMITED)
+        val watcher = launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
+            core.events.collect { if (it.type == "session.info" || it.type == "error") it.sessionId?.let(settled::trySend) }
+        }
+        val created = core.call(Methods.SESSION_CREATE, SessionCreateParams(source = "android"))
+        val stored = created.storedSessionId
+        try {
+            withTimeout(120_000) { while (settled.receive() != created.sessionId) Unit }
+
+            val unnamed = assertThrows(CoreError::class.java) {
+                runBlocking {
+                    withTimeout(60_000) { core.call(Methods.MESSAGE_REACT, MessageReactParams(sessionId = created.sessionId)) }
+                }
+            }
+            assertEquals(unnamed.message, 4023, unnamed.code)
+            // The row lookup fails before anything is written.
+            val stranger = assertThrows(CoreError::class.java) {
+                runBlocking {
+                    withTimeout(60_000) {
+                        core.call(
+                            Methods.MESSAGE_REACT,
+                            MessageReactParams(
+                                sessionId = created.sessionId, rowId = 999_999_999, emoji = "👍", author = ReactionAuthor.USER,
+                            ),
+                        )
+                    }
+                }
+            }
+            assertEquals(4040 to "message not found in this session", stranger.code to stranger.message)
+
+            assertTrue(core.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = created.sessionId)).closed)
+            // Without a turn or a title the core may not have written the row yet: then the delete answers 4007.
+            val delete = runCatching { core.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = stored)) }
+            when (val refused = delete.exceptionOrNull()) {
+                null -> assertEquals(stored, delete.getOrThrow().deleted)
+                is CoreError -> assertEquals(refused.message, 4007, refused.code)
+                else -> throw refused
+            }
+        } finally {
+            watcher.cancel()
+            // A failed run leaves no session, row or config change behind on the shared phone.
+            runCatching { core.call(Methods.SESSION_CLOSE, SessionCloseParams(sessionId = created.sessionId)) }
+            runCatching { core.call(Methods.SESSION_DELETE, SessionDeleteParams(sessionId = stored)) }
+            val now = config.takeIf { it.exists() }?.readBytes()
+            if (!original.contentEquals(now)) {
+                if (original != null) config.writeBytes(original) else config.delete()
+            }
         }
     }
 

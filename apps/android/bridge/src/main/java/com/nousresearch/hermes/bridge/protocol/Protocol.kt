@@ -27,10 +27,17 @@ object BackendContract {
 
 object Methods {
     val CLIENT_CAPABILITIES = Method("client.capabilities", ClientCapabilitiesParams.serializer(), ClientCapabilitiesResult.serializer())
+    val COMMAND_DISPATCH = Method("command.dispatch", CommandDispatchParams.serializer(), CommandDispatchResult.serializer())
+    val COMMANDS_CATALOG = Method("commands.catalog", CommandsCatalogParams.serializer(), CommandsCatalogResult.serializer())
+    val COMPLETE_SLASH = Method("complete.slash", CompleteSlashParams.serializer(), CompleteSlashResult.serializer())
     val CONFIG_GET = Method("config.get", ConfigGetParams.serializer(), ConfigGetResult.serializer())
     val CONFIG_SET = Method("config.set", ConfigSetParams.serializer(), ConfigSetResult.serializer())
     val CRON_MANAGE = Method("cron.manage", CronManageParams.serializer(), CronManageResult.serializer())
     val GATEWAY_CAPABILITIES = Method("gateway.capabilities", PingParams.serializer(), GatewayCapabilitiesResult.serializer())
+    val LEARNING_DELETE = Method("learning.delete", LearningNodeParams.serializer(), LearningMutationResult.serializer())
+    val LEARNING_DETAIL = Method("learning.detail", LearningNodeParams.serializer(), LearningDetailResult.serializer())
+    val LEARNING_EDIT = Method("learning.edit", LearningEditParams.serializer(), LearningMutationResult.serializer())
+    val MESSAGE_REACT = Method("message.react", MessageReactParams.serializer(), MessageReactResult.serializer())
     val MODEL_DISCONNECT = Method("model.disconnect", ModelDisconnectParams.serializer(), ModelDisconnectResult.serializer())
     val MODEL_OPTIONS = Method("model.options", ModelOptionsParams.serializer(), ModelOptionsResult.serializer())
     val NOUS_LOGIN_CANCEL = Method("nous.login.cancel", NousLoginParams.serializer(), NousLoginCancelResult.serializer())
@@ -57,6 +64,9 @@ object Methods {
     val SETUP_RUNTIME_CHECK = Method("setup.runtime_check", SetupRuntimeCheckParams.serializer(), SetupRuntimeCheckResult.serializer())
     val SETUP_STATUS = Method("setup.status", ProfileParams.serializer(), SetupStatusResult.serializer())
     val SKILLS_MANAGE = Method("skills.manage", SkillsManageParams.serializer(), SkillsManageResult.serializer())
+    val SKILLS_RELOAD = Method("skills.reload", SkillsReloadParams.serializer(), SkillsReloadResult.serializer())
+    val TOOLS_CONFIGURE = Method("tools.configure", ToolsConfigureParams.serializer(), ToolsConfigureResult.serializer())
+    val TOOLSETS_LIST = Method("toolsets.list", _SessionScoped.serializer(), ToolsetsListResult.serializer())
 }
 
 object Requests {
@@ -72,6 +82,7 @@ object Events {
     val MESSAGE_COMPLETE = Event("message.complete", MessageCompletePayload.serializer())
     val MESSAGE_DELTA = Event("message.delta", StreamDeltaPayload.serializer())
     val MESSAGE_INTERIM = Event("message.interim", MessageInterimPayload.serializer())
+    val MESSAGE_REACTION = Event("message.reaction", MessageReactionPayload.serializer())
     val MESSAGE_START = Event("message.start", JsonObject.serializer())
     val PLATFORMS_CHANGED = Event("platforms.changed", ChangeSignalPayload.serializer())
     val REASONING_AVAILABLE = Event("reasoning.available", StreamDeltaPayload.serializer())
@@ -126,6 +137,13 @@ data class ApprovalResult(
     @SerialName("choice") val choice: ApprovalChoice,
     @SerialName("all") val all: Boolean? = null,
 )
+
+@Serializable
+enum class ArgumentMode {
+    @SerialName("options") OPTIONS,
+    @SerialName("text") TEXT,
+    @SerialName("mixed") MIXED,
+}
 
 /** A crash-interrupted turn was scheduled to continue right after this resume. */
 @Serializable
@@ -231,6 +249,82 @@ data class ClientCapabilitiesParams(
 data class ClientCapabilitiesResult(
     @SerialName("server_requests") val serverRequests: List<String>,
     @SerialName("declines_not_shown") val declinesNotShown: Boolean = false,
+)
+
+@Serializable
+data class CommandCatalogMeta(
+    @SerialName("argument_mode") val argumentMode: ArgumentMode? = null,
+    @SerialName("desktop") val desktop: String? = null,
+    @SerialName("desktop_subcommands") val desktopSubcommands: List<String>? = null,
+)
+
+@Serializable
+data class CommandCategory(
+    @SerialName("name") val name: String,
+    @SerialName("pairs") val pairs: List<List<String>>? = null,
+)
+
+@Serializable
+data class CommandDispatchParams(
+    @SerialName("name") val name: String,
+    @SerialName("arg") val arg: String? = null,
+    @SerialName("session_id") val sessionId: String? = null,
+    @SerialName("profile") val profile: String? = null,
+)
+
+/** One structured directive: ``exec``/``plugin`` carry ``output``; ``alias`` a ``target``; ``send``/``prefill``/``skill`` a ``message`` (UIs render ``display``, never ``message``). */
+@Serializable
+data class CommandDispatchResult(
+    @SerialName("type") val type: DispatchType,
+    @SerialName("output") val output: String? = null,
+    @SerialName("target") val target: String? = null,
+    @SerialName("message") val message: String? = null,
+    @SerialName("notice") val notice: String? = null,
+    @SerialName("display") val display: String? = null,
+    @SerialName("name") val name: String? = null,
+    @SerialName("status") val status: String? = null,
+)
+
+@Serializable
+data class CommandsCatalogParams(
+    @SerialName("session_id") val sessionId: String? = null,
+    @SerialName("profile") val profile: String? = null,
+)
+
+@Serializable
+data class CommandsCatalogResult(
+    @SerialName("pairs") val pairs: List<List<String>>? = null,
+    @SerialName("sub") val sub: Map<String, List<String>>? = null,
+    @SerialName("canon") val canon: Map<String, String>? = null,
+    @SerialName("commands") val commands: Map<String, CommandCatalogMeta>? = null,
+    @SerialName("categories") val categories: List<CommandCategory>? = null,
+    @SerialName("skills") val skills: Map<String, SkillCatalogEntry>? = null,
+    @SerialName("skill_count") val skillCount: Long = 0,
+    @SerialName("warning") val warning: String = "",
+)
+
+/** ``session_id`` binds skill completions to that session's profile and workspace (project skills); ``profile`` scopes a session-less request (a new-chat draft). */
+@Serializable
+data class CompleteSlashParams(
+    @SerialName("text") val text: String? = null,
+    @SerialName("session_id") val sessionId: String? = null,
+    @SerialName("profile") val profile: String? = null,
+)
+
+/** ``replace_from`` is the column the accepted item replaces from. */
+@Serializable
+data class CompleteSlashResult(
+    @SerialName("items") val items: List<CompletionItem>? = null,
+    @SerialName("replace_from") val replaceFrom: Long? = null,
+)
+
+/** One popover row; ``kind`` rides only on slash completions (command vs skill). */
+@Serializable
+data class CompletionItem(
+    @SerialName("text") val text: String,
+    @SerialName("display") val display: String = "",
+    @SerialName("meta") val meta: String = "",
+    @SerialName("kind") val kind: String? = null,
 )
 
 /** ``agent.manual_compression_feedback.summarize_manual_compression``. */
@@ -522,6 +616,17 @@ data class CronRemovedJob(
     @SerialName("schedule") val schedule: String? = null,
 )
 
+/** ``apps/shared/src/slash.ts::parseCommandDispatch`` branches on this. */
+@Serializable
+enum class DispatchType {
+    @SerialName("exec") EXEC,
+    @SerialName("alias") ALIAS,
+    @SerialName("plugin") PLUGIN,
+    @SerialName("send") SEND,
+    @SerialName("skill") SKILL,
+    @SerialName("prefill") PREFILL,
+}
+
 /** Every ``_emit("error", …)`` site sets exactly ``message``. */
 @Serializable
 data class ErrorPayload(
@@ -575,6 +680,34 @@ enum class InterruptStatus {
 }
 
 @Serializable
+data class LearningDetailResult(
+    @SerialName("ok") val ok: Boolean,
+    @SerialName("message") val message: String? = null,
+    @SerialName("kind") val kind: String? = null,
+    @SerialName("id") val id: String? = null,
+    @SerialName("label") val label: String? = null,
+    @SerialName("content") val content: String? = null,
+)
+
+@Serializable
+data class LearningEditParams(
+    @SerialName("id") val id: String? = null,
+    @SerialName("content") val content: String? = null,
+)
+
+/** ``agent.learning_mutations`` — ``ok: false`` carries the reason in ``message``. */
+@Serializable
+data class LearningMutationResult(
+    @SerialName("ok") val ok: Boolean,
+    @SerialName("message") val message: String? = null,
+)
+
+@Serializable
+data class LearningNodeParams(
+    @SerialName("id") val id: String? = null,
+)
+
+@Serializable
 data class McpServerStatus(
     @SerialName("name") val name: String = "",
     @SerialName("status") val status: String? = null,
@@ -608,6 +741,40 @@ data class MessageCompletePayload(
 data class MessageInterimPayload(
     @SerialName("text") val text: String,
     @SerialName("already_streamed") val alreadyStreamed: Boolean,
+)
+
+/** ``row_id`` is ``messages.id``; a not-yet-persisted live message names ``newest_role`` instead. ``emoji`` null clears; the same emoji again retracts. */
+@Serializable
+data class MessageReactParams(
+    @SerialName("session_id") val sessionId: String,
+    @SerialName("profile") val profile: String? = null,
+    @SerialName("row_id") val rowId: Long? = null,
+    @SerialName("newest_role") val newestRole: String? = null,
+    @SerialName("emoji") val emoji: String? = null,
+    @SerialName("author") val author: ReactionAuthor? = null,
+)
+
+@Serializable
+data class MessageReactResult(
+    @SerialName("row_id") val rowId: Long,
+    @SerialName("reactions") val reactions: List<MessageReaction>,
+)
+
+/** One persisted reaction row (``hermes_state_messages.set_message_reaction``); ``seen`` is stamped once announced. */
+@Serializable
+data class MessageReaction(
+    @SerialName("emoji") val emoji: String,
+    @SerialName("author") val author: String,
+    @SerialName("at") val at: Double? = null,
+    @SerialName("seen") val seen: Boolean? = null,
+)
+
+/** ``tools/react_to_message_tool.py``. */
+@Serializable
+data class MessageReactionPayload(
+    @SerialName("row_id") val rowId: Long,
+    @SerialName("reactions") val reactions: List<MessageReaction>,
+    @SerialName("role") val role: String,
 )
 
 /** ``hermes_cli/inventory.py::_apply_capabilities``. */
@@ -857,6 +1024,12 @@ data class ProviderUsageWindow(
 data class QueuedPrompt(
     @SerialName("user") val user: String,
 )
+
+@Serializable
+enum class ReactionAuthor {
+    @SerialName("user") USER,
+    @SerialName("agent") AGENT,
+}
 
 @Serializable
 data class RequestAnswerParams(
@@ -1245,6 +1418,18 @@ data class SkillBrowseItem(
 )
 
 @Serializable
+data class SkillCatalogEntry(
+    @SerialName("usage") val usage: Long = 0,
+    @SerialName("origin") val origin: String = "local",
+)
+
+@Serializable
+data class SkillCommandRef(
+    @SerialName("name") val name: String,
+    @SerialName("description") val description: String = "",
+)
+
+@Serializable
 data class SkillHubHit(
     @SerialName("name") val name: String,
     @SerialName("description") val description: String,
@@ -1292,6 +1477,29 @@ data class SkillsManageResult(
     @SerialName("total_pages") val totalPages: Long? = null,
     @SerialName("total") val total: Long? = null,
     @SerialName("info") val info: SkillInspectInfo? = null,
+)
+
+/** ``agent.skill_commands.reload_skills``. */
+@Serializable
+data class SkillsReloadDiff(
+    @SerialName("added") val added: List<SkillCommandRef>? = null,
+    @SerialName("removed") val removed: List<SkillCommandRef>? = null,
+    @SerialName("unchanged") val unchanged: List<String>? = null,
+    @SerialName("total") val total: Long = 0,
+    @SerialName("commands") val commands: Long = 0,
+)
+
+/** ``session_id`` binds the rescan to that session's profile and workspace (project skills); ``profile`` scopes a session-less rescan. */
+@Serializable
+data class SkillsReloadParams(
+    @SerialName("session_id") val sessionId: String? = null,
+    @SerialName("profile") val profile: String? = null,
+)
+
+@Serializable
+data class SkillsReloadResult(
+    @SerialName("output") val output: String,
+    @SerialName("result") val result: SkillsReloadDiff,
 )
 
 /** ``server._status_update`` and the direct emitters (goal / loop / heartbeat / process). */
@@ -1377,6 +1585,46 @@ data class ToolStartPayload(
     @SerialName("labels") val labels: List<ToolLabel>? = null,
 )
 
+@Serializable
+enum class ToolsAction {
+    @SerialName("enable") ENABLE,
+    @SerialName("disable") DISABLE,
+}
+
+/** ``names`` are toolset keys or ``server:tool`` MCP targets; with ``session_id`` the live session's profile is authoritative and its agent is rebuilt. */
+@Serializable
+data class ToolsConfigureParams(
+    @SerialName("action") val action: ToolsAction,
+    @SerialName("names") val names: List<String>,
+    @SerialName("session_id") val sessionId: String? = null,
+    @SerialName("profile") val profile: String? = null,
+)
+
+@Serializable
+data class ToolsConfigureResult(
+    @SerialName("changed") val changed: List<String>,
+    @SerialName("enabled_toolsets") val enabledToolsets: List<String>,
+    @SerialName("info") val info: SessionLiveInfo? = null,
+    @SerialName("missing_servers") val missingServers: List<String>,
+    @SerialName("reset") val reset: Boolean,
+    @SerialName("unknown") val unknown: List<String>,
+)
+
+/** One row of ``methods_tools._toolset_rows``; ``tools`` only when the caller asked for them (``tools.list``). */
+@Serializable
+data class ToolsetRow(
+    @SerialName("name") val name: String,
+    @SerialName("description") val description: String,
+    @SerialName("tool_count") val toolCount: Long,
+    @SerialName("enabled") val enabled: Boolean,
+    @SerialName("tools") val tools: List<String>? = null,
+)
+
+@Serializable
+data class ToolsetsListResult(
+    @SerialName("toolsets") val toolsets: List<ToolsetRow>,
+)
+
 /** One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``): ``text``, display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the durable ``row_id`` rewind targets, and for tool rows raw ``content``, ``tool_call_id``, ``name``, ``context`` and ``args``. Assistant detail sidecars (``reasoning``, …) ride as extra keys. */
 @Serializable
 data class TranscriptMessage(
@@ -1435,4 +1683,10 @@ data class Usage(
 @Serializable
 data class ValueResult(
     @SerialName("value") val value: String,
+)
+
+/** Handlers that look a live session up with ``_sessions.get(params.get("session_id"))``: an absent / unknown id falls back to the launch profile's config, so it is never required. */
+@Serializable
+data class _SessionScoped(
+    @SerialName("session_id") val sessionId: String? = null,
 )

@@ -275,4 +275,177 @@ class ProtocolTest {
         assertEquals("Hermes TUI Status", output.lines().first())
         assertTrue(output, "Session ID: 20261115_101500_ab12cd" in output.lines())
     }
+
+    // Skills, toolsets, reactions and slash commands speak the core's words; a refused write is an answer.
+
+    @Test
+    fun aSkillIsNamedByItsIdAndARefusedWriteIsAnAnswer() {
+        assertEquals("""{"id":"github"}""", wire.encodeToString(Methods.LEARNING_DETAIL.params, LearningNodeParams(id = "github")))
+        assertEquals("""{"id":"github"}""", wire.encodeToString(Methods.LEARNING_DELETE.params, LearningNodeParams(id = "github")))
+        assertEquals(
+            """{"id":"github","content":"---\nname: github\n---\nbody"}""",
+            wire.encodeToString(Methods.LEARNING_EDIT.params, LearningEditParams(id = "github", content = "---\nname: github\n---\nbody")),
+        )
+
+        val read = wire.decodeFromString(
+            Methods.LEARNING_DETAIL.result,
+            """{"ok":true,"kind":"skill","id":"github","label":"github","content":"---\nname: github\n---\nbody"}""",
+        )
+        assertTrue(read.ok)
+        assertEquals("skill", read.kind)
+        assertTrue(read.content, read.content!!.startsWith("---"))
+
+        val missing = wire.decodeFromString(Methods.LEARNING_DETAIL.result, """{"ok":false,"message":"skill 'nope' not found"}""")
+        assertEquals(false, missing.ok)
+        assertEquals("skill 'nope' not found", missing.message)
+        assertNull(missing.content)
+
+        val pinned = wire.decodeFromString(
+            Methods.LEARNING_DELETE.result,
+            """{"ok":false,"message":"'github' is pinned — unpin it first (hermes curator unpin github)"}""",
+        )
+        assertEquals(false, pinned.ok)
+        assertEquals("'github' is pinned — unpin it first (hermes curator unpin github)", pinned.message)
+
+        val edited = wire.decodeFromString(Methods.LEARNING_EDIT.result, """{"ok":true,"message":"updated 'github'"}""")
+        assertTrue(edited.ok)
+        assertEquals("updated 'github'", edited.message)
+    }
+
+    @Test
+    fun aReloadAnswersItsPrintedLinesAndItsDiff() {
+        assertEquals("{}", wire.encodeToString(Methods.SKILLS_RELOAD.params, SkillsReloadParams()))
+        assertEquals("""{"session_id":"r1"}""", wire.encodeToString(Methods.SKILLS_RELOAD.params, SkillsReloadParams(sessionId = "r1")))
+
+        val reload = wire.decodeFromString(
+            Methods.SKILLS_RELOAD.result,
+            """{"output":"Reloading skills...\nAdded skills:\n  - weather\n55 skill(s) available",""" +
+                """"result":{"added":[{"name":"weather","description":"Forecasts"}],"removed":[],"unchanged":["github"],""" +
+                """"total":55,"commands":55}}""",
+        )
+
+        assertEquals("weather", reload.result.added!!.single().name)
+        assertEquals(55L, reload.result.total)
+        assertEquals("55 skill(s) available", reload.output.lines().last())
+    }
+
+    @Test
+    fun aSessionlessToolsetSwitchNamesNoSessionAndTheListNamesNoTools() {
+        assertEquals("{}", wire.encodeToString(Methods.TOOLSETS_LIST.params, _SessionScoped()))
+
+        val row = wire.decodeFromString(
+            Methods.TOOLSETS_LIST.result,
+            """{"toolsets":[{"name":"browser","description":"Browser automation","tool_count":11,"enabled":false}]}""",
+        ).toolsets.single()
+        assertEquals(11L, row.toolCount)
+        assertEquals(false, row.enabled)
+        assertNull(row.tools) // toolsets.list builds its rows without tool names (D3)
+
+        assertEquals(
+            """{"action":"disable","names":["browser"]}""",
+            wire.encodeToString(Methods.TOOLS_CONFIGURE.params, ToolsConfigureParams(action = ToolsAction.DISABLE, names = listOf("browser"))),
+        )
+
+        val switched = wire.decodeFromString(
+            Methods.TOOLS_CONFIGURE.result,
+            """{"changed":["browser"],"enabled_toolsets":["file","terminal","web"],"info":null,"missing_servers":[],""" +
+                """"reset":false,"unknown":[]}""",
+        )
+        assertEquals(false, switched.reset)
+        assertNull(switched.info)
+        assertEquals(listOf("browser"), switched.changed)
+    }
+
+    @Test
+    fun aReactionIsTheUsersAndAClearCarriesNoEmoji() {
+        assertEquals(
+            """{"session_id":"r1","row_id":42,"emoji":"👍","author":"user"}""",
+            wire.encodeToString(
+                Methods.MESSAGE_REACT.params,
+                MessageReactParams(sessionId = "r1", rowId = 42, emoji = "👍", author = ReactionAuthor.USER),
+            ),
+        )
+        // The core reads an absent emoji as a clear.
+        assertEquals(
+            """{"session_id":"r1","row_id":42,"author":"user"}""",
+            wire.encodeToString(
+                Methods.MESSAGE_REACT.params,
+                MessageReactParams(sessionId = "r1", rowId = 42, emoji = null, author = ReactionAuthor.USER),
+            ),
+        )
+
+        val reaction = wire.decodeFromString(
+            Methods.MESSAGE_REACT.result,
+            """{"row_id":42,"reactions":[{"emoji":"👍","author":"user","at":1763300000.5}]}""",
+        ).reactions.single()
+        assertEquals("user", reaction.author)
+        assertEquals(1763300000.5, reaction.at!!, 0.0)
+
+        val painted = wire.decodeFromString(
+            Events.MESSAGE_REACTION.payload,
+            """{"row_id":42,"reactions":[{"emoji":"❤️","author":"agent","at":1.0,"seen":true}],"role":"assistant"}""",
+        )
+        assertEquals(42L, painted.rowId)
+        assertEquals("assistant", painted.role)
+        assertEquals(true, painted.reactions.single().seen)
+    }
+
+    @Test
+    fun theCatalogKeysSkillsByTheirCommandAndACompletionSaysItsKind() {
+        assertEquals("""{"session_id":"r1"}""", wire.encodeToString(Methods.COMMANDS_CATALOG.params, CommandsCatalogParams(sessionId = "r1")))
+
+        val catalog = wire.decodeFromString(
+            Methods.COMMANDS_CATALOG.result,
+            """{"pairs":[["/new","Start a new session"],["/github","GitHub workflows"]],"canon":{"/new":"/new","/reset":"/new"},""" +
+                """"commands":{"/new":{"argument_mode":null,"desktop":null},"/model":{"argument_mode":"options","desktop":"terminal"}},""" +
+                """"categories":[{"name":"Session","pairs":[["/new","Start a new session"]]}],""" +
+                """"skills":{"/github":{"usage":3,"origin":"bundled"}},"skill_count":1,"warning":""}""",
+        )
+        assertEquals(3L, catalog.skills!!.getValue("/github").usage)
+        assertEquals("bundled", catalog.skills!!.getValue("/github").origin)
+        assertEquals(1L, catalog.skillCount)
+        assertEquals("/new", catalog.canon!!.getValue("/reset"))
+        assertEquals(ArgumentMode.OPTIONS, catalog.commands!!.getValue("/model").argumentMode)
+
+        assertEquals(
+            """{"text":"/git","session_id":"r1"}""",
+            wire.encodeToString(Methods.COMPLETE_SLASH.params, CompleteSlashParams(text = "/git", sessionId = "r1")),
+        )
+        val completed = wire.decodeFromString(
+            Methods.COMPLETE_SLASH.result,
+            """{"items":[{"text":"github","display":"/github","meta":"GitHub workflows","kind":"skill"}],"replace_from":1}""",
+        )
+        assertEquals("skill", completed.items!!.single().kind)
+        assertEquals(1L, completed.replaceFrom)
+    }
+
+    @Test
+    fun aDispatchAnswersOneOfTheCoresSixDirectivesWithDisplayApartFromMessage() {
+        assertEquals(
+            """{"name":"github","arg":"open PRs","session_id":"r1"}""",
+            wire.encodeToString(Methods.COMMAND_DISPATCH.params, CommandDispatchParams(name = "github", arg = "open PRs", sessionId = "r1")),
+        )
+
+        // The bubble shows `display`; the model gets `message`.
+        val skill = wire.decodeFromString(
+            Methods.COMMAND_DISPATCH.result,
+            """{"type":"skill","message":"<the expanded github skill>\n\nopen PRs","name":"github","display":"/github open PRs"}""",
+        )
+        assertEquals(DispatchType.SKILL, skill.type)
+        assertEquals("/github open PRs", skill.display)
+        assertEquals("<the expanded github skill>\n\nopen PRs", skill.message)
+
+        val send = wire.decodeFromString(Methods.COMMAND_DISPATCH.result, """{"type":"send","message":"p1 probe"}""")
+        assertEquals(DispatchType.SEND, send.type)
+        assertNull(send.display)
+        val exec = wire.decodeFromString(Methods.COMMAND_DISPATCH.result, """{"type":"exec","output":"done"}""")
+        assertEquals(DispatchType.EXEC, exec.type)
+        assertEquals("done", exec.output)
+        assertEquals(DispatchType.ALIAS, wire.decodeFromString(Methods.COMMAND_DISPATCH.result, """{"type":"alias","target":"/new"}""").type)
+
+        // A directive the contract does not name is a decode failure, never a default.
+        assertThrows(SerializationException::class.java) {
+            wire.decodeFromString(Methods.COMMAND_DISPATCH.result, """{"type":"slash","output":"x"}""")
+        }
+    }
 }

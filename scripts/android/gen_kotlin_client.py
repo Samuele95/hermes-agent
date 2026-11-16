@@ -34,16 +34,18 @@ class Surface:
 
 
 SURFACE = Surface(
-    methods=("client.capabilities", "config.get", "config.set", "cron.manage", "gateway.capabilities",
-             "model.disconnect", "model.options", "nous.login.cancel", "nous.login.poll", "nous.login.start", "ping",
-             "prompt.submit", "request.answer", "session.close", "session.compress", "session.context_breakdown",
-             "session.create", "session.delete", "session.history", "session.interrupt", "session.list",
-             "session.most_recent", "session.redirect", "session.resume", "session.save", "session.status",
-             "session.steer", "session.title", "setup.runtime_check", "setup.status", "skills.manage"),
+    methods=("client.capabilities", "command.dispatch", "commands.catalog", "complete.slash", "config.get",
+             "config.set", "cron.manage", "gateway.capabilities", "learning.delete", "learning.detail",
+             "learning.edit", "message.react", "model.disconnect", "model.options", "nous.login.cancel",
+             "nous.login.poll", "nous.login.start", "ping", "prompt.submit", "request.answer", "session.close",
+             "session.compress", "session.context_breakdown", "session.create", "session.delete", "session.history",
+             "session.interrupt", "session.list", "session.most_recent", "session.redirect", "session.resume",
+             "session.save", "session.status", "session.steer", "session.title", "setup.runtime_check",
+             "setup.status", "skills.manage", "skills.reload", "tools.configure", "toolsets.list"),
     events=("approval.cancelled", "cron.changed", "error", "message.complete", "message.delta", "message.interim",
-            "message.start", "platforms.changed", "reasoning.available", "reasoning.delta", "session.info",
-            "session.title", "session.usage", "request.cancel", "status.update", "thinking.delta", "todo.updated",
-            "tool.complete", "tool.generating", "tool.start"),
+            "message.reaction", "message.start", "platforms.changed", "reasoning.available", "reasoning.delta",
+            "session.info", "session.title", "session.usage", "request.cancel", "status.update", "thinking.delta",
+            "todo.updated", "tool.complete", "tool.generating", "tool.start"),
     requests=("approval", "clarify", "secret"),
 )
 

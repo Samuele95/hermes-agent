@@ -3,15 +3,20 @@ package com.nousresearch.hermes.bridge
 import com.nousresearch.hermes.bridge.protocol.ApprovalChoice
 import com.nousresearch.hermes.bridge.protocol.ApprovalResult
 import com.nousresearch.hermes.bridge.protocol.ChangeSignalPayload
+import com.nousresearch.hermes.bridge.protocol.CommandDispatchParams
 import com.nousresearch.hermes.bridge.protocol.CorrectionStatus
 import com.nousresearch.hermes.bridge.protocol.Events
+import com.nousresearch.hermes.bridge.protocol.MessageReactParams
 import com.nousresearch.hermes.bridge.protocol.Methods
 import com.nousresearch.hermes.bridge.protocol.PingParams
 import com.nousresearch.hermes.bridge.protocol.PingResult
+import com.nousresearch.hermes.bridge.protocol.ReactionAuthor
 import com.nousresearch.hermes.bridge.protocol.Requests
 import com.nousresearch.hermes.bridge.protocol.SessionCorrectionParams
 import com.nousresearch.hermes.bridge.protocol.SetupRuntimeCheckParams
 import com.nousresearch.hermes.bridge.protocol.StreamDeltaPayload
+import com.nousresearch.hermes.bridge.protocol.ToolsAction
+import com.nousresearch.hermes.bridge.protocol.ToolsConfigureParams
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
@@ -95,6 +100,43 @@ class FrameCoreGatewayTest {
         gateway.onFrame("""{"jsonrpc":"2.0","id":${lastId()},"error":{"code":5097,"message":"readiness check still running"}}""")
         val pending = check.await().exceptionOrNull() as CoreError
         assertEquals(5097, pending.code)
+    }
+
+    @Test
+    fun aReactionAndASwitchLeaveUnderTheirOwnNamesAndARefusedDispatchIsACoreError() = runTest(UnconfinedTestDispatcher()) {
+        val react = async {
+            gateway.call(Methods.MESSAGE_REACT, MessageReactParams(sessionId = "r1", rowId = 42, emoji = "👍", author = ReactionAuthor.USER))
+        }
+        assertEquals("message.react", sent.last().getValue("method").jsonPrimitive.content)
+        assertEquals(Json.parseToJsonElement("""{"session_id":"r1","row_id":42,"emoji":"👍","author":"user"}"""), sent.last().getValue("params"))
+        gateway.onFrame("""{"jsonrpc":"2.0","id":${lastId()},"result":{"row_id":42,"reactions":[{"emoji":"👍","author":"user"}]}}""")
+        assertEquals("👍", react.await().reactions.single().emoji)
+
+        val event = async { gateway.events.first() }
+        gateway.onFrame(
+            """{"jsonrpc":"2.0","method":"event","params":{"type":"message.reaction","session_id":"s1",""" +
+                """"payload":{"row_id":42,"reactions":[{"emoji":"❤️","author":"agent"}],"role":"assistant"}}}""",
+        )
+        assertEquals(42L, event.await().decode(Events.MESSAGE_REACTION)?.rowId)
+        assertEquals(null, event.await().decode(Events.MESSAGE_COMPLETE))
+
+        // A sessionless switch names no session (F2).
+        val switch = async {
+            gateway.call(Methods.TOOLS_CONFIGURE, ToolsConfigureParams(action = ToolsAction.DISABLE, names = listOf("browser")))
+        }
+        assertEquals("tools.configure", sent.last().getValue("method").jsonPrimitive.content)
+        assertEquals(Json.parseToJsonElement("""{"action":"disable","names":["browser"]}"""), sent.last().getValue("params"))
+        gateway.onFrame(
+            """{"jsonrpc":"2.0","id":${lastId()},"result":{"changed":["browser"],"enabled_toolsets":[],"missing_servers":[],""" +
+                """"reset":false,"unknown":[]}}""",
+        )
+        assertEquals(false, switch.await().reset)
+
+        // A command the core does not know is an error, never a result.
+        val dispatch = async { runCatching { gateway.call(Methods.COMMAND_DISPATCH, CommandDispatchParams(name = "nope")) } }
+        gateway.onFrame("""{"jsonrpc":"2.0","id":${lastId()},"error":{"code":4018,"message":"not a quick/plugin/bundle/skill command: nope"}}""")
+        val unknown = dispatch.await().exceptionOrNull() as CoreError
+        assertEquals(4018 to "not a quick/plugin/bundle/skill command: nope", unknown.code to unknown.message)
     }
 
     @Test
