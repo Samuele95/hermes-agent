@@ -8,8 +8,9 @@ apply: ``state.db`` is sessions, ``config.yaml`` config, ``memories/`` memories,
 the hub lock and the usage file), ``cron/`` jobs without its lock and pid files; everything else is no part, so
 ``.env``, ``auth.json``, ``vault.*``, ``profiles/``, ``_external/``, ``mcp-tokens/`` and runtime files are outside by
 construction, and a secret basename or ``mcp-tokens/`` inside a part is dropped too (D5). ``config.yaml`` crosses with
-every key field blanked by :func:`blank_keys`, on the way out and on the way in, so after a restore on a new phone the
-user signs in and re-enters keys.
+every key field blanked by :func:`blank_keys` (with every value of an MCP server's ``env`` map and of
+``terminal.docker_env``, and every header that is not only ``${VAR}`` references), on the way out and on the way in,
+so after a restore on a new phone the user signs in and re-enters keys.
 
 ``create`` writes ``TMPDIR/exports/hermes-backup-<UTC>.zip`` (replacing only the previous backup; a session export
 stays) through the core's ``_write_zip_entries``, so every ``*.db`` is a SQLite backup-API snapshot with no WAL or SHM.
@@ -47,6 +48,9 @@ BAD_SESSIONS = "The backup's session database could not be read."
 
 _KEY_NAMES = frozenset({"key", "api_key", "token", "secret", "password", "password_hash", "session_key"})
 _KEY_SUFFIXES = ("_api_key", "_token", "_secret", "_password")
+# Maps of HTTP headers (a remote MCP server's, a provider's): any header may carry a credential, so every value but
+# one that is only ${VAR} references is blanked; the header names stay.
+_HEADER_MAPS = frozenset({"headers", "extra_headers", "default_headers"})
 
 
 class _Unwritable(Exception):
@@ -110,14 +114,45 @@ def _is_key_field(name: object) -> bool:
     return lower in _KEY_NAMES or lower.endswith(_KEY_SUFFIXES)
 
 
-def blank_keys(value):
-    """A deep copy of a YAML value where every key field's value, whatever its shape, is ``""`` (pure). Names of a
-    slot or a count (``api_key_env``, ``key_env``, ``*_tokens``, ``min_secret_chars``) are not key fields."""
+def _is_env_map(path: tuple, name: object) -> bool:
+    """An env map of literal values: ``mcp_servers.<n>.env`` (``hermes mcp add --env K=V`` stores the value) and
+    ``terminal.docker_env`` (exact pairs set in the sandbox)."""
+    return (name == "env" and len(path) == 2 and path[0] == "mcp_servers") or (path, name) == (("terminal",),
+                                                                                                  "docker_env")
+
+
+def _blank_env(value):
+    return {k: "" for k in value} if isinstance(value, dict) else "" if value else value
+
+
+def _blank_headers(value):
+    from hermes_cli.mcp_config import _header_value_is_only_env_refs
+
+    if not isinstance(value, dict):
+        return "" if value else value
+    return {k: v if isinstance(v, str) and _header_value_is_only_env_refs(v) else "" for k, v in value.items()}
+
+
+def blank_keys(value, _path: tuple = ()):
+    """A deep copy of a YAML value where every key field's value, whatever its shape, is ``""``, as is every value
+    of an MCP server's ``env`` map and every header of a header map that is not only ``${VAR}`` references (pure).
+    Names of a slot or a count (``api_key_env``, ``key_env``, ``*_tokens``, ``min_secret_chars``) are not key
+    fields."""
     if isinstance(value, dict):
-        return {k: "" if _is_key_field(k) else blank_keys(v) for k, v in value.items()}
+        return {k: _blank_field(_path, k, v) for k, v in value.items()}
     if isinstance(value, list):
-        return [blank_keys(item) for item in value]
+        return [blank_keys(item, _path + (i,)) for i, item in enumerate(value)]
     return value
+
+
+def _blank_field(path: tuple, name, value):
+    if _is_key_field(name):
+        return ""
+    if str(name).lower() in _HEADER_MAPS:
+        return _blank_headers(value)
+    if _is_env_map(path, name):
+        return _blank_env(value)
+    return blank_keys(value, path + (name,))
 
 
 def create(_arg: str) -> str:

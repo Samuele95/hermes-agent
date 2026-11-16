@@ -42,7 +42,8 @@ SESSIONS = ["20261116_090000_aaaaaa", "20261116_090100_bbbbbb", "20261116_090200
 WAL_SESSION = "20261116_090300_dddddd"  # committed, still in the WAL, its connection open
 
 CONFIG = {
-    "model": {"default": "my-model", "provider": "custom", "api_key": "canary-cfg-6"},
+    "model": {"default": "my-model", "provider": "custom", "api_key": "canary-cfg-6",
+              "default_headers": {"Cookie": "session=canary-cfg-28"}},
     "approvals": {"timeout": 77},
     "auxiliary": {"vision": {"provider": "openrouter", "api_key": "canary-cfg-7"}},
     "delegation": {"model": "m", "api_key": "canary-cfg-9"},
@@ -52,14 +53,33 @@ CONFIG = {
     "platforms": {"telegram": {"enabled": True, "token": "canary-cfg-14"},
                   "api_server": {"extra": {"key": "canary-cfg-15", "port": 8642}}},
     "custom_providers": [{"name": "x", "base_url": "http://10.0.0.9/v1", "api_key": "canary-cfg-8",
-                          "key_env": "HERMES_CUSTOM_X_API_KEY"}],
+                          "key_env": "HERMES_CUSTOM_X_API_KEY",
+                          "extra_headers": {"Authorization": "Bearer canary-cfg-20"}}],
+    # User-shaped sections the core writes with literal values: `hermes mcp add --env K=V` (mcp_config.py), a remote
+    # MCP server's headers, a provider's header maps and the sandbox's exact env pairs.
+    "mcp_servers": {
+        "db": {"command": "npx", "args": ["-y", "db-mcp"],
+               "env": {"DATABASE_URL": "postgres://u:canary-cfg-21@db.local/app", "STRIPE_SECRET_KEY": "canary-cfg-22",
+                       "OPENAI_KEY": "canary-cfg-23"}},
+        "remote": {"url": "https://mcp.example/mcp",
+                   "headers": {"Authorization": "Bearer canary-cfg-24", "X-Api-Key": "canary-cfg-25",
+                               "X-Org": "canary-cfg-26", "X-Ref": "Bearer ${REMOTE_MCP_TOKEN}"}},
+    },
+    "terminal": {"backend": "local", "docker_env": {"SENTRY_DSN": "https://canary-cfg-27@sentry.local/1"}},
 }
+# What the header rule keeps: a value that is only ${VAR} references (it carries no secret), as the core judges it.
+ENV_REF_HEADERS = [("mcp_servers", "remote", "headers", "X-Ref")]
 # Each key field of CONFIG, as a path.
 KEY_FIELDS = [("model", "api_key"), ("auxiliary", "vision", "api_key"), ("delegation", "api_key"),
               ("dashboard", "basic_auth", "password"), ("dashboard", "basic_auth", "password_hash"),
               ("dashboard", "basic_auth", "secret"), ("browser", "camofox", "session_key"),
               ("platforms", "telegram", "token"), ("platforms", "api_server", "extra", "key"),
-              ("custom_providers", 0, "api_key")]
+              ("custom_providers", 0, "api_key"), ("custom_providers", 0, "extra_headers", "Authorization"),
+              ("model", "default_headers", "Cookie"),
+              ("mcp_servers", "db", "env", "DATABASE_URL"), ("mcp_servers", "db", "env", "STRIPE_SECRET_KEY"),
+              ("mcp_servers", "db", "env", "OPENAI_KEY"), ("mcp_servers", "remote", "headers", "Authorization"),
+              ("mcp_servers", "remote", "headers", "X-Api-Key"), ("mcp_servers", "remote", "headers", "X-Org"),
+              ("terminal", "docker_env", "SENTRY_DSN")]
 
 SECRETS = {  # file -> its canary: none may ever enter an archive or leave one
     ".env": "OPENAI_API_KEY=canary-env-1\n",
@@ -205,6 +225,10 @@ def test_the_archived_settings_keep_every_setting_and_blank_every_key_field(home
     assert archived["approvals"]["timeout"] == 77
     assert archived["custom_providers"][0]["key_env"] == "HERMES_CUSTOM_X_API_KEY"
     assert archived["platforms"]["api_server"]["extra"]["port"] == 8642
+    assert archived["mcp_servers"]["db"]["command"] == "npx"
+    assert archived["mcp_servers"]["remote"]["url"] == "https://mcp.example/mcp"
+    for path in ENV_REF_HEADERS:
+        assert _get(archived, path) == _get(CONFIG, path), path
     for path in KEY_FIELDS:
         assert _get(archived, path) == "", path
 
@@ -285,6 +309,35 @@ def test_blank_keys_blanks_any_shape_and_recurses_through_lists():
                                  "client_secret": "", "db_password": "", "Key": "",
                                  "keep": {"key_env": "X", "max_tokens": 9}}
     assert given["a"][0]["api_key"] == {"nested": 1}  # pure: the input is untouched
+
+
+def test_blank_keys_blanks_every_mcp_env_value_and_every_header_but_a_pure_env_reference():
+    from hermes_android.backup import blank_keys
+
+    given = {
+        "mcp_servers": {"s": {"command": "x", "env": {"A": "lit", "B": "${B}", "C": 3}, "headers": {
+            "Authorization": "Bearer lit", "Proxy-Authorization": "Basic lit", "Cookie": "c=lit", "Api-Key": "lit",
+            "X-Title": "lit", "X-Env": "${TOKEN}", "X-Bearer": "Bearer ${TOKEN}", "X-Mixed": "Bearer ${TOKEN}lit",
+            "X-Num": 7}}},
+        "providers": {"ollama": {"extra_headers": {"Authorization": "Bearer lit", "X-Env": "${OLLAMA_KEY}"}}},
+        "model": {"default_headers": {"X-Api-Key": "lit"}},
+        "terminal": {"docker_env": {"SENTRY_DSN": "lit"}},
+        "secrets": {"onepassword": {"env": {"GITHUB_PAT": "op://vault/item/field"}}},
+        "monitoring": {"export": {"otlp": {"headers_env": {"Authorization": "OTLP_AUTH"}}}},
+        "odd": {"headers": "Authorization: Bearer lit", "env": "kept"},
+    }
+    assert blank_keys(given) == {
+        "mcp_servers": {"s": {"command": "x", "env": {"A": "", "B": "", "C": ""}, "headers": {
+            "Authorization": "", "Proxy-Authorization": "", "Cookie": "", "Api-Key": "", "X-Title": "",
+            "X-Env": "${TOKEN}", "X-Bearer": "Bearer ${TOKEN}", "X-Mixed": "", "X-Num": ""}}},
+        "providers": {"ollama": {"extra_headers": {"Authorization": "", "X-Env": "${OLLAMA_KEY}"}}},
+        "model": {"default_headers": {"X-Api-Key": ""}},
+        "terminal": {"docker_env": {"SENTRY_DSN": ""}},
+        "secrets": {"onepassword": {"env": {"GITHUB_PAT": "op://vault/item/field"}}},  # op:// references
+        "monitoring": {"export": {"otlp": {"headers_env": {"Authorization": "OTLP_AUTH"}}}},  # env slot names
+        "odd": {"headers": "", "env": "kept"},  # a header value of no map shape is blanked whole
+    }
+    assert given["mcp_servers"]["s"]["env"]["A"] == "lit"  # pure: the input is untouched
 
 
 def test_the_sessions_are_a_snapshot_with_the_wal_row_and_no_sidecar(home, cache, tmp_path):
