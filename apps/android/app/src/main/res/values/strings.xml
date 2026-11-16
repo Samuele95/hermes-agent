@@ -161,6 +161,9 @@
     <string name="setup_limited">%1$s hit its usage limit. You can still pick a model for after it resets.</string>
     <string name="setup_usage_window">%1$s: %2$d%% left, resets %3$s</string>
     <string name="setup_usage_window_no_reset">%1$s: %2$d%% left</string>
+    <string name="setup_usage_limited">%1$s: Limited</string>
+    <string name="setup_usage_limited_until">%1$s: Limited until %2$s</string>
+    <string name="setup_usage_signin">%1$s: Sign in again</string>
     <string name="setup_usage_unknown">%1$s: usage unavailable</string>
     <string name="setup_add_custom_model">Add custom model…</string>
     <string name="setup_custom_model_hint">Type a model id, e.g. openai/gpt-5</string>

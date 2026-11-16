@@ -94,7 +94,8 @@ class ModelFactsTest {
             {"label":"Session","used_percent":63.6,"resets_at":"2026-11-15T10:00:00+00:00"},
             {"label":"Day","used_percent":99,"resets_at":"2026-11-15T06:00:00+00:00"}]}""").usage
 
-        assertEquals(listOf(UsageWindow("Session", 64, "2026-11-15T10:00:00+00:00"), UsageWindow("Week", 20, "2026-11-20T00:00:00+00:00")),
+        assertEquals(listOf(UsageWindow.Known("Session", 64, "2026-11-15T10:00:00+00:00"), UsageWindow.Known("Week", 20,
+                                                                                                         "2026-11-20T00:00:00+00:00")),
                      shown)
     }
 
@@ -108,8 +109,29 @@ class ModelFactsTest {
             {"id":"3","label":"spare","state":"unknown"},
             {"id":"4","label":"","state":"ready","windows":[]}]}""").usage
 
-        assertEquals(listOf(UsageWindow("work", 70, "2026-11-20T00:00:00+00:00"), UsageWindow("home", 100, "2026-11-15T12:00:00+00:00"),
-                            UsageWindow("spare", null, null), UsageWindow("Account 4", null, null)), shown)
+        assertEquals(listOf(UsageWindow.Known("work", 70, "2026-11-20T00:00:00+00:00"), UsageWindow.Limited("home",
+                                                                                                         "2026-11-15T12:00:00+00:00"),
+                            UsageWindow.Unknown("spare"), UsageWindow.Unknown("Account 4")), shown)
+    }
+
+    /** Each pool account keeps the core's state: limited with or without a reset, signed out, or not known (improve #3). */
+    @Test
+    fun aPoolAccountKeepsItsStateNeverAPercentageForALimitOrASignOut() {
+        val shown = facts("""["a"]""", """"usage":{"accounts":[
+            {"id":"1","label":"capped","state":"limited"},
+            {"id":"2","label":"cooling","state":"limited","resets_at":"2026-11-15T12:00:00+00:00",
+             "windows":[{"label":"Session","used_percent":100,"resets_at":"2026-11-15T12:00:00+00:00"}]},
+            {"id":"3","label":"over","state":"limited","resets_at":"2026-11-15T07:00:00+00:00"},
+            {"id":"4","label":"revoked","state":"unavailable"},
+            {"id":"5","label":"blind","state":"unknown","windows":[{"label":"Session","used_percent":40}]},
+            {"id":"6","label":"odd","state":"paused","windows":[{"label":"Session","used_percent":40}]}]}""").usage
+
+        assertEquals(listOf(UsageWindow.Limited("capped", null), UsageWindow.Limited("cooling", "2026-11-15T12:00:00+00:00"),
+                            // A reset already past is not fresh quota: not known, never "Limited until" a time gone by.
+                            UsageWindow.Unknown("over"),
+                            UsageWindow.Unavailable("revoked"),
+                            // Windows on an account the core does not call ready are no gauge.
+                            UsageWindow.Unknown("blind"), UsageWindow.Unknown("odd")), shown)
     }
 
     @Test

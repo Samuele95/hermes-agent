@@ -301,7 +301,10 @@ private fun CustomModelField(provider: ProviderChoice, setup: Setup, onCustomMod
     }
 }
 
-/** The provider's notes above its models, each only when the core reported it: its warning, an account limit, its usage. */
+/**
+ * The provider's notes above its models, each only when the core reported it: its warning, an account limit, its usage,
+ * each account in its own state's words.
+ */
 @Composable
 private fun ProviderNotes(provider: ProviderChoice, nowMs: Long) {
     val facts = provider.facts
@@ -314,12 +317,17 @@ private fun ProviderNotes(provider: ProviderChoice, nowMs: Long) {
                  Modifier.testTag("provider-limited"))
         }
         if (facts.usage.isNotEmpty()) {
+            // One line per state, in Desktop's words (PoolUsageTip): exhaustive, so a new state fails compilation until it has words.
             Hint(facts.usage.map { window ->
-                val left = window.usedPercent?.let { 100 - it }
-                when {
-                    left == null -> stringResource(R.string.setup_usage_unknown, window.label)
-                    window.resetsAt != null -> stringResource(R.string.setup_usage_window, window.label, left, resetTime(window.resetsAt, nowMs))
-                    else -> stringResource(R.string.setup_usage_window_no_reset, window.label, left)
+                when (window) {
+                    is UsageWindow.Known -> window.resetsAt
+                        ?.let { stringResource(R.string.setup_usage_window, window.label, 100 - window.usedPercent, resetTime(it, nowMs)) }
+                        ?: stringResource(R.string.setup_usage_window_no_reset, window.label, 100 - window.usedPercent)
+                    is UsageWindow.Limited -> window.resetsAt
+                        ?.let { stringResource(R.string.setup_usage_limited_until, window.label, resetTime(it, nowMs)) }
+                        ?: stringResource(R.string.setup_usage_limited, window.label)
+                    is UsageWindow.Unavailable -> stringResource(R.string.setup_usage_signin, window.label)
+                    is UsageWindow.Unknown -> stringResource(R.string.setup_usage_unknown, window.label)
                 }
             }.joinToString(" · "), Modifier.testTag("provider-usage"))
         }

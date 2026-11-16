@@ -20,8 +20,26 @@ import kotlin.math.roundToInt
 data class ModelFacts(val input: String? = null, val output: String? = null, val free: Boolean = false,
                       val locked: Boolean = false, val resetsAt: String? = null)
 
-/** One subscription usage line: [usedPercent] null means the core does not know; [resetsAt] the core's ISO time. */
-data class UsageWindow(val label: String, val usedPercent: Int?, val resetsAt: String?)
+/**
+ * One subscription usage line in the state the core gave it (Desktop's `PoolUsageTip`): a closed set the screen renders
+ * case by case, so a new state fails compilation until it has words and never falls to a percentage (EJ-34, GoF State).
+ * [label]: the window's name, or the pool account's.
+ */
+sealed interface UsageWindow {
+    val label: String
+
+    /** A live window, [usedPercent] of it spent (0–100), rolling over at the core's ISO [resetsAt] (null: not said). */
+    data class Known(override val label: String, val usedPercent: Int, val resetsAt: String?) : UsageWindow
+
+    /** A pool account the core holds `limited` (spent) until its ISO [resetsAt]; null: the core does not know when. */
+    data class Limited(override val label: String, val resetsAt: String?) : UsageWindow
+
+    /** A pool account whose credential the core holds dead (`unavailable`): signing in again brings it back. */
+    data class Unavailable(override val label: String) : UsageWindow
+
+    /** A pool account whose usage the core does not know: `unknown`, a stale `ready`, or a reset already past. */
+    data class Unknown(override val label: String) : UsageWindow
+}
 
 /**
  * What the core's list says about a provider, built once from one `model.options` row and never patched (EJ-17): the
@@ -43,8 +61,9 @@ data class ProviderFacts(val warning: String? = null, val limited: Boolean = fal
  *   already past is no limit (a stale catalog clears itself, as Desktop's `providerLimit`).
  * - A model's price keeps the core's strings, `""` (unknown) read as none; it is locked when the core lists it
  *   unavailable, and keeps its own `models` limit while that is not past.
- * - A credential pool (`usage.accounts`) is one line per account, never one average (the contract's rule): a limited
- *   account is spent until its reset, a ready one is its tightest live window, and any other is not known. Without
+ * - A credential pool (`usage.accounts`) is one line per account, never one average (the contract's rule), in the core's
+ *   state: limited (with its reset, or none), unavailable, ready (its tightest live window) or not known (`unknown`, a
+ *   ready one with no live window, a state the contract does not name, or any account whose reset is past). Without
  *   accounts, the live windows show tightest first; a rolled-over one is dropped.
  */
 fun ProviderFacts.Companion.of(row: ModelOptionProvider, nowMs: Long): ProviderFacts {
@@ -64,7 +83,7 @@ fun ProviderFacts.Companion.of(row: ModelOptionProvider, nowMs: Long): ProviderF
         accounts.mapIndexed { index, account -> account.line(index, live) }
     } else {
         row.usage?.windows.orEmpty().filter { live(it.resetsAt) }.sortedByDescending { it.usedPercent }
-            .map { UsageWindow(it.label, it.percent, it.resetsAt) }
+            .map { UsageWindow.Known(it.label, it.percent, it.resetsAt) }
     }
     return ProviderFacts(warning = row.warning?.trim()?.takeIf { it.isNotEmpty() }, limited = limited,
                          limitedUntil = limit?.resetsAt.takeIf { limited }, usage = usage, models = models)
@@ -77,9 +96,11 @@ private fun ProviderUsageAccount.line(index: Int, live: (String?) -> Boolean): U
     val name = label.ifEmpty { "Account ${index + 1}" }
     val tightest = windows.orEmpty().filter { live(it.resetsAt) }.maxByOrNull { it.usedPercent }
     return when {
-        state == "limited" && live(resetsAt) -> UsageWindow(name, 100, resetsAt)
-        state == "ready" && tightest != null -> UsageWindow(name, tightest.percent, tightest.resetsAt)
-        else -> UsageWindow(name, null, null)  // unknown, unavailable, stale, or a limit already over
+        !live(resetsAt) -> UsageWindow.Unknown(name)  // a passed reset is not fresh quota (Desktop's poolUsage)
+        state == "unavailable" -> UsageWindow.Unavailable(name)
+        state == "limited" -> UsageWindow.Limited(name, resetsAt)
+        state == "ready" && tightest != null -> UsageWindow.Known(name, tightest.percent, tightest.resetsAt)
+        else -> UsageWindow.Unknown(name)  // unknown, a stale ready, or a state the contract does not name
     }
 }
 

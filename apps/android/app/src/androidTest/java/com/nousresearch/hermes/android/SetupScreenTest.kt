@@ -129,7 +129,7 @@ class SetupScreenTest {
     @Test
     fun theProvidersWarningLimitAndUsageShowAboveItsModels() {
         val facts = ProviderFacts(warning = "DeepSeek is slow today", limited = true,
-                                  usage = listOf(UsageWindow("Session", 63, null), UsageWindow("Account 2", null, null)),
+                                  usage = listOf(UsageWindow.Known("Session", 63, null), UsageWindow.Unknown("Account 2")),
                                   models = mapOf("v4" to ModelFacts(resetsAt = "2099-01-01T10:00:00+00:00")))
         show(Setup(SetupStep.Models(deepseek.copy(ready = true, models = listOf("v4"), facts = facts))))
 
@@ -139,6 +139,19 @@ class SetupScreenTest {
             .assert(hasText("Account 2: usage unavailable", substring = true))
         compose.onNodeWithTag("model-v4").assert(hasAnyDescendant(hasText("resets ", substring = true))).performClick()
         assertEquals(listOf("model:v4:false"), picked)
+    }
+
+    /** A pool account reads in its state's words, Desktop's: never "0% left" for a limit, never "usage unavailable" for a sign-out (improve #3). */
+    @Test
+    fun aPoolAccountReadsLimitedOrSignInAgainNeverAPercentage() {
+        // No offset: the phone's own wall time, so the line is the same in any zone; a far day shows its date.
+        val facts = ProviderFacts(usage = listOf(UsageWindow.Limited("home", null), UsageWindow.Limited("work", "2099-01-01T10:00:00"),
+                                                 UsageWindow.Unavailable("old"), UsageWindow.Unknown("spare")))
+        show(Setup(SetupStep.Models(deepseek.copy(ready = true, models = listOf("v4"), facts = facts))))
+
+        compose.onNodeWithTag("provider-usage")
+            .assert(hasText("home: Limited · work: Limited until 2099-01-01 10:00 · old: Sign in again · spare: usage unavailable"))
+            .assert(!hasText("% left", substring = true))
     }
 
     @Test
