@@ -38,6 +38,11 @@
     <string name="chat_copy">Copy</string>
     <string name="chat_copied">Copied</string>
     <string name="chat_copy_code">Copy code</string>
+    <string name="chat_time_yesterday">Yesterday, %1$s</string>
+    <string name="chat_turn_length">⏱ %1$s</string>
+    <string name="chat_turn_took">This turn took %1$s</string>
+    <string name="chat_show_time">Show time</string>
+    <string name="chat_hide_time">Hide time</string>
     <string name="tool_details">Tool details</string>
     <string name="tool_expanded">Expanded</string>
     <string name="tool_collapsed">Collapsed</string>

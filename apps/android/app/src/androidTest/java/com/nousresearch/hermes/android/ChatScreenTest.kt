@@ -79,6 +79,8 @@ import androidx.compose.runtime.setValue
 import com.nousresearch.hermes.android.chat.HistoryUi
 import com.nousresearch.hermes.bridge.protocol.SessionListRow
 import org.junit.Rule
+import android.text.format.DateFormat
+import java.util.Calendar
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -1323,5 +1325,75 @@ class ChatScreenTest {
         chat = chat.copy(entries = chat.entries + Entry.Reply("Slept.", TurnStatus.COMPLETE, stableId = 2))
         compose.onNodeWithText("Slept.").assertExists()
         compose.onNodeWithTag("tool-detail").assertExists()  // the open flag follows the entry's id
+    }
+
+    /** Epoch ms of a local time in the device's own zone (the screen's default); months are 1-based here. */
+    private fun local(year: Int, month: Int, day: Int, hour: Int, minute: Int): Long =
+        Calendar.getInstance().apply { clear(); set(year, month - 1, day, hour, minute) }.timeInMillis
+
+    /** The clock the screen writes: the phone's own 24-hour setting, read, never set. */
+    private val h24: Boolean get() = DateFormat.is24HourFormat(InstrumentationRegistry.getInstrumentation().targetContext)
+
+    /** The wall clock the times are read against, so the device's real date never matters. */
+    private val nowMs = local(2026, 11, 16, 10, 0)
+
+    @Test
+    fun aTapOnYourMessageShowsWhenYouSentIt() {
+        val chat = Chat(listOf(Entry.User("hi", stableId = 0, at = local(2026, 11, 15, 15, 27)),
+                               Entry.User("again", stableId = 1, at = local(2026, 11, 16, 9, 5)),
+                               Entry.User("undated", stableId = 2)))
+        compose.setContent { ChatScreen(chat, onSend = {}, now = { nowMs }) }
+
+        compose.onAllNodesWithTag("message-time").assertCountEquals(0)
+        compose.onNodeWithText("hi").performClick()
+        compose.onNodeWithTag("message-time").assertTextEquals("Yesterday, " + (if (h24) "15:27" else "3:27 PM"))
+
+        compose.onNodeWithText("hi").performClick()
+        compose.onAllNodesWithTag("message-time").assertCountEquals(0)
+
+        compose.onNodeWithText("again").performClick()
+        compose.onNodeWithTag("message-time").assertTextEquals(if (h24) "09:05" else "9:05 AM")
+        compose.onNodeWithText("undated").assertHasNoClickAction()
+    }
+
+    @Test
+    fun anAnswerSaysHowLongItsTurnTookAndATapShowsWhenItCame() {
+        val chat = Chat(listOf(Entry.User("weather?", stableId = 0),
+                               Entry.Reply("Sunny.", TurnStatus.COMPLETE, stableId = 1, at = local(2025, 9, 28, 15, 27), tookMs = 64_000)))
+        compose.setContent { ChatScreen(chat, onSend = {}, onCopy = {}, onRetry = {}, now = { nowMs }) }
+
+        compose.onNodeWithTag("turn-duration").assertTextEquals("\u23F1 1:04")
+        compose.onNodeWithContentDescription("This turn took 1:04").assertExists()
+        compose.onAllNodesWithTag("message-time").assertCountEquals(0)
+
+        compose.onNodeWithText("Sunny.").performClick()
+        compose.onNodeWithTag("message-time").assertTextEquals("Sep 28, 2025, " + (if (h24) "15:27" else "3:27 PM"))
+        // One row: Copy and Retry at its start, the time and the turn's length at its end.
+        val took = compose.onNodeWithTag("turn-duration").getUnclippedBoundsInRoot()
+        for (tag in listOf("copy-reply", "retry", "message-time")) {
+            val b = compose.onNodeWithTag(tag).getUnclippedBoundsInRoot()
+            assertEquals(tag, (took.top + took.bottom).value / 2, (b.top + b.bottom).value / 2, 1f)
+        }
+
+        // A second tap inside the double-tap timeout is the selection's own (SelectionContainer selects the word it
+        // touches): the reader's second tap comes later.
+        compose.mainClock.advanceTimeBy(1_000)
+        compose.onNodeWithText("Sunny.").performClick()
+        compose.onAllNodesWithTag("message-time").assertCountEquals(0)
+    }
+
+    @Test
+    fun aTurnTheAppDidNotSeeStartShowsNoLengthAndAnUntimedAnswerNoTime() {
+        val chat = Chat(listOf(Entry.Reply("Resumed.", TurnStatus.COMPLETE, stableId = 0, at = local(2026, 11, 16, 9, 5)),
+                               Entry.Reply("Old.", TurnStatus.COMPLETE, stableId = 1)))
+        compose.setContent { ChatScreen(chat, onSend = {}, onCopy = {}, now = { nowMs }) }
+
+        compose.onAllNodesWithTag("turn-duration").assertCountEquals(0)
+        compose.onNodeWithText("Old.").performClick()
+        compose.onAllNodesWithTag("message-time").assertCountEquals(0)
+        compose.onAllNodesWithTag("entry-reply")[1].assertHasNoClickAction()
+
+        compose.onNodeWithText("Resumed.").performClick()
+        compose.onNodeWithTag("message-time").assertExists()
     }
 }

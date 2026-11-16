@@ -7,6 +7,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -68,11 +69,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringArrayResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
@@ -119,6 +123,7 @@ class StatusActions(val open: () -> Unit, val close: () -> Unit)
  * the composer until dismissed ([onDismissWall]); its action opens the core's page through [onOpenUrl], else setup (models-23).
  * The top bar's ⋮ menu offers Status ([statusActions]; [status] is that sheet while it is open) and Export of the chat's own
  * session ([exportActions]; [exportUi] shows one on its way and a failure's words); without their actions there is no menu.
+ * [now] is the wall clock a message's time is read against when a tap shows it (a test passes its own), as `SetupScreen`'s.
  */
 @Composable
 fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifier, answers: PromptAnswers? = null,
@@ -129,7 +134,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
                queueActions: QueueActions? = null, onOfferTaken: (IncomingText) -> Unit = {}, readiness: Readiness? = null,
                onCheckReadiness: (() -> Unit)? = null, onOpenUrl: ((String) -> Unit)? = null, onDismissWall: () -> Unit = {},
                exportUi: ExportUi = ExportUi(), exportActions: ExportActions? = null, status: StatusUi? = null,
-               statusActions: StatusActions? = null) {
+               statusActions: StatusActions? = null, now: () -> Long = System::currentTimeMillis) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var picked by remember { mutableIntStateOf(0) }  // a conversation picked in the drawer is shown from its end (V5)
@@ -159,7 +164,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
                    exportActions?.export, exporting = exportUi.busy)
             if (exportUi.busy) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp).testTag("export-busy"))
             if (chat.entries.isEmpty() && !chat.running && chat.prompts.isEmpty()) Intro(Modifier.weight(1f))
-            else Transcript(chat, onRetry, onCopy, picked, places?.gateway, Modifier.weight(1f))
+            else Transcript(chat, onRetry, onCopy, picked, places?.gateway, now, Modifier.weight(1f))
             // The billing wall tops the stack above the composer: a blocker outranks the rest (D7); the composer stays usable.
             chat.wall?.let { BillingBanner(it, onOpenUrl, places?.setup, onDismissWall) }
             // One question at a time, the oldest first: the turn waits on it.
@@ -237,8 +242,9 @@ private fun Intro(modifier: Modifier) {
 
 @Composable
 private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, onCopy: ((String) -> Unit)?, picked: Int, onGateway: (() -> Unit)?,
-                       modifier: Modifier) {
+                       now: () -> Long, modifier: Modifier) {
     val list = rememberLazyListState()
+    val h24 = android.text.format.DateFormat.is24HourFormat(LocalContext.current)  // the phone's own clock setting (D3)
     // chat-17 (F9, DC-B16): whether the list follows its newest row belongs to the view, never to the conversation.
     var following by rememberSaveable { mutableStateOf(true) }
     val dragged by list.interactionSource.collectIsDraggedAsState()  // the reader's finger only, never a scroll of ours
@@ -264,7 +270,7 @@ private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, onCopy: ((String) -> 
             // Each row's state (the reasoning fold, the bubble's menu) is kept by its entry's id, not its place: a rewind or a
             // re-read transcript never hands it to another row (/improve 20261113T221531Z #8).
             itemsIndexed(chat.entries, key = { _, entry -> entry.stableId }) { i, entry ->
-                EntryRow(entry, onCopy, retry.takeIf { i == chat.entries.lastIndex && entry is Entry.Reply }, onGateway)
+                EntryRow(entry, onCopy, retry.takeIf { i == chat.entries.lastIndex && entry is Entry.Reply }, onGateway, now, h24)
             }
             retry?.takeIf { chat.entries.last() !is Entry.Reply }?.let { item { RetryAction(failed = true, it) } }
             chat.reasoning?.takeIf { chat.running && it.isNotBlank() }?.let { text -> item { Reasoning(text, Modifier.testTag("reasoning-streaming")) } }
@@ -312,12 +318,43 @@ private fun RetryAction(failed: Boolean, onRetry: () -> Unit) {
     }
 }
 
-/** Under a finished answer: Copy (its Markdown, DC-B13), and Retry when it is the last (the desktop's action bar). */
+/**
+ * Under a finished answer: Copy (its Markdown, DC-B13) and Retry when it is the last (the desktop's action bar), then its
+ * time when a tap showed it and how long its turn took when this app measured it (chat-15).
+ */
 @Composable
-private fun ReplyActions(reply: Entry.Reply, onCopy: ((String) -> Unit)?, onRetry: (() -> Unit)?) {
-    Row(Modifier.testTag("reply-actions"), verticalAlignment = Alignment.CenterVertically) {
+private fun ReplyActions(reply: Entry.Reply, onCopy: ((String) -> Unit)?, onRetry: (() -> Unit)?, time: String?) {
+    Row(Modifier.fillMaxWidth().testTag("reply-actions"), verticalAlignment = Alignment.CenterVertically) {
         onCopy?.let { CopyButton(reply.text, it, stringResource(R.string.chat_copy), Modifier.testTag("copy-reply")) }
         onRetry?.let { RetryAction(failed = reply.status != TurnStatus.COMPLETE, it) }
+        Spacer(Modifier.weight(1f))
+        time?.let {
+            Text(it, Modifier.padding(horizontal = 4.dp).testTag("message-time"), style = MaterialTheme.typography.labelSmall,
+                 color = Hermes.colors.textTertiary)
+        }
+        // Only a turn this app saw start is timed (invariant 7): no length is ever derived from the entries' times.
+        reply.tookMs?.let {
+            val took = turnLength(it)
+            val said = stringResource(R.string.chat_turn_took, took)
+            Text(stringResource(R.string.chat_turn_length, took),
+                 Modifier.padding(horizontal = 4.dp).testTag("turn-duration").semantics { contentDescription = said },
+                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+/**
+ * The words a tap on a message shows for [at] (epoch ms) while [shown], read against [now] once at the tap (D8) in the
+ * phone's own clock ([h24]); null while hidden.
+ */
+@Composable
+private fun timeText(at: Long, shown: Boolean, now: () -> Long, h24: Boolean): String? {
+    if (!shown) return null
+    val nowMs = remember(shown) { now() }
+    return when (val time = MessageTime.of(at, ShownAt(nowMs, h24))) {
+        is MessageTime.Today -> time.clock
+        is MessageTime.Yesterday -> stringResource(R.string.chat_time_yesterday, time.clock)
+        is MessageTime.Day -> time.text
     }
 }
 
@@ -349,26 +386,39 @@ private fun JumpToLatest(modifier: Modifier, onClick: () -> Unit) {
 }
 
 @Composable
-private fun EntryRow(entry: Entry, onCopy: ((String) -> Unit)?, retry: (() -> Unit)?, onGateway: (() -> Unit)?) {
+private fun EntryRow(entry: Entry, onCopy: ((String) -> Unit)?, retry: (() -> Unit)?, onGateway: (() -> Unit)?, now: () -> Long,
+                     h24: Boolean) {
     when (entry) {
-        is Entry.User -> UserBubble(entry.text, entry.correction, onCopy)
-        is Entry.Reply -> Column(Modifier.fillMaxWidth().testTag("entry-reply")) {
-            entry.reasoning?.let { reasoning ->
-                var shown by rememberSaveable { mutableStateOf(false) }
-                Row(Modifier.clickable { shown = !shown }.testTag("reasoning-toggle").padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically) {
-                    Icon(if (shown) HermesIcons.ChevronDown else HermesIcons.ChevronRight, null, Modifier.size(14.dp),
-                         tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(stringResource(R.string.chat_thinking), Modifier.padding(start = 4.dp), style = MaterialTheme.typography.labelLarge,
-                         color = MaterialTheme.colorScheme.onSurfaceVariant)
+        is Entry.User -> UserBubble(entry, onCopy, now, h24)
+        is Entry.Reply -> {
+            var timeShown by rememberSaveable { mutableStateOf(false) }  // the time a tap showed: this view's own state
+            val label = stringResource(if (timeShown) R.string.chat_hide_time else R.string.chat_show_time)
+            // A tap on its words shows when it came (D1, chat-15): a bare tap, not a click, so its text and code blocks stay
+            // their own nodes and no ripple spans it (D2); a tap a child takes (a link, a code block's Copy, the fold, an
+            // action) never reaches it.
+            val tap = entry.at?.let { at ->
+                Modifier.semantics { onClick(label = label) { timeShown = !timeShown; true } }
+                    .pointerInput(at) { detectTapGestures(onTap = { timeShown = !timeShown }) }
+            } ?: Modifier
+            Column(Modifier.fillMaxWidth().then(tap).testTag("entry-reply")) {
+                entry.reasoning?.let { reasoning ->
+                    var shown by rememberSaveable { mutableStateOf(false) }
+                    Row(Modifier.clickable { shown = !shown }.testTag("reasoning-toggle").padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Icon(if (shown) HermesIcons.ChevronDown else HermesIcons.ChevronRight, null, Modifier.size(14.dp),
+                             tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(stringResource(R.string.chat_thinking), Modifier.padding(start = 4.dp), style = MaterialTheme.typography.labelLarge,
+                             color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (shown) Reasoning(reasoning, Modifier.padding(bottom = 8.dp))
                 }
-                if (shown) Reasoning(reasoning, Modifier.padding(bottom = 8.dp))
+                if (entry.text.isNotEmpty()) Reply(entry.text, onCopy)
+                // The core often words the error into the reply itself; show it apart only when it did not.
+                entry.error?.takeUnless { it in entry.text }?.let { Problem(it) }
+                val copy = onCopy?.takeIf { entry.text.isNotBlank() }
+                val time = entry.at?.let { timeText(it, timeShown, now, h24) }
+                if (copy != null || retry != null || entry.tookMs != null || time != null) ReplyActions(entry, copy, retry, time)
             }
-            if (entry.text.isNotEmpty()) Reply(entry.text, onCopy)
-            // The core often words the error into the reply itself; show it apart only when it did not.
-            entry.error?.takeUnless { it in entry.text }?.let { Problem(it) }
-            val copy = onCopy?.takeIf { entry.text.isNotBlank() }
-            if (copy != null || retry != null) ReplyActions(entry, copy, retry)
         }
         // Commentary reads like the agent's words, without the reply's reasoning fold (and, later, its actions).
         is Entry.Interim -> Column(Modifier.fillMaxWidth().testTag("entry-interim")) { Reply(entry.text, onCopy) }
@@ -400,16 +450,22 @@ private fun Reasoning(text: String, modifier: Modifier = Modifier) {
 }
 
 /**
- * The user's words in a bubble; a long press offers Copy (V6: the drawer row's menu, a phone has no hover bar). A
- * correction sent while a turn ran says beneath it what the core did with it, once the core answered.
+ * The user's words in a bubble; a tap shows when it was sent (chat-15, DC-P18), a long press offers Copy (V6: the drawer
+ * row's menu, a phone has no hover bar). A correction sent while a turn ran says beneath it what the core did with it,
+ * once the core answered.
  */
 @Composable
-private fun UserBubble(text: String, correction: Correction?, onCopy: ((String) -> Unit)?) {
+private fun UserBubble(user: Entry.User, onCopy: ((String) -> Unit)?, now: () -> Long, h24: Boolean) {
+    val text = user.text
     val shape = RoundedCornerShape(14.dp)
     var menu by remember { mutableStateOf(false) }
-    val press = onCopy?.let {
-        Modifier.combinedClickable(onClick = {}, onLongClickLabel = stringResource(R.string.chat_message_actions), onLongClick = { menu = true })
-    } ?: Modifier
+    var shown by rememberSaveable { mutableStateOf(false) }  // the time a tap showed: this view's own state
+    val timeLabel = user.at?.let { stringResource(if (shown) R.string.chat_hide_time else R.string.chat_show_time) }
+    val menuLabel = onCopy?.let { stringResource(R.string.chat_message_actions) }
+    val press = if (onCopy != null || user.at != null) {
+        Modifier.combinedClickable(onClick = { if (user.at != null) shown = !shown }, onClickLabel = timeLabel,
+                                   onLongClick = onCopy?.let { { menu = true } }, onLongClickLabel = menuLabel)
+    } else Modifier
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
         Box {
             Text(text, Modifier.widthIn(max = 320.dp).clip(shape).then(press).background(Hermes.colors.userBubble, shape)
@@ -420,7 +476,11 @@ private fun UserBubble(text: String, correction: Correction?, onCopy: ((String) 
                                  Modifier.testTag("copy-message"), leadingIcon = { Icon(HermesIcons.Copy, null, Modifier.size(16.dp)) })
             }
         }
-        outcome(correction)?.let {
+        user.at?.let { timeText(it, shown, now, h24) }?.let {
+            Text(it, Modifier.padding(top = 4.dp).testTag("message-time"), style = MaterialTheme.typography.labelSmall,
+                 color = Hermes.colors.textTertiary)
+        }
+        outcome(user.correction)?.let {
             Text(stringResource(it), Modifier.padding(top = 4.dp).testTag("correction"), style = MaterialTheme.typography.labelSmall,
                  color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
