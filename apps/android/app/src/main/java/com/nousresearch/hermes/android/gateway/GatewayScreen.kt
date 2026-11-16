@@ -102,7 +102,8 @@ fun GatewayScreen(state: GatewayUi, samsung: Boolean, onOn: () -> Unit, onOff: (
  * The phone's own bot (D11, D24): what it is doing (the core's own entry only from the running gateway, D39 F3), its
  * switch (as config.yaml has it: on only while a token is held, D40, off always, Dv54), a way to the token field while
  * none is held, a change waiting for the gateway's next start with Restart, its token (masked, kept only until saved),
- * the one user allowed to talk to it, and Remove the bot after a confirmation.
+ * the one user allowed to talk to it, and Remove the bot after a confirmation. The switch, Restart, Save and Remove
+ * wait while a save, a switch or a removal runs.
  */
 @Composable
 private fun TelegramSection(state: TelegramState, onSave: (ByteArray?, String) -> Unit, onTelegram: TelegramActions?,
@@ -129,7 +130,7 @@ private fun TelegramSection(state: TelegramState, onSave: (ByteArray?, String) -
         if (state.nextStart) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Hint(stringResource(R.string.telegram_next_start), Modifier.weight(1f).testTag("telegram-next-start"))
-                TextButton(onRestart, Modifier.testTag("telegram-restart")) { Text(stringResource(R.string.gateway_restart)) }
+                TextButton(onRestart, Modifier.testTag("telegram-restart"), enabled = !state.busy) { Text(stringResource(R.string.gateway_restart)) }
             }
         }
         if (state.bot != null) {

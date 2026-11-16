@@ -142,6 +142,25 @@ class TelegramBotScreenTest {
         compose.onNodeWithTag("telegram-restart").assertDoesNotExist()
     }
 
+    /** Restart waits with the switch, Save and Remove while a save, a switch or a removal runs; the note stays (N5's FOUND). */
+    @Test
+    fun whileBusyRestartWaitsAndTheNoteStays() {
+        show(TelegramState(tokenHeld = true, enabled = true, nextStart = true, busy = true))  // a switch or a removal runs
+
+        compose.onNodeWithTag("telegram-next-start").performScrollTo().assertExists()
+        compose.onNodeWithTag("telegram-restart").performScrollTo().assertIsNotEnabled().performClick()
+        assertEquals("a change runs: no restart", emptyList<String>(), calls)
+
+        bot = TelegramState(tokenHeld = true, enabled = true, nextStart = true)
+        compose.onNodeWithTag("telegram-restart").performScrollTo().assertIsEnabled().performClick()
+        assertEquals("idle: Restart restarts", listOf("restart"), calls)
+
+        bot = TelegramState(tokenHeld = false, enabled = false, nextStart = true, busy = true)  // after a removal, a new token saves
+        compose.onNodeWithTag("telegram-next-start").performScrollTo().assertExists()
+        compose.onNodeWithTag("telegram-restart").performScrollTo().assertIsNotEnabled().performClick()
+        assertEquals("a save runs: no restart", listOf("restart"), calls)
+    }
+
     @Test
     fun theLiveLineShowsTheStateAndTheCoresWords() {
         show(TelegramState(tokenHeld = true, live = PlatformLive(PlatformState.FATAL, "Conflict: terminated by other getUpdates request")))
