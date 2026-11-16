@@ -105,11 +105,14 @@ class MainActivity : ComponentActivity() {
                             val exported by state.pages.export.state.collectAsState()
                             val status by state.pages.status.state.collectAsState()
                             // Whichever page shows: a finished export goes to the share sheet each time the activity is started, until one
-                            // opened it (D8, architect #2); no key changes at a stop, so the lifecycle, not a key, brings the retry.
+                            // opened it (D8, architect #2); one no app can take waits no longer (N15); no key changes at a stop, so the
+                            // lifecycle, not a key, brings the retry.
                             val waiting = exported.file
                             LaunchedEffect(waiting) {
                                 waiting ?: return@LaunchedEffect
-                                lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { state.pages.export.handOff(waiting) { shareExport(it) } }
+                                lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                                    state.pages.export.handOff(waiting) { shareExport(it, failed = state.pages.export::unshareable) }
+                                }
                             }
                             skills?.let {  // above Settings, which stays open beneath: Back returns to it (D4)
                                 SkillsScreen(it, onEnable = { names, on -> app.skills { enable(names, on) } }, onClose = state.pages.skills::close)

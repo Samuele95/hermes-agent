@@ -72,6 +72,32 @@ class SessionExportTest {
         assertEquals(ExportUi(), export.state.value)
     }
 
+    /** A file the sheet can never take waits no longer: it is not offered again (the words once), and the next export starts (N15). */
+    @Test
+    fun anUnshareableFileIsOfferedOnceAndTheNextExportStarts() = runTest {
+        export.export(null)
+        var offers = 0
+
+        export.handOff(f) { offers++; export.unshareable(it); false }  // shareExport's failed, then its false
+        export.handOff(f) { offers++; false }                            // the next start
+
+        assertEquals(1, offers)
+        assertEquals(ExportUi(), export.state.value)
+        export.export(StoredSessionId("db-other"))
+        assertEquals(listOf(null, StoredSessionId("db-other")), asked)
+        assertEquals(ExportUi(file = f), export.state.value)
+    }
+
+    @Test
+    fun anUnshareableOlderFileLeavesTheNewerOne() = runTest {
+        val old = f.copy(path = "/c/exports/old-20261114.json", name = "old-20261114.json")
+        export.export(null)
+
+        export.unshareable(old)
+
+        assertEquals(ExportUi(file = f), export.state.value)
+    }
+
     @Test
     fun aRefusalShowsItsWordsAndNoFile() = runTest {
         answer = { throw CoreError(0, "Nothing to export yet: Hermes has not saved this conversation.") }

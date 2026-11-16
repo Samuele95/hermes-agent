@@ -36,23 +36,34 @@ fun shareIntent(uri: Uri, file: ExportFile): Intent {
 }
 
 /**
- * Hands [file] to the share sheet (sessions-12, F8): true only when an activity was started (architect #2). A stopped
- * activity starts none, since Android blocks a background start without a word, and a refusal (`SecurityException`,
- * the same block where it throws) starts none: the file then waits for the next start. No target, or a path outside
- * the provider's root: Desktop's "Could not export session", and the file still waits.
+ * One try at the share sheet ([start]): true only when it started an activity (architect #2). No app to take the file
+ * ([ActivityNotFoundException]) or a path outside the provider's root ([IllegalArgumentException]) fails for good, since
+ * no later start repairs it: [failed] is told, once (N15). Android's refusal ([SecurityException]) only defers it: nothing
+ * is told, and the next start tries again (N6). Any other failure is not caught here.
  */
-fun ComponentActivity.shareExport(file: ExportFile): Boolean {
+fun tryShare(start: () -> Unit, failed: () -> Unit): Boolean = try {
+    start()
+    true
+} catch (_: ActivityNotFoundException) {
+    failed()
+    false
+} catch (_: IllegalArgumentException) {
+    failed()
+    false
+} catch (_: SecurityException) {
+    false
+}
+
+/**
+ * Hands [file] to the share sheet (sessions-12, F8): true only when an activity was started (architect #2). A stopped
+ * activity starts none, since Android blocks a background start without a word, and a refusal (`SecurityException`)
+ * starts none: the file then waits for the next start. No target, or a path outside the provider's root: Desktop's
+ * "Could not export session", once, and [failed] is told so the file waits no longer ([tryShare], N15).
+ */
+fun ComponentActivity.shareExport(file: ExportFile, failed: (ExportFile) -> Unit = {}): Boolean {
     if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return false
-    return try {
-        startActivity(shareIntent(exportUri(this, file), file))
-        true
-    } catch (_: ActivityNotFoundException) {
+    return tryShare({ startActivity(shareIntent(exportUri(this, file), file)) }) {
         Toast.makeText(this, R.string.export_failed, Toast.LENGTH_LONG).show()
-        false
-    } catch (_: IllegalArgumentException) {
-        Toast.makeText(this, R.string.export_failed, Toast.LENGTH_LONG).show()
-        false
-    } catch (_: SecurityException) {
-        false
+        failed(file)
     }
 }

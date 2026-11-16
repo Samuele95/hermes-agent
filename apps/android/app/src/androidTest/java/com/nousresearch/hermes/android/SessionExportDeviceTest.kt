@@ -2,6 +2,7 @@ package com.nousresearch.hermes.android
 
 import android.app.Activity
 import android.app.Instrumentation
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.SystemClock
@@ -70,8 +71,11 @@ class SessionExportDeviceTest {
         }
     }
 
-    /** Each chooser the activity starts, kept and not shown; the first [refuse] starts throw Android's SecurityException. */
-    private class ShareSheet(private var refuse: Int = 0) : Instrumentation.ActivityMonitor() {
+    /** Each chooser the activity starts, kept and not shown; the first [refuse] starts throw [refusal] (Android's SecurityException by default). */
+    private class ShareSheet(
+        private var refuse: Int = 0,
+        private val refusal: () -> RuntimeException = { SecurityException("background activity start blocked (N6 test)") },
+    ) : Instrumentation.ActivityMonitor() {
         val started = CopyOnWriteArrayList<Intent>()
         val others = CopyOnWriteArrayList<String>()  // for the report: ActivityScenario's own starts, let through
         override fun onStartActivity(intent: Intent): Instrumentation.ActivityResult? {
@@ -80,7 +84,7 @@ class SessionExportDeviceTest {
                 return null
             }
             started += intent
-            if (refuse-- > 0) throw SecurityException("background activity start blocked (N6 test)")
+            if (refuse-- > 0) throw refusal()
             return Instrumentation.ActivityResult(Activity.RESULT_CANCELED, null)
         }
     }
@@ -235,6 +239,84 @@ class SessionExportDeviceTest {
 
                 assertFalse("a path outside the exports root was shared", share(ExportFile("/data/local/tmp/n6.json", "n6.json", 2)))
                 assertEquals(1, sheet.started.size)
+            }
+        } finally {
+            tidy(sheet, null)
+        }
+    }
+
+    /** A share no app can take fails for good (N15): the file waits no longer, is not offered again, and the next export starts. */
+    @Test
+    fun aShareNoAppCanTakeDropsTheFileOnceAndTheNextExportStarts() {
+        assertEquals(ExportUi(), ready.pages.export.state.value)
+        val created = runBlocking { settledSession() }
+        val sheet = ShareSheet(refuse = 1, refusal = { ActivityNotFoundException("no share target (N15 test)") })
+        instrumentation.addMonitor(sheet)
+        try {
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                scenario.moveToState(Lifecycle.State.CREATED)  // the file is read here before any handoff
+                exportTitled(created)
+
+                scenario.moveToState(Lifecycle.State.RESUMED)
+                until("the first share sheet, failed for good, and the file waits no longer") {
+                    sheet.started.size == 1 && ready.pages.export.state.value == ExportUi()
+                }
+
+                scenario.moveToState(Lifecycle.State.CREATED)
+                scenario.moveToState(Lifecycle.State.RESUMED)
+                Thread.sleep(2_000)
+                assertEquals("a file no app can take was offered again", 1, sheet.started.size)
+
+                scenario.moveToState(Lifecycle.State.CREATED)
+                val again = exportTitled(created)  // a new title on the same session: the export is admitted
+
+                scenario.moveToState(Lifecycle.State.RESUMED)
+                until("the next export reaches the share sheet") {
+                    sheet.started.size == 2 && ready.pages.export.state.value == ExportUi()
+                }
+                assertSharesFile(sheet.started[1], again)
+            }
+        } finally {
+            tidy(sheet, created)
+        }
+    }
+
+    /** The activity's share call tells [shareExport]'s failed only for good: not when stopped, not on Android's refusal (N15). */
+    @Test
+    fun aFailureForGoodIsToldOnceAndARefusalOrAStoppedActivityIsNot() {
+        assertEquals(ExportUi(), ready.pages.export.state.value)
+        exports.mkdirs()
+        val direct = File(exports, "n15-direct.json").apply { writeText("{}") }
+        val file = ExportFile(direct.path, "n15-direct.json", 2)
+        val outside = ExportFile("/data/local/tmp/n15.json", "n15.json", 2)
+        val told = CopyOnWriteArrayList<ExportFile>()
+        val sheet = ShareSheet(refuse = 1)  // N6's SecurityException, once
+        instrumentation.addMonitor(sheet)
+        try {
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                fun share(f: ExportFile): Boolean {
+                    var handed: Boolean? = null
+                    scenario.onActivity { activity -> handed = activity.shareExport(f) { told += it } }
+                    return handed!!
+                }
+                scenario.moveToState(Lifecycle.State.CREATED)
+                assertFalse("a stopped activity started a share", share(file))
+                assertEquals(0, sheet.started.size)
+                assertEquals("a stopped activity told a failure", emptyList<ExportFile>(), told)
+
+                scenario.moveToState(Lifecycle.State.RESUMED)
+                assertFalse("a refused share was started", share(file))
+                assertEquals(1, sheet.started.size)
+                assertEquals("Android's refusal told a failure", emptyList<ExportFile>(), told)
+
+                assertFalse("a path outside the exports root was shared", share(outside))
+                assertEquals(1, sheet.started.size)
+                assertEquals("a path outside the exports root was not told once", listOf(outside), told)
+
+                assertTrue("a started activity started no share", share(file))
+                assertEquals(2, sheet.started.size)
+                assertEquals(listOf(outside), told)
+                assertSharesFile(sheet.started[1], file)
             }
         } finally {
             tidy(sheet, null)
