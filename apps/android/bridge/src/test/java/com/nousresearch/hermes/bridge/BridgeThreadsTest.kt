@@ -105,7 +105,8 @@ class BridgeThreadsTest {
         val named = BridgeThreads()
         val blocking = listOf(
             BridgeCalls.PROBE_ENDPOINT, BridgeCalls.DISCOVER_ENDPOINTS, BridgeCalls.SSH_HOST_KEY,
-            BridgeCalls.SSH_CHECK_LOGIN, BridgeCalls.TELEGRAM_CHECK, BridgeCalls.HUB_SCAN,
+            BridgeCalls.SSH_CHECK_LOGIN, BridgeCalls.TELEGRAM_CHECK, BridgeCalls.HUB_SCAN, BridgeCalls.BACKUP_CREATE,
+            BridgeCalls.BACKUP_RESTORE,
         )
         val quick = listOf(
             BridgeCalls.RUNTIME_FACTS, BridgeCalls.SECRETS_CHANGED, BridgeCalls.GATEWAY_START, BridgeCalls.GATEWAY_STOP,
@@ -125,7 +126,8 @@ class BridgeThreadsTest {
             assertEquals(descriptor.name, "hermes-python", named.call(descriptor.name) { Thread.currentThread().name })
         }
         assertEquals(
-            setOf("probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check", "hub_scan"),
+            setOf("probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check", "hub_scan",
+                  "backup_create", "backup_restore"),
             BridgeCalls.BLOCKING,
         )
     }

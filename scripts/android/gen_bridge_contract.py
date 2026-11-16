@@ -36,7 +36,7 @@ import kotlinx.serialization.Serializable
 
 /**
  * One declared bridge call: its name and the serializers of its request and reply. `blocking`: it may wait on
- * the network; the embedded bridge runs it apart from the core's frames.
+ * the network or run for seconds on local files; the embedded bridge runs it apart from the core's frames.
  */
 class BridgeCall<P, R>(val name: String, val params: KSerializer<P>, val reply: KSerializer<R>, val blocking: Boolean = false)
 
@@ -111,7 +111,8 @@ def render(contract: dict) -> str:
     out.append("\n/** Every call the app may make into its Python half. */\nobject BridgeCalls {\n")
     out.append("".join(descriptors).replace("    \n", "\n"))
     names_set = f"setOf({', '.join(_kotlin_string(call) for call in blocking_calls)})" if blocking_calls else "emptySet()"
-    out.append("\n    /** The calls that may wait on the network (`blocking` in the contract): EmbeddedPython runs them on their own thread. */\n"
+    out.append("\n    /** The calls that may wait on the network or run for seconds on local files (`blocking` in the contract): "
+               "EmbeddedPython runs them on their own thread. */\n"
                f"    val BLOCKING: Set<String> = {names_set}\n")
     out.append("}\n")
     for event, spec in contract.get("events", {}).items():

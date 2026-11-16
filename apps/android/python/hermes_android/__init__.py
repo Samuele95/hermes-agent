@@ -467,3 +467,15 @@ def toolsets_keys(arg: str) -> str:
     from hermes_android import toolsets
 
     return toolsets.keys(arg)
+
+
+def backup_create(arg: str) -> str:
+    from hermes_android import backup
+
+    return backup.create(arg)
+
+
+def backup_restore(arg: str) -> str:
+    from hermes_android import backup
+
+    return backup.restore(arg)

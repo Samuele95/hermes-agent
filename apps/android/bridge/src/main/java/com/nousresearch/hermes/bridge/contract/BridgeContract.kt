@@ -10,7 +10,7 @@ import kotlinx.serialization.Serializable
 
 /**
  * One declared bridge call: its name and the serializers of its request and reply. `blocking`: it may wait on
- * the network; the embedded bridge runs it apart from the core's frames.
+ * the network or run for seconds on local files; the embedded bridge runs it apart from the core's frames.
  */
 class BridgeCall<P, R>(val name: String, val params: KSerializer<P>, val reply: KSerializer<R>, val blocking: Boolean = false)
 
@@ -67,6 +67,15 @@ enum class Provenance {
     @SerialName("bundled") BUNDLED,
     @SerialName("external") EXTERNAL,
     @SerialName("agent") AGENT,
+}
+
+@Serializable
+enum class BackupPart {
+    @SerialName("sessions") SESSIONS,
+    @SerialName("memories") MEMORIES,
+    @SerialName("skills") SKILLS,
+    @SerialName("config") CONFIG,
+    @SerialName("jobs") JOBS,
 }
 
 @Serializable
@@ -470,6 +479,26 @@ data class ToolsetsKeysReply(
     @SerialName("needs_keys") val needsKeys: List<String>,
 )
 
+@Serializable
+data class BackupCreateReply(
+    val path: String,
+    val name: String,
+    val bytes: Long,
+    val parts: List<BackupPart>,
+)
+
+@Serializable
+data class BackupRestoreParams(
+    val path: String,
+)
+
+@Serializable
+data class BackupRestoreReply(
+    val restored: List<BackupPart>,
+    val skipped: Long,
+    val sessions: Long,
+)
+
 /** Every call the app may make into its Python half. */
 object BridgeCalls {
     /** The interpreter facts the app shows, and the core's release date (hermes_cli.__release_date__): the core's version on a phone, where get_version_info() has no stamp and no git and answers 'unknown'. */
@@ -550,9 +579,13 @@ object BridgeCalls {
     val HUB_SCAN = BridgeCall("hub_scan", HubScanParams.serializer(), HubScanReply.serializer(), blocking = true)
     /** The configurable toolsets whose required keys are missing (hermes_cli.tools_config._toolset_has_keys, as GET /api/tools/toolsets's configured flag): names only, never a value. */
     val TOOLSETS_KEYS = BridgeCall("toolsets_keys", NoParams.serializer(), ToolsetsKeysReply.serializer())
+    /** Zips exactly five parts of the Hermes home into the app's cache (TMPDIR/exports/hermes-backup-<UTC>.zip, replacing only the previous backup): sessions (state.db, a SQLite backup-API snapshot), memories, skills (with the archive), config.yaml with every key field blanked, and cron without its lock and pid files; never .env, auth.json, vault files, mcp-tokens or a keystore secret (D49). Answers the file and the parts it holds. */
+    val BACKUP_CREATE = BridgeCall("backup_create", NoParams.serializer(), BackupCreateReply.serializer(), blocking = true)
+    /** Restores only those five parts from a Hermes backup zip (the app's or `hermes backup`'s), with config.yaml's key fields blanked and state.db written page by page into the open file; every other member is skipped and counted. Refused in words, before anything is written, while a turn runs, while the always-on gateway runs, or when the file holds nothing to restore. Answers the parts restored, the members skipped and the sessions the restored database holds. */
+    val BACKUP_RESTORE = BridgeCall("backup_restore", BackupRestoreParams.serializer(), BackupRestoreReply.serializer(), blocking = true)
 
-    /** The calls that may wait on the network (`blocking` in the contract): EmbeddedPython runs them on their own thread. */
-    val BLOCKING: Set<String> = setOf("probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check", "hub_scan")
+    /** The calls that may wait on the network or run for seconds on local files (`blocking` in the contract): EmbeddedPython runs them on their own thread. */
+    val BLOCKING: Set<String> = setOf("probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check", "hub_scan", "backup_create", "backup_restore")
 }
 
 /** One state change of the :gateway process's gateway host, as a JSON line through native.emit; reason only for failed. */
