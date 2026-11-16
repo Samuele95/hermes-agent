@@ -12,12 +12,16 @@ import com.nousresearch.hermes.bridge.CoreGateway
 import com.nousresearch.hermes.bridge.EmbeddedBridge
 import com.nousresearch.hermes.bridge.EmbeddedPython
 import com.nousresearch.hermes.bridge.ask
+import com.nousresearch.hermes.bridge.contract.BackupCreateReply
+import com.nousresearch.hermes.bridge.contract.BackupPart
 import com.nousresearch.hermes.bridge.contract.BridgeCalls
 import com.nousresearch.hermes.bridge.contract.CronRunsParams
 import com.nousresearch.hermes.bridge.contract.CronSchedulerReply
 import com.nousresearch.hermes.bridge.contract.CronTriggerParams
 import com.nousresearch.hermes.bridge.contract.CronUpdateParams
 import com.nousresearch.hermes.bridge.contract.DeliveryTarget
+import com.nousresearch.hermes.bridge.contract.HubOfficial
+import com.nousresearch.hermes.bridge.contract.Provenance
 import com.nousresearch.hermes.bridge.contract.SettingsReadReply
 import com.nousresearch.hermes.bridge.contract.SettingsWriteParams
 import com.nousresearch.hermes.bridge.contract.SkillEntry
@@ -55,6 +59,7 @@ import com.nousresearch.hermes.bridge.protocol._SessionScoped
 import java.io.File
 import java.net.InetAddress
 import java.net.ServerSocket
+import java.util.zip.ZipFile
 import kotlin.concurrent.thread
 import kotlin.system.measureTimeMillis
 import kotlinx.coroutines.CoroutineStart
@@ -602,6 +607,59 @@ class EmbeddedPythonTest {
                 if (original != null) config.writeBytes(original) else config.delete()
             }
         }
+    }
+
+    @Test
+    fun theBackupAndCapabilityBridgeCallsAnswerOnThePhone() = runBlocking {
+        core // the interpreter starts with the core
+        val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext
+        val took = linkedMapOf<String, Long>()
+        // No model, no network, nothing left changed. Not here: backup_restore (it would replace the shared phone's
+        // sessions and settings) and hub_scan (it fetches); both are host-proven.
+        var skills: List<SkillEntry>? = null
+        took["skills_list"] = measureTimeMillis { skills = EmbeddedBridge.ask(BridgeCalls.SKILLS_LIST).skills }
+        assertEquals(Provenance.BUNDLED, skills!!.single { it.name == "hermes-agent" }.provenance)
+        assertTrue("a negative use count", skills!!.all { it.uses >= 0 })
+        Log.i("P2Probe", "provenance: ${skills!!.groupingBy { it.provenance }.eachCount()}")
+
+        var archived: List<String>? = null
+        took["skills_archived"] = measureTimeMillis { archived = EmbeddedBridge.ask(BridgeCalls.SKILLS_ARCHIVED).names }
+        Log.i("P2Probe", "archived=${archived!!.size}")
+
+        var official: List<HubOfficial>? = null
+        took["hub_official"] = measureTimeMillis { official = EmbeddedBridge.ask(BridgeCalls.HUB_OFFICIAL).skills }
+        assertTrue("only ${official!!.size} official skills", official!!.size >= 150)
+        assertTrue("an identifier outside official/", official!!.all { it.identifier.startsWith("official/") })
+
+        var needsKeys: List<String>? = null
+        took["toolsets_keys"] = measureTimeMillis { needsKeys = EmbeddedBridge.ask(BridgeCalls.TOOLSETS_KEYS).needsKeys }
+        val listed = withTimeout(60_000) { core.call(Methods.TOOLSETS_LIST, _SessionScoped()) }.toolsets.map { it.name }.toSet()
+        Log.i("P2Probe", "needs_keys=$needsKeys")
+        assertTrue("$needsKeys not all in $listed", listed.containsAll(needsKeys!!))
+
+        val lock = File(app.filesDir, ".hermes/.backup.lock")
+        val lockWas = lock.exists()
+        var backup: BackupCreateReply? = null
+        try {
+            took["backup_create"] = measureTimeMillis { backup = EmbeddedBridge.ask(BridgeCalls.BACKUP_CREATE) }
+            val zip = File(backup!!.path)
+            assertEquals(File(app.cacheDir, "exports"), zip.parentFile)
+            assertTrue(zip.name, zip.name.startsWith("hermes-backup-") && zip.name.endsWith(".zip"))
+            assertTrue("${backup!!.parts}", backup!!.parts.containsAll(listOf(BackupPart.SESSIONS, BackupPart.SKILLS, BackupPart.CONFIG)))
+            val names = ZipFile(zip).use { archive -> archive.entries().toList().map { it.name } }
+            val roots = listOf("memories/", "skills/", "cron/")
+            assertTrue(names.filterNot { it == "state.db" || it == "config.yaml" || roots.any(it::startsWith) }.toString(),
+                       names.all { it == "state.db" || it == "config.yaml" || roots.any(it::startsWith) })
+            val secret = setOf(".env", "auth.json", "vault.key", "vault.json.enc")
+            assertTrue(names.filter { it.substringAfterLast('/') in secret }.toString(),
+                       names.none { it.substringAfterLast('/') in secret })
+            Log.i("P2Probe", "backup bytes=${backup!!.bytes} members=${names.size} parts=${backup!!.parts}")
+        } finally {
+            backup?.let { File(it.path).delete() }
+            if (!lockWas) lock.delete() // the core's backup slot file; the shared phone keeps nothing of this run
+            Log.i("P2Probe", "took ms: $took")
+        }
+        took.filterKeys { it != "backup_create" }.forEach { (call, ms) -> if (ms > 1_000) Log.w("P2Probe", "$call took $ms ms") }
     }
 
     @Test
