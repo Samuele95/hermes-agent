@@ -155,6 +155,29 @@ class SetupScreenTest {
         assertEquals(listOf("custom:gpt-6"), picked)
     }
 
+    /** A typed Pro-locked id is explained under the field in the picker's own words while the field holds it (improve #1). */
+    @Test
+    fun aTypedProLockedIdIsExplainedUnderTheField() {
+        val nous = ProviderChoice("nous", "Nous Portal", null, ready = true, models = listOf("nous/hermes-4", "nous/hermes-4-405b"),
+                                  facts = ProviderFacts(models = mapOf("nous/hermes-4-405b" to ModelFacts(locked = true))))
+        var setup by mutableStateOf(Setup(SetupStep.Models(nous)))
+        show { setup }
+
+        compose.onNodeWithTag("add-custom-model").performClick()
+        compose.onNodeWithTag("model-name").performTextInput("nous/hermes-4-405b")
+        compose.onNodeWithTag("model-use").performClick()
+        assertEquals(listOf("custom:nous/hermes-4-405b"), picked)
+        compose.onNodeWithTag("custom-pro-explained").assertDoesNotExist()
+
+        setup = setup.copy(proLocked = "nous/hermes-4-405b")  // as ProviderSetup.choose answers a locked id
+        compose.onNodeWithTag("custom-pro-explained").assertIsDisplayed()
+            .assert(hasText("Pro models need a paid Nous subscription."))
+        compose.onNodeWithTag("setup-error").assertDoesNotExist()
+
+        compose.onNodeWithTag("model-name").performTextReplacement("nous/hermes-4")
+        compose.onNodeWithTag("custom-pro-explained").assertDoesNotExist()
+    }
+
     @Test
     fun theIdsTheUserAddedFollowTheCatalogAsCustomModels() {
         show(Setup(SetupStep.Models(deepseek.copy(ready = true, models = listOf("a"), custom = listOf("mine")))))

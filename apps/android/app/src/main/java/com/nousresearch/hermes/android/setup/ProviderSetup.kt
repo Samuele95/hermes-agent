@@ -88,11 +88,12 @@ class Showing
  * What setup shows. [list]: the provider list Back returns to: the core's choices, the endpoints saved on this phone,
  * and whether the default model's endpoint was deleted since setup opened. Setup keeps no list outside this value.
  * [showing]: which showing this is (see [Showing]). [notice]: the core's words on a typed id it took with a warning; that
- * id is already the default (D10).
+ * id is already the default (D10). [proLocked]: a model id the user asked for that the provider holds Pro-locked; it was
+ * never sent, and the screen says why in the picker's words (`setup_pro_needs`).
  */
 data class Setup(val step: SetupStep = SetupStep.Loading, val busy: Boolean = false, val error: String? = null,
                  val confirm: Confirm? = null, val notice: String? = null, val list: SetupStep.Providers = SetupStep.Providers(emptyList()),
-                 val showing: Showing = Showing())
+                 val showing: Showing = Showing(), val proLocked: String? = null)
 
 /**
  * Provider setup driven by the core (D17): the core lists the providers and their models, a pasted key
@@ -270,13 +271,16 @@ class ProviderSetup(
 
     /**
      * Makes [model] the default; setup closes once the core took it. A Pro-locked model is never sent (the core's
-     * `unavailable_models`). A model the provider's catalog does not list is kept for it only once the core took it
+     * `unavailable_models`); asking for one sets [Setup.proLocked], so the screen says why. A model the provider's catalog does not list is kept for it only once the core took it
      * (DC-M9); a warning the core answers on one stays shown until Done (D10).
      */
     suspend fun choose(model: String, confirmed: Boolean = false) {
         val shown = setup.value ?: return
         val provider = (shown.step as? SetupStep.Models)?.provider ?: return
-        if (provider.facts.models[model]?.locked == true) return
+        if (provider.facts.models[model]?.locked == true) {  // never sent (the core's unavailable_models): the screen says why
+            on(shown.showing) { it.copy(proLocked = model, error = null) }
+            return
+        }
         val origin = shown.showing
         step(origin) {
             val set = core.call(Methods.CONFIG_SET, ConfigSetParams(
@@ -299,7 +303,10 @@ class ProviderSetup(
         }
     }
 
-    /** The typed id, kept in prefs only once the core took it: one with whitespace is refused here, a blank one ignored. */
+    /**
+     * The typed id, kept in prefs only once the core took it: one with whitespace is refused here, a blank one ignored, a
+     * Pro-locked one explained ([choose]).
+     */
     suspend fun chooseCustom(model: String) {
         val shown = setup.value ?: return
         val id = customModelId(model)
@@ -380,7 +387,7 @@ class ProviderSetup(
     }
 
     fun back() {
-        setup.update { it?.copy(step = it.list, busy = false, error = null, confirm = null, notice = null, showing = Showing()) }
+        setup.update { it?.copy(step = it.list, busy = false, error = null, confirm = null, notice = null, proLocked = null, showing = Showing()) }
     }
 
     /** Keeps an endpoint's newly typed [key] as a pasted provider key is kept: keystore, core, then its name. */
@@ -470,7 +477,7 @@ class ProviderSetup(
      * step opened, or null when nothing landed; callers decide from this, never from `Setup.error`.
      */
     private inline fun step(origin: Showing?, exchange: () -> SetupStep): Showing? {
-        on(origin) { it.copy(busy = true, error = null, confirm = null, notice = null) }
+        on(origin) { it.copy(busy = true, error = null, confirm = null, notice = null, proLocked = null) }
         try {
             val next = exchange()
             val opened = Showing()
@@ -500,7 +507,7 @@ class ProviderSetup(
 
     /** Shows [step] as a new showing: not busy, no error, no confirm or notice (those belong to the showing they came from). */
     private fun show(step: SetupStep) {
-        setup.update { it?.copy(step = step, busy = false, error = null, confirm = null, notice = null, showing = Showing()) }
+        setup.update { it?.copy(step = step, busy = false, error = null, confirm = null, notice = null, proLocked = null, showing = Showing()) }
     }
 }
 

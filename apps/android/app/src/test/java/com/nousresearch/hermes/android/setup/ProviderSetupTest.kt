@@ -147,6 +147,37 @@ class ProviderSetupTest : SetupFakes() {
         assertNull(setup.state.value?.error)
     }
 
+    /** A typed id the provider holds Pro-locked says why, as the picker's row does, and reaches no one (improve #1). */
+    @Test
+    fun aTypedProLockedIdSaysWhyAndIsNeverSent() = runTest {
+        copilotRow = """{"slug":"copilot","name":"GitHub Copilot","models":["gpt-5","gpt-5-pro"],"authenticated":true,
+            "unavailable_models":["gpt-5-pro"]}"""
+        setup.open()
+        setup.pick("copilot")
+        val models = setup.step()
+        setup.chooseCustom("gpt 5")  // a refusal shown before: the explanation replaces it
+
+        setup.chooseCustom(" gpt-5-pro ")
+
+        assertTrue(log.toString(), "config.set" !in log && "reopen_chat" !in log)
+        assertEquals("gpt-5-pro", setup.state.value?.proLocked)
+        assertNull(setup.state.value?.error)
+        assertEquals("chosen nothing: the same step", models, setup.step())
+        assertEquals(emptyList<String>(), customs["copilot"])
+
+        // The next exchange starts without it: another id is sent (here refused) and the lock's words are gone.
+        configSet = { throw CoreError(5001, "Model `gpt-6` was not found in this provider's catalog.") }
+        setup.chooseCustom("gpt-6")
+        assertNull(setup.state.value?.proLocked)
+        assertEquals("Model `gpt-6` was not found in this provider's catalog.", setup.state.value?.error)
+
+        // Back ends the showing it belonged to.
+        setup.chooseCustom("gpt-5-pro")
+        assertEquals("gpt-5-pro", setup.state.value?.proLocked)
+        setup.back()
+        assertNull(setup.state.value?.proLocked)
+    }
+
     @Test
     fun aTypedIdIsChosenAsAnyModelIsAndKeptOnceTheCoreTookIt() = runTest {
         setup.open()

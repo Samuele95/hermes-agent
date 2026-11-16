@@ -283,7 +283,10 @@ private fun ModelPicker(provider: ProviderChoice, setup: Setup, onModel: (String
     }
 }
 
-/** A model id the catalog does not list, typed by the user: offered only once it is one (trimmed, no whitespace). */
+/**
+ * A model id the catalog does not list, typed by the user: offered only once it is one (trimmed, no whitespace); a
+ * Pro-locked one is explained under it.
+ */
 @Composable
 private fun CustomModelField(provider: ProviderChoice, setup: Setup, onCustomModel: (String) -> Unit) {
     var typed by rememberSaveable(provider.slug) { mutableStateOf("") }
@@ -292,6 +295,10 @@ private fun CustomModelField(provider: ProviderChoice, setup: Setup, onCustomMod
                       keyboardOptions = KeyboardOptions(autoCorrectEnabled = false))
     PrimaryButton(stringResource(R.string.setup_use_model), { onCustomModel(typed.trim()) }, Modifier.padding(top = 12.dp).testTag("model-use"),
                   enabled = !setup.busy && customModelId(typed) != null)
+    // A Pro-locked id is never sent (ProviderSetup.choose): the picker's words, while the field holds it.
+    if (setup.proLocked != null && setup.proLocked == customModelId(typed)) {
+        Hint(stringResource(R.string.setup_pro_needs), Modifier.padding(top = 8.dp).testTag("custom-pro-explained"))
+    }
 }
 
 /** The provider's notes above its models, each only when the core reported it: its warning, an account limit, its usage. */
