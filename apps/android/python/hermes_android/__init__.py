@@ -449,3 +449,21 @@ def skills_restore(arg: str) -> str:
     from hermes_android import skills
 
     return skills.restore(arg)
+
+
+def hub_official(arg: str) -> str:
+    from hermes_android import hub
+
+    return hub.official(arg)
+
+
+def hub_scan(arg: str) -> str:
+    from hermes_android import hub
+
+    return hub.scan(arg)
+
+
+def toolsets_keys(arg: str) -> str:
+    from hermes_android import toolsets
+
+    return toolsets.keys(arg)

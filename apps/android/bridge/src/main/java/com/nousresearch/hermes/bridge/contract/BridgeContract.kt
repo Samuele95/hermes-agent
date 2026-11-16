@@ -127,6 +127,14 @@ data class SkillEntry(
 )
 
 @Serializable
+data class HubOfficial(
+    val name: String,
+    val description: String,
+    val category: String?,
+    val identifier: String,
+)
+
+@Serializable
 data class RuntimeFactsReply(
     val python: String,
     val sqlite: String,
@@ -439,6 +447,29 @@ data class SkillsRestoreReply(
     val skills: List<SkillEntry>,
 )
 
+@Serializable
+data class HubOfficialReply(
+    val skills: List<HubOfficial>,
+)
+
+@Serializable
+data class HubScanParams(
+    val identifier: String,
+)
+
+@Serializable
+data class HubScanReply(
+    val verdict: String,
+    val allowed: Boolean,
+    val findings: List<String>,
+    val trust: String,
+)
+
+@Serializable
+data class ToolsetsKeysReply(
+    @SerialName("needs_keys") val needsKeys: List<String>,
+)
+
 /** Every call the app may make into its Python half. */
 object BridgeCalls {
     /** The interpreter facts the app shows, and the core's release date (hermes_cli.__release_date__): the core's version on a phone, where get_version_info() has no stamp and no git and answers 'unknown'. */
@@ -513,9 +544,15 @@ object BridgeCalls {
     val SKILLS_ARCHIVED = BridgeCall("skills_archived", NoParams.serializer(), SkillsArchivedReply.serializer())
     /** Moves an archived skill back as `hermes curator restore` does (tools.skill_usage.restore_skill, as the user) and answers the list re-read; a refused restore is answered in the core's words and moves nothing. */
     val SKILLS_RESTORE = BridgeCall("skills_restore", SkillsRestoreParams.serializer(), SkillsRestoreReply.serializer())
+    /** The official optional skills shipped with the core, read locally without the network (OptionalSkillSource().list_local(), as GET /api/skills/hub/official): name, description, the identifier's category (null when it has none) and the identifier skills.manage install takes. */
+    val HUB_OFFICIAL = BridgeCall("hub_official", NoParams.serializer(), HubOfficialReply.serializer())
+    /** The install-time security scan of a hub skill without installing it (as GET /api/skills/hub/scan): the verdict, whether the install policy allows it (a policy that would ask is not allowed), one line per finding, most severe first, and the source's trust level; it fetches the bundle, so it may wait on the network. */
+    val HUB_SCAN = BridgeCall("hub_scan", HubScanParams.serializer(), HubScanReply.serializer(), blocking = true)
+    /** The configurable toolsets whose required keys are missing (hermes_cli.tools_config._toolset_has_keys, as GET /api/tools/toolsets's configured flag): names only, never a value. */
+    val TOOLSETS_KEYS = BridgeCall("toolsets_keys", NoParams.serializer(), ToolsetsKeysReply.serializer())
 
     /** The calls that may wait on the network (`blocking` in the contract): EmbeddedPython runs them on their own thread. */
-    val BLOCKING: Set<String> = setOf("probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check")
+    val BLOCKING: Set<String> = setOf("probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check", "hub_scan")
 }
 
 /** One state change of the :gateway process's gateway host, as a JSON line through native.emit; reason only for failed. */

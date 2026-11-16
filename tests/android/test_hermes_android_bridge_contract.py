@@ -45,9 +45,9 @@ def test_every_declared_call_exists_and_every_bridge_function_is_declared():
 
 def test_only_the_network_bound_calls_are_declared_blocking():
     # The app runs these apart from the core's frames (BridgeThreads): a slow probe never queues Stop or an answer.
-    # The SSH look/login and the Telegram check wait up to 15-20 s on a host or on Telegram.
+    # The SSH look/login and the Telegram check wait up to 15-20 s on a host or on Telegram; a hub scan fetches.
     assert {name for name, c in CONTRACT["calls"].items() if c.get("blocking")} == {
-        "probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check"}
+        "probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check", "hub_scan"}
     assert all(isinstance(c["blocking"], bool) for c in CONTRACT["calls"].values() if "blocking" in c)
 
 
@@ -165,6 +165,8 @@ def test_real_calls_answer_their_declared_replies():
     assert set(json.loads(hermes_android.call("telegram_status", "{}"))) == {"token", "allowed_user", "sdk", "enabled", "live"}
     assert set(json.loads(hermes_android.call("settings_read", ""))) == set(CONTRACT["calls"]["settings_read"]["reply"])
     assert set(json.loads(hermes_android.call("skills_list", ""))) == set(CONTRACT["calls"]["skills_list"]["reply"])
+    for name in ("skills_archived", "hub_official", "toolsets_keys"):
+        assert set(json.loads(hermes_android.call(name, ""))) == set(CONTRACT["calls"][name]["reply"]), name
 
 
 def test_an_event_line_is_held_to_its_declared_fields():
