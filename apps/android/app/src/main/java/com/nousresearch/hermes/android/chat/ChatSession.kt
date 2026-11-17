@@ -18,6 +18,7 @@ import com.nousresearch.hermes.bridge.protocol.ConfigGetParams
 import com.nousresearch.hermes.bridge.protocol.Events
 import com.nousresearch.hermes.bridge.protocol.Methods
 import com.nousresearch.hermes.bridge.protocol.PromptSubmitParams
+import com.nousresearch.hermes.bridge.protocol.PromptSubmitResult
 import com.nousresearch.hermes.bridge.protocol.PromptSubmitStatus
 import com.nousresearch.hermes.bridge.protocol.SessionCloseParams
 import com.nousresearch.hermes.bridge.protocol.Requests
@@ -48,12 +49,17 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.serialization.json.JsonPrimitive
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * One chat: a core session, the prompts sent to it, its turns, which [turns] keeps alive, and the questions
@@ -105,6 +111,17 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         const val NOTHING_TO_EXPORT = "Nothing to export yet."
         /** Said when Status is asked for before the chat has a session (protocol-21). */
         const val NO_STATUS = "There is no session to report on yet."
+        /** Said before why an edit was not sent (Desktop's `editFailed`). */
+        const val EDIT_FAILED = "Edit failed"
+        /** Why, when the core no longer holds the edited prompt's row (4018; Desktop's `editTurnUnavailable`, D8). */
+        const val EDIT_UNAVAILABLE = "This turn is no longer in server history (it may have been compressed away)."
+        /** The core's own words for a session still in a turn (`methods_prompt.py:822`). */
+        const val SESSION_BUSY = "session busy"
+        /** How long an edit waits for the turn it stopped to end (D3; Desktop's busy bound, `utils.ts:279`). */
+        val STOP_WAIT = 6.seconds
+        /** How often an edit that met 4009 is sent again after a second interrupt, and how far apart (D4, `utils.ts:279-280`). */
+        const val BUSY_RESENDS = 40
+        val BUSY_RESEND_GAP = 150.milliseconds
     }
 
     /**
@@ -697,38 +714,99 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         change { if (it.ref?.runtime == session) it.copy(chat = it.chat.boundUser(rowId)) else it }
     }
 
-    /**
-     * Runs the last prompt again, as the desktop's Retry does: the core cuts its transcript before that prompt's row
-     * (`truncate_before_row_id`) and answers it anew. A prompt whose row the chat never learned is looked up in the
-     * core's history by its exact words; with no single match it is sent again after the old turn, nothing cut (D1).
-     * A refusal shows the core's transcript, re-read, with the core's words: never the one the app predicted.
-     */
+    /** Runs the last prompt again, as the desktop's Retry does: [resend] of its own words, never a deep cut (B5, DC-P7). */
     suspend fun retry() {
-        val (session, target) = synchronized(lock) { live.ref?.runtime to live.chat.retryTarget() }
-        if (session == null || target == null) return
-        val rowId = target.rowId ?: rowIdOf(session, target.text)
+        val target = synchronized(lock) { live.chat.retryTarget() } ?: return
+        resend(Rewind(target, target.text, deep = false))
+    }
+
+    /**
+     * Sends [rewind]'s words again from its prompt's place, the one path retry and edit share (invariant 1, bet 7): the
+     * core cuts its transcript before that prompt's row (`truncate_before_row_id`) and answers the words anew. A prompt
+     * whose row the chat never learned is looked up in the core's history by its exact words; with no single match the
+     * words go after the old turn, nothing cut (B5-D1). A cut that archives later turns needs [Rewind.deep], the user's
+     * "Restore & rerun" (inv. 1). An edit stops a busy chat first and waits for that turn's end, and one the core finds
+     * still busy is stopped once more and sent again (inv. 2, D3, D4); a retry keeps B5's rules (D5). A refusal shows
+     * the core's transcript, re-read, with the core's words (an edit's after "Edit failed"): never the one the app predicted.
+     */
+    suspend fun resend(rewind: Rewind) {
+        val (session, shown) = synchronized(lock) { live.ref?.runtime to live.chat }
+        if (session == null || shown.rewindTarget(rewind) == null) return
+        if (rewind.edits && shown.busy && !stopped(session)) {
+            change { now -> if (now.ref?.runtime == session) now.copy(chat = now.chat.notice("$EDIT_FAILED: $SESSION_BUSY")) else now }
+            return
+        }
+        val known = synchronized(lock) { live.chat.rewindTarget(rewind) } ?: return
+        val rowId = known.rowId ?: rowIdOf(session, known.text)
         var shownBefore: List<Entry>? = null
         change { now ->
-            val again = now.chat.retryTarget()
-            // Decided in the one change that rewinds (EJ-78, D4): the chat left, a turn began, or the prompt moved → nothing.
-            if (now.ref?.runtime != session || again?.index != target.index || again.text != target.text) now
+            val again = now.chat.rewindTarget(rewind)
+            // Decided in the one change that cuts (EJ-78, B5-D4): the chat left, a turn began, the prompt moved, or a
+            // deep cut has no consent → nothing (inv. 1).
+            if (now.ref?.runtime != session || again == null || now.chat.busy || (now.chat.laterTurns(again) > 0 && !rewind.deep)) now
             else {
                 shownBefore = now.chat.entries
-                now.copy(chat = (if (rowId != null) now.chat.rewound(target) else now.chat).sent(target.text, clock()))
+                now.copy(chat = (if (rowId != null) now.chat.rewound(again) else now.chat).sent(rewind.text, clock()))
             }
         }
         val before = shownBefore ?: return
+        val params = PromptSubmitParams(
+            sessionId = session.value, text = JsonPrimitive(rewind.text), truncateBeforeRowId = rowId,
+            // The core cuts only with consent; a first-turn cut empties the transcript, which needs its own; a deep cut
+            // only after "Restore & rerun" (inv. 1).
+            confirmTruncate = rowId?.let { true }, confirmEmptyTruncate = rowId?.let { true },
+            confirmDeepTruncate = true.takeIf { rewind.deep && rowId != null })
         try {
-            val result = core.call(Methods.PROMPT_SUBMIT, PromptSubmitParams(
-                sessionId = session.value, text = JsonPrimitive(target.text), truncateBeforeRowId = rowId,
-                // The core cuts only with consent; a first-turn cut empties the transcript, which needs its own (D7: never deep).
-                confirmTruncate = rowId?.let { true }, confirmEmptyTruncate = rowId?.let { true }))
+            val result = if (rewind.edits) submitPastBusy(session, params) else core.call(Methods.PROMPT_SUBMIT, params)
             result.userRowId?.let { bind(session, it) }
         } catch (failed: Exception) {
             if (failed is CancellationException) throw failed
-            val words = if (failed is CoreError) failed.message ?: "The core refused the retry (${failed.code})." else forUser(failed)
-            resync(session, before, words)
+            resync(session, before, refused(rewind, failed))
         }
+    }
+
+    /**
+     * Stops [session]'s turn for an edit, as Stop does: the queue pauses (b3: queued items stay queued), then
+     * `session.interrupt` (a failure is ignored, as Desktop's: the wait decides). True once the chat has seen that turn
+     * end, within [STOP_WAIT] (D3).
+     */
+    private suspend fun stopped(session: RuntimeSessionId): Boolean {
+        change { now -> if (now.ref?.runtime == session && now.chat.busy) now.paused() else now }
+        orElse(Unit) { core.call(Methods.SESSION_INTERRUPT, SessionInterruptParams(sessionId = session.value)); Unit }
+        return withTimeoutOrNull(STOP_WAIT) { state.first { !it.busy } } != null
+    }
+
+    /**
+     * An edit's `prompt.submit`. 4009 (the stopped turn still ending in the core, `methods_prompt.py:815-822`) stops it
+     * once more and sends again, [BUSY_RESEND_GAP] apart, at most [BUSY_RESENDS] times; the last refusal is the answer
+     * (inv. 2, D4).
+     */
+    private suspend fun submitPastBusy(session: RuntimeSessionId, params: PromptSubmitParams): PromptSubmitResult {
+        try {
+            return core.call(Methods.PROMPT_SUBMIT, params)
+        } catch (busy: CoreError) {
+            if (busy.code != 4009) throw busy
+        }
+        orElse(Unit) { core.call(Methods.SESSION_INTERRUPT, SessionInterruptParams(sessionId = session.value)); Unit }
+        repeat(BUSY_RESENDS) { attempt ->
+            if (attempt > 0) delay(BUSY_RESEND_GAP)
+            try {
+                return core.call(Methods.PROMPT_SUBMIT, params)
+            } catch (busy: CoreError) {
+                if (busy.code != 4009 || attempt == BUSY_RESENDS - 1) throw busy
+            }
+        }
+        error("unreachable: the last resend returns or throws")
+    }
+
+    /** What a refused [rewind] says: a retry the core's words, as B5 said them; an edit "Edit failed" and why, 4018 in Desktop's words (D8). */
+    private fun refused(rewind: Rewind, failed: Exception): String {
+        val why = when {
+            failed !is CoreError -> forUser(failed)
+            rewind.edits && failed.code == 4018 -> EDIT_UNAVAILABLE
+            else -> failed.message ?: "The core refused the ${if (rewind.edits) "edit" else "retry"} (${failed.code})."
+        }
+        return if (rewind.edits) "$EDIT_FAILED: $why" else why
     }
 
     /** The row of [text] in the core's history: the one user row with exactly those words, else null (D6, EJ-62). */

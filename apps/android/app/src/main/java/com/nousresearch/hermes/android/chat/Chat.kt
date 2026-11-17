@@ -109,8 +109,21 @@ sealed interface Entry {
 /** A place a notice offers to open: the always-on gateway's page. */
 enum class NoticeShortcut { GATEWAY }
 
-/** The last prompt, to run again: its place in the transcript, its words, and the core's row id when known. */
+/**
+ * A prompt to send again from its place (retry's last one, or one being edited): its place in the transcript, its
+ * words, and the core's row id when known.
+ */
 data class Retry(val index: Int, val text: String, val rowId: Long?)
+
+/**
+ * A prompt sent again from its place, the one rewind retry and edit share (bet 7, invariant 1): [target] the prompt,
+ * [text] the words that go in its place (a retry's own, an edit's new ones), [deep] the user confirmed "Restore &
+ * rerun", so the cut may archive the turns after it.
+ */
+data class Rewind(val target: Retry, val text: String, val deep: Boolean) {
+    /** New words: an edit (it stops a busy chat first; a refusal reads "Edit failed"); its own words: a retry (D5). */
+    val edits: Boolean get() = text != target.text
+}
 
 /**
  * A chat's transcript. While a turn runs, [streaming] is the reply written since the turn began or since its last
@@ -222,6 +235,31 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
 
     /** The transcript before [target]'s prompt: what the core keeps when it cuts before that row (its ids, and the counter, stay). */
     fun rewound(target: Retry): Chat = copy(entries = entries.take(target.index))
+
+    /**
+     * The prompt [id] as one to edit and send again: any prompt the user sent with words (not a correction), its row
+     * named or not (D2), while a turn runs too (the edit stops it first, inv. 2); null in a job's run, while
+     * compressing, or for any other entry.
+     */
+    fun editTarget(id: Long): Retry? {
+        if (compressing || runOwned) return null
+        val i = entries.indexOfFirst { it.stableId == id }
+        val user = entries.getOrNull(i) as? Entry.User ?: return null
+        return Retry(i, user.text, user.rowId).takeIf { isPrompt(user) && user.text.isNotBlank() }
+    }
+
+    /** The turns a cut before [target]'s prompt archives besides its own: the prompts after it (a correction is its prompt's turn's, D6). */
+    fun laterTurns(target: Retry): Int = entries.drop(target.index + 1).count(::isPrompt)
+
+    /**
+     * [rewind]'s prompt as this chat holds it now: a retry's is still the last answered one (B5-D3/D4), an edit's still
+     * at its place with its words; null: it moved, or it may not be sent again now. Its row id is the newest known.
+     */
+    fun rewindTarget(rewind: Rewind): Retry? {
+        val target = rewind.target
+        val now = if (rewind.edits) entries.getOrNull(target.index)?.let { editTarget(it.stableId) } else retryTarget()
+        return now?.takeIf { it.index == target.index && it.text == target.text }
+    }
 
     /** After the core compressed the session: its transcript and its fill as the core answered (invariant 5); a reply without them changes neither. */
     fun compressed(result: SessionCompressResult): Chat =

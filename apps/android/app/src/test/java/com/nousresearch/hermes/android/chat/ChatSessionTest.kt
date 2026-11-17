@@ -1394,6 +1394,183 @@ class ChatSessionTest {
         unchanged("running")
     }
 
+    /** An edit of prompt [id] to [words], as the editor sends it ([deep]: the user confirmed "Restore & rerun"). */
+    private fun ChatSession.edit(id: Long, words: String, deep: Boolean = false) =
+        Rewind(checkNotNull(state.value.editTarget(id)), words, deep)
+
+    /** [chat]'s prompt [text] sent with row id [rowId], and answered [reply]. */
+    private suspend fun answeredTurn(chat: ChatSession, text: String, rowId: Long?, reply: String) {
+        submit = { if (rowId == null) """{"status":"streaming"}""" else """{"status":"streaming","user_row_id":$rowId}""" }
+        chat.send(text)
+        core.emit("message.start", chat.sessionId.value)
+        core.emit("message.complete", chat.sessionId.value, """{"text":"$reply"}""")
+    }
+
+    @Test
+    fun anEditOfTheLastPromptCutsBeforeItsRowAndSendsTheNewWords() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        answeredTurn(chat, "helo", 41, "hi")
+        submit = { """{"status":"streaming","user_row_id":52}""" }
+        val mark = core.calls.size
+
+        chat.resend(chat.edit(0, "hello"))
+
+        assertEquals(listOf("prompt.submit"), callsAfter(mark).map { it.first })
+        val sent = lastSubmit()
+        assertEquals("hello", sent.getValue("text").jsonPrimitive.content)
+        assertEquals("41", sent.getValue("truncate_before_row_id").jsonPrimitive.content)
+        assertEquals("true", sent.getValue("confirm_truncate").jsonPrimitive.content)
+        assertEquals("true", sent.getValue("confirm_empty_truncate").jsonPrimitive.content)
+        assertFalse("not deep: nothing after it", "confirm_deep_truncate" in sent)
+        assertEquals(listOf(Entry.User("hello", 52, stableId = 2)), chat.state.value.entries.untimed())
+    }
+
+    @Test
+    fun anOlderPromptIsCutOnlyWithTheUsersConsent() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        answeredTurn(chat, "a", 41, "A")
+        answeredTurn(chat, "b", 43, "B")
+        assertEquals(1, chat.state.value.laterTurns(checkNotNull(chat.state.value.editTarget(0))))
+        val (mark, shown) = core.calls.size to chat.state.value.entries
+
+        chat.resend(chat.edit(0, "a2", deep = false))
+
+        assertEquals("no consent: nothing asked of the core (inv. 1)", mark, core.calls.size)
+        assertEquals(shown, chat.state.value.entries)
+
+        submit = { """{"status":"streaming","user_row_id":60}""" }
+        chat.resend(chat.edit(0, "a2", deep = true))
+
+        val sent = lastSubmit()
+        assertEquals("41", sent.getValue("truncate_before_row_id").jsonPrimitive.content)
+        assertEquals("true", sent.getValue("confirm_truncate").jsonPrimitive.content)
+        assertEquals("true", sent.getValue("confirm_empty_truncate").jsonPrimitive.content)
+        assertEquals("true", sent.getValue("confirm_deep_truncate").jsonPrimitive.content)
+        assertEquals(listOf(Entry.User("a2", 60, 4)), chat.state.value.entries.untimed())
+    }
+
+    @Test
+    fun aBusyChatIsStoppedBeforeTheEditIsCut() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        submit = { """{"status":"streaming","user_row_id":41}""" }
+        chat.send("hello")
+        core.emit("message.start", "s1")
+        core.emit("message.delta", "s1", """{"text":"Hel"}""")
+        submit = { """{"status":"streaming","user_row_id":52}""" }
+        val (mark, shown) = core.calls.size to chat.state.value.entries
+
+        val job = launch { chat.resend(chat.edit(0, "hello there")) }
+
+        assertEquals("stopped first, nothing cut yet (inv. 2, D3)", listOf("session.interrupt" to "s1"), callsAfter(mark))
+        assertTrue(chat.state.value.running)
+        assertEquals(shown, chat.state.value.entries)
+
+        core.emit("message.complete", "s1", """{"text":"Hel","status":"interrupted"}""")
+        job.join()
+
+        assertEquals(listOf("session.interrupt", "prompt.submit"), callsAfter(mark).map { it.first })
+        assertEquals("41", lastSubmit().getValue("truncate_before_row_id").jsonPrimitive.content)
+        // The stopped reply (id 1) was cut with its prompt.
+        assertEquals(listOf(Entry.User("hello there", 52, 2)), chat.state.value.entries.untimed())
+    }
+
+    @Test
+    fun anEditWhoseStoppedTurnNeverEndsIsNotSent() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        submit = { """{"status":"streaming","user_row_id":41}""" }
+        chat.send("hello")
+        core.emit("message.start", "s1")
+        val mark = core.calls.size
+
+        chat.resend(chat.edit(0, "hello there"))  // the test scheduler skips STOP_WAIT
+
+        assertEquals(listOf("session.interrupt"), callsAfter(mark).map { it.first })
+        assertEquals(listOf(Entry.User("hello", 41, 0), Entry.Notice("Edit failed: session busy", stableId = 1)),
+                     chat.state.value.entries.untimed())
+        assertTrue("its turn still runs (D3)", chat.state.value.running)
+    }
+
+    @Test
+    fun anEditTheCoreFindsBusyStopsTheTurnAgainAndIsSentAgain() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        answeredTurn(chat, "hello", 41, "hi")
+        var sends = 0
+        submit = { if (++sends <= 2) throw CoreError(4009, "session busy") else """{"status":"streaming","user_row_id":52}""" }
+        val mark = core.calls.size
+
+        chat.resend(chat.edit(0, "hello there"))
+
+        assertEquals(listOf("prompt.submit", "session.interrupt", "prompt.submit", "prompt.submit"), callsAfter(mark).map { it.first })
+        assertEquals(listOf(Entry.User("hello there", 52, 2)), chat.state.value.entries.untimed())
+
+        // The give-up: a core that stays busy is asked BUSY_RESENDS more times, then its words are the answer (D4).
+        val other = openChat().apply { open() }
+        answeredTurn(other, "hello", 41, "hi")
+        submit = { throw CoreError(4009, "session busy") }
+        history = { """{"count":2,"messages":[{"role":"user","text":"hello","row_id":41},{"role":"assistant","text":"hi","row_id":42}]}""" }
+        val again = core.calls.size
+
+        other.resend(other.edit(0, "hello there"))
+
+        val after = callsAfter(again).map { it.first }
+        assertEquals(1 + ChatSession.BUSY_RESENDS, after.count { it == "prompt.submit" })
+        assertEquals(1, after.count { it == "session.interrupt" })
+        assertEquals(Entry.Notice("Edit failed: session busy", stableId = 5), other.state.value.entries.last())
+    }
+
+    @Test
+    fun anUnboundPromptIsFoundOrSentAgainAsRetryDoes() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        answeredTurn(chat, "helo", null, "hi")
+        history = { """{"count":1,"messages":[{"role":"user","text":"helo","row_id":5}]}""" }
+        val mark = core.calls.size
+
+        chat.resend(chat.edit(0, "hello"))
+
+        assertEquals(listOf("session.history" to "s1", "prompt.submit" to "s1"), callsAfter(mark))
+        assertEquals("5", lastSubmit().getValue("truncate_before_row_id").jsonPrimitive.content)
+
+        val other = openChat().apply { open() }
+        answeredTurn(other, "helo", null, "hi")
+        history = { """{"count":1,"messages":[{"role":"assistant","text":"hi","row_id":6}]}""" }
+
+        other.resend(other.edit(0, "hello"))
+
+        val sent = lastSubmit()
+        assertFalse("no cut", "truncate_before_row_id" in sent)
+        assertFalse("no consent", "confirm_truncate" in sent)
+        assertEquals("appended (D2, B5-D1)", listOf(Entry.User("helo", stableId = 0), Entry.Reply("hi", TurnStatus.COMPLETE, stableId = 1),
+                                                     Entry.User("hello", stableId = 2)), other.state.value.entries.untimed())
+    }
+
+    @Test
+    fun aRefusedEditShowsTheCoresTranscriptAndSaysEditFailed() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        answeredTurn(chat, "hello", 41, "hi")
+        submit = { throw CoreError(4018, "target user message is no longer in session history") }
+        history = { """{"count":2,"messages":[{"role":"user","text":"hello","row_id":41},{"role":"assistant","text":"hi there","row_id":42}]}""" }
+
+        chat.resend(chat.edit(0, "hello there"))
+
+        assertEquals(listOf(Entry.User("hello", 41, 3), Entry.Reply("hi there", TurnStatus.COMPLETE, stableId = 4, rowId = 42),
+                            Entry.Notice("Edit failed: This turn is no longer in server history (it may have been compressed away).", stableId = 5)),
+                     chat.state.value.entries.untimed())
+    }
+
+    @Test
+    fun aRetryTheCoreFindsBusyIsRefusedAsBefore() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        answeredTurn(chat, "hello", 41, "hi")
+        submit = { throw CoreError(4009, "session busy") }
+        history = { """{"count":2,"messages":[{"role":"user","text":"hello","row_id":41},{"role":"assistant","text":"hi there","row_id":42}]}""" }
+        val mark = core.calls.size
+
+        chat.retry()
+
+        assertEquals("no interrupt, one submit (D5)", listOf("prompt.submit", "session.history"), callsAfter(mark).map { it.first })
+        assertEquals(Entry.Notice("session busy", stableId = 5), chat.state.value.entries.last())
+    }
+
     @Test
     fun theBreakdownIsAskedOfTheChatsSession() = runTest(UnconfinedTestDispatcher()) {
         val chat = openChat().apply { open() }

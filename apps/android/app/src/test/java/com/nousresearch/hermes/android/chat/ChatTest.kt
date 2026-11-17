@@ -353,6 +353,43 @@ class ChatTest {
     }
 
     @Test
+    fun anyPromptTheUserSentCanBeEditedEvenWhileATurnRuns() {
+        val chat = Chat(listOf(Entry.User("a", 1, 0), Entry.Reply("A", TurnStatus.COMPLETE, stableId = 1),
+                               Entry.User("go on", stableId = 2, mode = BusyMode.STEER), Entry.User("c", 3, 3)), streaming = "")
+
+        assertEquals(Retry(0, "a", 1), chat.editTarget(0))
+        assertEquals("a turn may run (inv. 2)", Retry(3, "c", 3), chat.editTarget(3))
+        assertNull("a reply", chat.editTarget(1))
+        assertNull("a correction", chat.editTarget(2))
+        assertNull("no such entry", chat.editTarget(99))
+        assertNull("blank", Chat(listOf(Entry.User("  ", stableId = 0))).editTarget(0))
+        assertNull("compressing", chat.copy(compressing = true).editTarget(0))
+        assertNull("a job's run", chat.copy(runOwned = true).editTarget(0))
+    }
+
+    @Test
+    fun aCutArchivesThePromptsAfterItsTargetAndARewindIsRetakenWhereItWas() {
+        val chat = Chat(listOf(Entry.User("a", 1, 0), Entry.Reply("A", TurnStatus.COMPLETE, stableId = 1),
+                               Entry.User("b", 2, 2), Entry.Reply("B", TurnStatus.COMPLETE, stableId = 3)))
+
+        assertEquals(1, chat.laterTurns(Retry(0, "a", 1)))
+        assertEquals(0, chat.laterTurns(Retry(2, "b", 2)))
+        assertEquals("a correction is its prompt's turn's (D6)", 0,
+                     chat.copy(entries = chat.entries + Entry.User("go on", stableId = 4, mode = BusyMode.STEER)).laterTurns(Retry(2, "b", 2)))
+
+        val edit = Rewind(Retry(0, "a", 1), "a2", false)
+        assertEquals(Retry(0, "a", 1), chat.rewindTarget(edit))
+        assertNull("the prompt changed", chat.copy(entries = listOf(Entry.User("x", 1, 0)) + chat.entries.drop(1)).rewindTarget(edit))
+
+        val retry = Rewind(Retry(2, "b", 2), "b", false)
+        assertFalse(retry.edits)
+        assertEquals(Retry(2, "b", 2), chat.rewindTarget(retry))
+        val running = chat.copy(streaming = "")
+        assertNull("a retry waits for the turn's end (B5-D3)", running.rewindTarget(retry))
+        assertEquals("an edit stops it instead", Retry(2, "b", 2), running.rewindTarget(Rewind(Retry(2, "b", 2), "b2", false)))
+    }
+
+    @Test
     fun noRetryWhileAPromptIsOnItsWay() {
         val reply = Entry.Reply("r", TurnStatus.COMPLETE, stableId = 1)
         val onItsWay = Chat(listOf(Entry.User("a", 1, 0), reply)).sent("b").notice("x")
