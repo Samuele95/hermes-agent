@@ -1,6 +1,17 @@
 package com.nousresearch.hermes.android
 
 import android.accessibilityservice.AccessibilityService
+import android.app.Activity
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.speech.RecognizerIntent
+import androidx.activity.compose.LocalActivityResultRegistryOwner
+import androidx.activity.result.ActivityResultRegistry
+import androidx.activity.result.ActivityResultRegistryOwner
+import androidx.activity.result.contract.ActivityResultContract
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.core.app.ActivityOptionsCompat
+import com.nousresearch.hermes.android.chat.dictationIntent
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.assertIsDisplayed
@@ -1785,5 +1796,106 @@ class ChatScreenTest {
 
         compose.onNodeWithTag("draft").assertTextEquals("earlier words")
         compose.runOnIdle { assertEquals(listOf("earlier words"), taken) }
+    }
+
+    /**
+     * A recognizer in place of the phone's (D7: the real one is never launched): each launch records its intent, then
+     * [answer] gives the result code and the heard words (null words: no data), or null to throw as a recognizer that
+     * went away does.
+     */
+    private fun recognizer(answer: () -> Pair<Int, ArrayList<String>?>?): Pair<ActivityResultRegistryOwner, List<Intent>> {
+        val launched = mutableListOf<Intent>()
+        val registry = object : ActivityResultRegistry() {
+            override fun <I, O> onLaunch(requestCode: Int, contract: ActivityResultContract<I, O>, input: I, options: ActivityOptionsCompat?) {
+                launched += input as Intent
+                val (code, heard) = answer() ?: throw ActivityNotFoundException("no recognizer")
+                dispatchResult(requestCode, code, heard?.let { Intent().putStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS, it) })
+            }
+        }
+        val owner = object : ActivityResultRegistryOwner {
+            override val activityResultRegistry = registry
+        }
+        return owner to launched
+    }
+
+    @Test
+    fun aDictationJoinsTheDraftOnANewLineAndIsNeverSent() {
+        val sent = mutableListOf<String>()
+        val (owner, launched) = recognizer { Activity.RESULT_OK to arrayListOf("buy milk", "by milk") }
+        compose.setContent {
+            CompositionLocalProvider(LocalActivityResultRegistryOwner provides owner) {
+                ChatScreen(Chat(), onSend = { sent += it }, dictation = dictationIntent())
+            }
+        }
+
+        compose.onNodeWithTag("dictate").assertContentDescriptionEquals("Voice dictation")
+        compose.onNodeWithTag("draft").performTextInput("Groceries:")
+        compose.onNodeWithTag("dictate").performClick()
+
+        compose.onNodeWithTag("draft").assertTextEquals("Groceries:\nbuy milk")
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.TextSelectionRange, TextRange(19)))  // the cursor at the end
+        assertEquals(emptyList<String>(), sent)  // bet 15: never sent
+        compose.onNodeWithTag("dictation-said").assertDoesNotExist()
+        compose.runOnIdle {
+            val intent = launched.single()
+            assertEquals(RecognizerIntent.ACTION_RECOGNIZE_SPEECH, intent.action)
+            assertEquals(RecognizerIntent.LANGUAGE_MODEL_FREE_FORM, intent.getStringExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL))
+        }
+
+        compose.onNodeWithTag("dictate").performClick()
+        compose.onNodeWithTag("draft").assertTextEquals("Groceries:\nbuy milk\nbuy milk")
+        assertEquals(emptyList<String>(), sent)
+    }
+
+    @Test
+    fun aCancelledEmptyOrFailedDictationLeavesTheDraftAsItWas() {
+        val sent = mutableListOf<String>()
+        var answer by mutableStateOf<Pair<Int, ArrayList<String>?>?>(null)
+        val (owner, _) = recognizer { answer }
+        compose.setContent {
+            CompositionLocalProvider(LocalActivityResultRegistryOwner provides owner) {
+                ChatScreen(Chat(), onSend = { sent += it }, dictation = dictationIntent())
+            }
+        }
+
+        // Cancelled (no data), OK with no words, and the recognizer's error 1 (RESULT_NO_MATCH, deprecated) with words.
+        listOf(Activity.RESULT_CANCELED to null, Activity.RESULT_OK to arrayListOf(), 1 to arrayListOf("buy milk")).forEach { given ->
+            answer = given
+            compose.onNodeWithTag("draft").performTextClearance()
+            compose.onNodeWithTag("draft").performTextInput("Groceries: ")
+            compose.onNodeWithTag("dictate").performClick()
+
+            compose.onNodeWithTag("draft").assertTextEquals("Groceries: ")
+            compose.onNodeWithTag("dictation-said").assertTextEquals("No speech detected. Try recording again.")
+            compose.onNodeWithTag("draft").performTextInput("x")
+            compose.onNodeWithTag("dictation-said").assertDoesNotExist()  // the line goes when the draft changes
+        }
+
+        answer = null  // the recognizer went away after the check (D4)
+        compose.onNodeWithTag("dictate").performClick()
+        compose.onNodeWithTag("draft").assertTextEquals("Groceries: x")
+        compose.onNodeWithTag("dictation-said").assertTextEquals("Voice unavailable")
+        assertEquals(emptyList<String>(), sent)
+    }
+
+    @Test
+    fun withoutARecognizerThereIsNoMicAndWithOneItShowsInEveryState() {
+        var chat by mutableStateOf(Chat())
+        var dictation by mutableStateOf<Intent?>(null)
+        val (owner, _) = recognizer { null }
+        compose.setContent {
+            CompositionLocalProvider(LocalActivityResultRegistryOwner provides owner) { ChatScreen(chat, onSend = {}, dictation = dictation) }
+        }
+
+        compose.onNodeWithTag("dictate").assertDoesNotExist()
+
+        dictation = dictationIntent()
+        val running = Chat(listOf(Entry.User("hi", 1, 0)), streaming = "He")
+        listOf("idle" to Chat(), "running" to running, "compressing" to Chat(compressing = true), "a job's run" to Chat(runOwned = true))
+            .forEach { (state, shown) ->
+                chat = shown
+                compose.onNodeWithTag("dictate").assertIsDisplayed().assertIsEnabled()  // D6: only the draft is filled
+                if (state == "running") compose.onNodeWithTag("stop").assertIsDisplayed()
+            }
     }
 }

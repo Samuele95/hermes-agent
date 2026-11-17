@@ -38,6 +38,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -53,6 +54,8 @@ import com.nousresearch.hermes.android.chat.PromptAnswers
 import com.nousresearch.hermes.android.chat.QueueActions
 import com.nousresearch.hermes.android.chat.RecoveryRoutes
 import com.nousresearch.hermes.android.chat.SessionActions
+import com.nousresearch.hermes.android.chat.dictationIntent
+import com.nousresearch.hermes.android.chat.recognizerAnswers
 import com.nousresearch.hermes.android.entry.IncomingText
 import com.nousresearch.hermes.android.entry.NEW_CHAT
 import com.nousresearch.hermes.android.gateway.GatewayScreen
@@ -109,6 +112,9 @@ class MainActivity : ComponentActivity() {
                             val models by state.pages.models.state.collectAsState()
                             // The core's Message Reactions switch, known before Settings opens (D4): React shows only while it is on.
                             val reactionsOn by state.pages.settings.reactionsOn.collectAsState()
+                            // The phone's own speech recognizer, when one answers (chat-30, D48): the mic shows only then, and the app holds no
+                            // microphone permission — the recognizer's activity does.
+                            val dictation = remember { dictationIntent().takeIf { recognizerAnswers(packageManager, it) } }
                             // Whichever page shows: a finished export goes to the share sheet each time the activity is started, until one
                             // opened it (D8, architect #2); one no app can take waits no longer (N15); no key changes at a stop, so the
                             // lifecycle, not a key, brings the retry.
@@ -189,7 +195,7 @@ class MainActivity : ComponentActivity() {
                                                                        export = { id -> app.export { export(id) } }),
                                        context = context, contextActions = contextActions, queue = queue, queueActions = queueActions,
                                        onOfferTaken = state.chat::offerTaken, onOpenUrl = ::openInBrowser, onDismissWall = state.chat::dismissWall,
-                                       onSlash = state.chat::slashItems, onPrefillTaken = state.chat::prefillTaken,
+                                       onSlash = state.chat::slashItems, onPrefillTaken = state.chat::prefillTaken, dictation = dictation,
                                        readiness = readiness, onCheckReadiness = { app.setup { checkReadiness() } },
                                        exportUi = exported,
                                        exportActions = ExportActions(export = { app.export { export(null) } }, dismiss = state.pages.export::dismiss),

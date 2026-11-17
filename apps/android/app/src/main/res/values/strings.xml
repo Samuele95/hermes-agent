@@ -87,6 +87,9 @@
     <string name="chat_slash_skills">Skills</string>
     <string name="chat_slash_options">Options</string>
     <string name="chat_slash_none">No matching commands</string>
+    <string name="chat_dictate">Voice dictation</string>
+    <string name="chat_dictation_none">No speech detected. Try recording again.</string>
+    <string name="chat_dictation_unavailable">Voice unavailable</string>
     <string name="chat_send_edited">Send edited message</string>
     <string name="chat_edit_cancel">Cancel</string>
     <string name="chat_restore_title">Restore to this checkpoint?</string>

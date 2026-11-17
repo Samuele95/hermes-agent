@@ -1,6 +1,11 @@
 package com.nousresearch.hermes.android.chat
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.speech.RecognizerIntent
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.StringRes
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -159,6 +164,8 @@ class ModelActions(val open: () -> Unit, val close: () -> Unit, val query: (Stri
  * (D3).
  * [onSlash] lists the slash menu for a draft that starts with `/` (chat-20); without it there is no menu. [chat]'s
  * prefill (`/undo`'s words) replaces the draft once and goes back to [onPrefillTaken].
+ * [dictation] is the phone's speech recognizer's intent when an activity answers it (chat-30, D48): the composer's mic
+ * starts it and what it heard joins the draft, never sent; without it there is no mic.
  */
 @Composable
 fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifier, answers: PromptAnswers? = null,
@@ -171,7 +178,8 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
                exportUi: ExportUi = ExportUi(), exportActions: ExportActions? = null, status: StatusUi? = null,
                statusActions: StatusActions? = null, models: PickerUi? = null, modelActions: ModelActions? = null,
                now: () -> Long = System::currentTimeMillis, onReact: ((stableId: Long, emoji: String?) -> Unit)? = null,
-               onSlash: (suspend (draft: String) -> List<SlashItem>)? = null, onPrefillTaken: (String) -> Unit = {}) {
+               onSlash: (suspend (draft: String) -> List<SlashItem>)? = null, onPrefillTaken: (String) -> Unit = {},
+               dictation: Intent? = null) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var picked by remember { mutableIntStateOf(0) }  // a conversation picked in the drawer is shown from its end (V5)
@@ -211,7 +219,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
             // The messages that wait for a turn's end, in the order they go out (chat-19).
             queueActions?.takeIf { queue.items.isNotEmpty() }?.let { QueuePanel(queue, chat.busy, chat.steerMode != null, it) }
             Composer(chat, onSend, onStop, places?.setup, contextActions?.open, queueActions?.add, chat.offer, onOfferTaken, places?.newChat,
-                     readiness, onCheckReadiness, modelActions?.open, onSlash, onPrefillTaken)
+                     readiness, onCheckReadiness, modelActions?.open, onSlash, onPrefillTaken, dictation)
             context?.let { ContextSheet(it, running = chat.busy, compressing = chat.compressing, onCompress = contextActions?.compress ?: {},
                                           onClose = contextActions?.close ?: {}) }
             status?.let { StatusSheet(it, onClose = statusActions?.close ?: {}) }
@@ -793,12 +801,14 @@ private fun SlashMenu(items: List<SlashItem>, modifier: Modifier, onPick: (Slash
  * a strip says nothing is sent until Send, with [onNewChat] beside it, while those words are in the field (bet 8).
  * The model pill carries [readiness]'s mark (none while null); a ready pill opens [onModels], this chat's model picker,
  * else setup; while it is not ready a tap opens the core's words, setup and [onCheckReadiness] (D5, D6).
+ * With [dictation], a mic before Send starts the phone's own speech recognizer, and what it heard joins the draft on a
+ * new line, never sent (chat-30, D48); nothing heard leaves the draft as it was and says so above the field.
  */
 @Composable
 private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, onSetup: (() -> Unit)?, onContext: (() -> Unit)?,
                      onQueue: ((String) -> Unit)?, offer: IncomingText?, onOfferTaken: (IncomingText) -> Unit, onNewChat: (() -> Unit)?,
                      readiness: Readiness?, onCheckReadiness: (() -> Unit)?, onModels: (() -> Unit)?,
-                     onSlash: (suspend (String) -> List<SlashItem>)?, onPrefillTaken: (String) -> Unit) {
+                     onSlash: (suspend (String) -> List<SlashItem>)?, onPrefillTaken: (String) -> Unit, dictation: Intent?) {
     // A value, not a string: words set from outside (a pick, a prefill, an offer) leave the cursor at their end (D8).
     var draft by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
     var shared by rememberSaveable { mutableStateOf(false) }  // the draft holds words another app shared
@@ -841,6 +851,18 @@ private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, o
             null
         }
     }
+    // Dictation (chat-30, D48): the recognizer answers text or nothing (EJ-55); words join the draft once, the cursor at
+    // their end, and nothing is sent. [said] is the last dictation's words when it brought none; they go with a new draft.
+    var said by remember { mutableStateOf<Int?>(null) }
+    LaunchedEffect(draft.text) { said = null }
+    val listen = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val heard = heardOf(result.resultCode, result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS))
+        if (heard == null) said = R.string.chat_dictation_none
+        else {
+            val joined = dictated(draft.text, heard)
+            draft = TextFieldValue(joined, TextRange(joined.length))
+        }
+    }
     val listed = menu
     val shown = listed != null && !dismissed && (listed.isNotEmpty() || ' ' !in draft.text)
     BackHandler(enabled = shown) { dismissed = true }
@@ -860,6 +882,10 @@ private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, o
         if (chat.runOwned) Text(stringResource(R.string.chat_run_owned),
                                 Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 10.dp).testTag("run-owned"),
                                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        said?.let {
+            Text(stringResource(it), Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 10.dp).testTag("dictation-said"),
+                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         TextField(draft, { draft = it }, Modifier.fillMaxWidth().testTag("draft"), maxLines = 6,
                   textStyle = MaterialTheme.typography.bodyLarge,
                   placeholder = {
@@ -900,6 +926,17 @@ private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, o
                 }
             }
             chat.meter?.let { ContextChip(it, onContext) }
+            // Desktop's ghost mic, offered in every state the draft can be typed in (D6): it only fills the draft.
+            dictation?.let { intent ->
+                IconButton({
+                    said = null
+                    try { listen.launch(intent) } catch (_: ActivityNotFoundException) { said = R.string.chat_dictation_unavailable }
+                }, Modifier.size(36.dp).testTag("dictate")) {
+                    Icon(HermesIcons.Microphone, stringResource(R.string.chat_dictate), Modifier.size(18.dp),
+                         tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Spacer(Modifier.width(4.dp))
+            }
             if (chat.busy) {
                 if (onQueue != null && chat.queueable) {
                     FilledTonalIconButton({ onQueue(draft.text.trim()); draft = TextFieldValue(""); shared = false }, Modifier.size(36.dp).testTag("queue"), enabled = draft.text.isNotBlank()) {
