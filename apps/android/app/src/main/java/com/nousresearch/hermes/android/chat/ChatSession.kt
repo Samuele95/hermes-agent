@@ -16,7 +16,9 @@ import com.nousresearch.hermes.bridge.protocol.ApprovalResult
 import com.nousresearch.hermes.bridge.protocol.ClarifyResult
 import com.nousresearch.hermes.bridge.protocol.ConfigGetParams
 import com.nousresearch.hermes.bridge.protocol.Events
+import com.nousresearch.hermes.bridge.protocol.MessageReactParams
 import com.nousresearch.hermes.bridge.protocol.Methods
+import com.nousresearch.hermes.bridge.protocol.ReactionAuthor
 import com.nousresearch.hermes.bridge.protocol.PromptSubmitParams
 import com.nousresearch.hermes.bridge.protocol.PromptSubmitResult
 import com.nousresearch.hermes.bridge.protocol.PromptSubmitStatus
@@ -111,6 +113,8 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         const val NOTHING_TO_EXPORT = "Nothing to export yet."
         /** Said when Status is asked for before the chat has a session (protocol-21). */
         const val NO_STATUS = "There is no session to report on yet."
+        /** Said before why a reaction did not land (Desktop's "Could not react", reactions.ts:113). */
+        const val REACT_FAILED = "Could not react"
         /** Said before why an edit was not sent (Desktop's `editFailed`). */
         const val EDIT_FAILED = "Edit failed"
         /** Why, when the core no longer holds the edited prompt's row (4018; Desktop's `editTurnUnavailable`, D8). */
@@ -713,6 +717,43 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     private fun bind(session: RuntimeSessionId, rowId: Long) {
         change { if (it.ref?.runtime == session) it.copy(chat = it.chat.boundUser(rowId)) else it }
     }
+
+    /**
+     * The user's reaction [emoji] on the answer [stableId] (chat-14), or null to clear it; the same emoji again retracts
+     * it, as the core applies a tap. Invariant 3: it is painted in the [change] that decides to send it and rolled back,
+     * with [REACT_FAILED] and why (D9), in the [change] that sees the call fail, only while the answer still shows that
+     * paint (EJ-78); the core's answer otherwise replaces it, the user's own only (D51). Only an answer whose row the
+     * core named (D2: never a guess at the newest row), outside a job's run the gateway still owns (D10): anything else sends nothing
+     * and says nothing. A chat that left the session changes nothing on the answer: the core stored it, the next resume
+     * shows it. The author is always the user: the agent's reactions need a core change (D51).
+     */
+    suspend fun react(stableId: Long, emoji: String?) {
+        var sent: Tap? = null
+        change { now ->
+            val ref = now.ref ?: return@change now
+            val rowId = now.chat.reactable(stableId) ?: return@change now
+            val before = (now.chat.entries.first { it.stableId == stableId } as Entry.Reply).reactions
+            val painted = before.tapped(emoji)
+            sent = Tap(ref.runtime, rowId, before, painted)
+            now.copy(chat = now.chat.reacted(stableId, painted))
+        }
+        val tap = sent ?: return
+        val answer = try {
+            core.call(Methods.MESSAGE_REACT, MessageReactParams(sessionId = tap.session.value, rowId = tap.rowId, emoji = emoji,
+                                                                author = ReactionAuthor.USER))
+        } catch (failed: Exception) {
+            val why = forUser(failed)  // a cancellation goes on
+            change { now ->
+                if (now.ref?.runtime != tap.session) now
+                else now.copy(chat = now.chat.unreacted(stableId, tap.painted, tap.before).notice("$REACT_FAILED: $why"))
+            }
+            return
+        }
+        change { now -> if (now.ref?.runtime == tap.session) now.copy(chat = now.chat.reacted(stableId, reactionsOf(answer.reactions))) else now }
+    }
+
+    /** One tap on its way: the session and row it went to, the reactions shown before it, and the ones it painted. */
+    private data class Tap(val session: RuntimeSessionId, val rowId: Long, val before: List<Reaction>, val painted: List<Reaction>)
 
     /** Runs the last prompt again, as the desktop's Retry does: [resend] of its own words, never a deep cut (B5, DC-P7). */
     suspend fun retry() {

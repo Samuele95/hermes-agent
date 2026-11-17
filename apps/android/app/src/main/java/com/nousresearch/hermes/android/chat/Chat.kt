@@ -40,8 +40,9 @@ sealed interface Entry {
      * [rowId]: the core's durable row for it, from the completion's `persisted_turn` or the stored row (null: unproven,
      * as [User.rowId]). [at]: when it completed, epoch ms: the core's row time for a stored row, the app's clock at the
      * completion for a live one; null: not known. [tookMs]: the turn's length on the app's clock, only for a turn whose
-     * `message.start` this process saw (invariant 7, bet 16); null otherwise. [reactions]: the user's own, as the core
-     * stored them (D4, D51). [failure]: why its turn failed, as the core classified it (`error_surface`), for the recovery
+     * `message.start` this process saw (invariant 7, bet 16); null otherwise. [reactions]: the user's own (D4, D51), as the
+     * core last answered (its history, a `message.react` reply or a `message.reaction`), or painted by a tap until the
+     * core answers. [failure]: why its turn failed, as the core classified it (`error_surface`), for the recovery
      * card (chat-16); null for a turn that did not fail, or whose completion carried no descriptor (D9).
      */
     data class Reply(val text: String, val status: TurnStatus, val error: String? = null, val reasoning: String? = null,
@@ -226,6 +227,26 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
         return copy(entries = entries.toMutableList().apply { set(i, user.copy(rowId = rowId)) })
     }
 
+    /**
+     * The row id of the reply [id] when the user may react to it now: an answer whose row the core named (D2: the app
+     * never guesses the newest row), in a chat that is not a job's run the gateway still owns (D10); null otherwise.
+     */
+    fun reactable(id: Long): Long? =
+        if (runOwned) null else (entries.firstOrNull { it.stableId == id } as? Entry.Reply)?.rowId
+
+    /** The reply [id] shows [reactions]; no such reply leaves the chat as it is (a compression's re-read gives new ids). */
+    fun reacted(id: Long, reactions: List<Reaction>): Chat =
+        if (entries.none { it is Entry.Reply && it.stableId == id }) this
+        else copy(entries = entries.map { if (it is Entry.Reply && it.stableId == id) it.copy(reactions = reactions) else it })
+
+    /**
+     * A refused tap's rollback (invariant 3, EJ-78): the reply [id] goes back to [before] only while it still shows the
+     * [painted] reactions that tap put there. What replaced the paint since (the core's answer to a later tap, a
+     * `message.reaction`) stays.
+     */
+    fun unreacted(id: Long, painted: List<Reaction>, before: List<Reaction>): Chat =
+        if (entries.none { it is Entry.Reply && it.stableId == id && it.reactions == painted }) this else reacted(id, before)
+
     /** The last prompt, when nothing runs, is about to, or compresses, and something answered it (D3); null otherwise. */
     fun retryTarget(): Retry? {
         if (busy || compressing || runOwned) return null
@@ -311,6 +332,10 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
         // TUI treats every `error` as the end of the turn: so does the chat, keeping the message as a notice.
         Events.ERROR.name -> notice(event.decode(Events.ERROR)!!.message)
             .copy(streaming = null, activity = null, reasoning = null, submitted = false, turnStartedAt = null)
+        // Its by-row leg only (D6): a payload for a user row or an unknown row changes nothing; the user's own only (D7).
+        Events.MESSAGE_REACTION.name -> event.decode(Events.MESSAGE_REACTION)!!.let { p ->
+            copy(entries = entries.map { if (it is Entry.Reply && it.rowId == p.rowId) it.copy(reactions = reactionsOf(p.reactions)) else it })
+        }
         Events.REQUEST_CANCEL.name -> settled(event.decode(Events.REQUEST_CANCEL)!!.id)
         Events.APPROVAL_CANCELLED.name -> event.decode(Events.APPROVAL_CANCELLED)!!.requestIds.toSet().let { ids ->
             copy(prompts = prompts.filterNot { it is Prompt.Approval && it.requestId in ids })

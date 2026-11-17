@@ -83,6 +83,8 @@ class ChatSessionTest {
     private var busy: () -> String = { """{"value":"$busyWord"}""" }
     private var steer: (JsonObject) -> String = { p -> """{"status":"queued","text":${p.getValue("text")}}""" }
     private var redirect: (JsonObject) -> String = { p -> """{"status":"redirected","text":${p.getValue("text")}}""" }
+    /** The core's `message.react`: by default it stores nothing and answers no reactions. */
+    private var react: (JsonObject) -> String = { p -> """{"row_id":${p.getValue("row_id")},"reactions":[]}""" }
     private val core = FakeCoreGateway { method, params ->
         when (method) {
             "session.create" -> { created(); """{"session_id":"s${++sessions}","stored_session_id":"db$sessions","message_count":0,"messages":[],"info":{$contract}}""" }
@@ -102,6 +104,7 @@ class ChatSessionTest {
             "session.context_breakdown" -> breakdownReply()
             "session.title" -> title(params)
             "session.status" -> statusReply
+            "message.react" -> react(params)
             else -> error("unexpected $method")
         }
     }
@@ -3249,5 +3252,88 @@ class ChatSessionTest {
         val reply = chat.state.value.entries.last() as Entry.Reply
         assertNull(reply.tookMs)
         assertEquals(clockMs, reply.at)
+    }
+
+    /** A completed answer whose rows the core named (`persisted_turn`): the reply's row is 22. */
+    private suspend fun ChatSession.storedAnswer(): Long {
+        send("hi")
+        core.emit("message.start", "s1")
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete","persisted_turn":{"row_ids":[21,22],"complete":true,"user_row_id":21,"final_assistant_row_id":22}}""")
+        return state.value.entries.last().stableId
+    }
+
+    private fun ChatSession.reactionsOn(id: Long) = (state.value.entries.single { it.stableId == id } as Entry.Reply).reactions
+
+    @Test
+    fun aReactionIsShownAtOnceSentAsTheUsersAndTheCoresAnswerReplacesIt() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        val id = chat.storedAnswer()
+        var shown: Chat? = null
+        react = { shown = chat.state.value
+                  """{"row_id":22,"reactions":[{"emoji":"❤️","author":"user","at":1.0},{"emoji":"👍","author":"agent","at":2.0}]}""" }
+
+        chat.react(id, "❤️")
+
+        assertEquals("painted before the core answered", listOf(Reaction("❤️", Author.USER)),
+                     (shown!!.entries.single { it.stableId == id } as Entry.Reply).reactions)
+        assertEquals(Json.parseToJsonElement("""{"session_id":"s1","row_id":22,"emoji":"❤️","author":"user"}"""), lastOf("message.react"))
+        assertEquals("the core's list, the user's own only", listOf(Reaction("❤️", Author.USER)), chat.reactionsOn(id))
+        assertTrue(chat.state.value.entries.none { it is Entry.Notice })
+    }
+
+    @Test
+    fun theSameEmojiAgainOrAClearRetractsIt() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        val id = chat.storedAnswer()
+        react = { """{"row_id":22,"reactions":[{"emoji":"❤️","author":"user","at":1.0}]}""" }
+        chat.react(id, "❤️")
+        assertEquals(listOf(Reaction("❤️", Author.USER)), chat.reactionsOn(id))
+
+        var during: List<Reaction>? = null
+        react = { during = chat.reactionsOn(id); """{"row_id":22,"reactions":[]}""" }
+        chat.react(id, "❤️")
+
+        assertEquals("the same emoji again is painted as retracted", emptyList<Reaction>(), during)
+        assertEquals("❤️", lastOf("message.react").getValue("emoji").jsonPrimitive.content)
+        assertEquals(emptyList<Reaction>(), chat.reactionsOn(id))
+
+        chat.react(id, null)
+
+        assertFalse("a clear sends no emoji", "emoji" in lastOf("message.react"))
+        assertEquals(emptyList<Reaction>(), chat.reactionsOn(id))
+    }
+
+    @Test
+    fun aRefusedReactionRollsBackAndSaysWhy() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        val id = chat.storedAnswer()
+        react = { throw CoreError(4040, "message not found in this session") }
+
+        chat.react(id, "👍")
+
+        assertEquals(emptyList<Reaction>(), chat.reactionsOn(id))
+        assertEquals("Could not react: message not found in this session", (chat.state.value.entries.last() as Entry.Notice).text)
+
+        react = { throw IllegalStateException("boom") }
+        chat.react(id, "👍")
+
+        assertEquals(emptyList<Reaction>(), chat.reactionsOn(id))
+        assertEquals("Could not react: Something went wrong (IllegalStateException).", (chat.state.value.entries.last() as Entry.Notice).text)
+    }
+
+    @Test
+    fun anAnswerWithoutARowOrInAJobsRunSendsNothing() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")
+        val id = chat.state.value.entries.last().stableId
+
+        chat.react(id, "❤️")
+        chat.react(99, "❤️")
+
+        assertTrue(core.calls.none { it.first == "message.react" })
+        assertEquals(emptyList<Reaction>(), chat.reactionsOn(id))
+        assertTrue(chat.state.value.entries.none { it is Entry.Notice })
     }
 }

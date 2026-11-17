@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.update
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlin.coroutines.cancellation.CancellationException
 
 /** One write admitted: busy, or null when not (the page closed, or a write already running). */
@@ -60,16 +61,27 @@ class ProviderAccess(val connected: suspend () -> List<ConnectedProvider>, val r
  *
  * About ([about]) is read at each open from the APK, the payload's manifest and the start-up facts (F13); no write
  * re-reads it.
+ *
+ * Message Reactions ([reactions], chat-14) is one more key of the `config.set` channel, `display.message_reactions`,
+ * written for every session (no session id) and read from `config.get full` (D5: the core has no getter for it);
+ * [reactionsOn] keeps it for the chat while the page is closed, filled once at start-up by [readReactions] (D4).
  */
 class SettingsControl(private val core: CoreGateway, private val bridge: AppBridge, private val seen: () -> GatewaySeen,
                       private val providers: ProviderAccess, private val about: suspend () -> About) {
     private companion object {
         const val KEY = "approvals.mode"
         const val PERSONALITY = "personality"
+        const val REACTIONS = "display.message_reactions"
+        const val FULL = "full"
     }
 
     private val screen = MutableStateFlow<SettingsUi?>(null)
     val state: StateFlow<SettingsUi?> = screen.asStateFlow()
+
+    private val switch = MutableStateFlow<Boolean?>(null)
+
+    /** The core's switch as this process last read or wrote it, kept while the page is closed, for the chat (D4); null until known. */
+    val reactionsOn: StateFlow<Boolean?> = switch.asStateFlow()
 
     /** The pid of the gateway that was running when a removal last applied (null: nothing waits for a start). */
     private val nextStartUnder = AtomicReference<Int?>(null)
@@ -93,7 +105,10 @@ class SettingsControl(private val core: CoreGateway, private val bridge: AppBrid
             val config = orNull(keep) { ConfigSettings.of(bridge.ask(BridgeCalls.SETTINGS_READ)) }
             val connected = orNull(keep) { providers.connected() }
             val shown = orNull(keep) { about() }
-            SettingsUi(mode, personality, config, connected, shown, nextStart = mark(seen()) != null, error = error)
+            // After the mode and the personality, so their reads keep their order (D5: `full`, as B4 reads its own key).
+            val reactions = orNull(keep) { messageReactionsOf(core.call(Methods.CONFIG_GET, ConfigGetParams(key = FULL)).config) }
+            reactions?.let { switch.value = it }
+            SettingsUi(mode, personality, config, connected, shown, nextStart = mark(seen()) != null, error = error, reactions = reactions)
         } catch (cancelled: CancellationException) {
             if (held) screen.update { it?.copy(busy = false) }  // as finish: a cancelled re-read leaves the page idle
             throw cancelled
@@ -135,6 +150,35 @@ class SettingsControl(private val core: CoreGateway, private val bridge: AppBrid
             val now = core.call(Methods.CONFIG_GET, ConfigGetParams(key = PERSONALITY)).value
             ({ it.copy(personality = now) })
         }
+    }
+
+    /**
+     * Writes the core's `display.message_reactions` [on] for every session at once (no session id; the core reads it at
+     * each turn), then shows the bool the core answered (an accepted write that answered none shows [on]). A refusal
+     * keeps the switch where it was and shows the core's words.
+     */
+    suspend fun reactions(on: Boolean) {
+        if (!admitted()) return
+        finish {
+            val answer = core.call(Methods.CONFIG_SET, ConfigSetParams(key = REACTIONS, value = JsonPrimitive(on)))
+            val now = (answer.value as? JsonPrimitive)?.booleanOrNull ?: on
+            switch.value = now
+            ({ it.copy(reactions = now) })
+        }
+    }
+
+    /**
+     * The start-up read of the switch (D4), launched so nothing waits for it: it never replaces a value an [open] or a
+     * write set first. A failure leaves it unknown (null: the chat shows no React); a cancellation goes on.
+     */
+    suspend fun readReactions() {
+        val read = try {
+            messageReactionsOf(core.call(Methods.CONFIG_GET, ConfigGetParams(key = FULL)).config)
+        } catch (failed: Exception) {
+            if (failed is CancellationException) throw failed
+            return
+        }
+        switch.compareAndSet(null, read)
     }
 
     /**

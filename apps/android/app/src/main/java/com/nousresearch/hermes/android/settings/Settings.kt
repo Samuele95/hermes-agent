@@ -4,6 +4,12 @@ import com.nousresearch.hermes.bridge.contract.SettingsReadReply
 import com.nousresearch.hermes.bridge.contract.SettingsWriteParams
 import com.nousresearch.hermes.bridge.contract.SkillEntry
 import com.nousresearch.hermes.bridge.protocol.ModelOptionProvider
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.doubleOrNull
 import com.nousresearch.hermes.bridge.contract.Personality as WirePersonality
 
 /** The core's `approvals.mode`: who approves a command the agent wants to run that the core flags as risky. */
@@ -104,12 +110,30 @@ sealed interface WriteOutcome {
  * gateway's next start (the pid it was made under still runs; F4, Dv31). [busy] while one write runs; [error] the
  * words for the last failure of a read, a `config.set` or a provider removal; [outcome] how the last `settings_write`
  * (an edit or an allowlist removal) ended when its re-read did not replace what is shown (D1). At most one of the two
- * is set.
+ * is set. [reactions] the core's `display.message_reactions` (Settings › Chat › Message Reactions), null when it could
+ * not be read.
  */
 data class SettingsUi(val approvals: ApprovalMode? = null, val personality: String? = null, val config: ConfigSettings? = null,
                       val connected: List<ConnectedProvider>? = null, val about: About? = null, val confirmRemove: String? = null,
                       val confirmProvider: String? = null, val nextStart: Boolean = false, val busy: Boolean = false,
-                      val error: String? = null, val outcome: WriteOutcome? = null)
+                      val error: String? = null, val outcome: WriteOutcome? = null, val reactions: Boolean? = null)
+
+/**
+ * The core's `display.message_reactions` in its whole [config] (`config.get full`), read as the core reads it:
+ * `bool(display.get("message_reactions", False))` (`methods_prompt.py:212`). On: `true`, a non-zero number, a
+ * non-empty string, list or map; off: absent (Desktop's default, DC-P17), null, `false`, 0, "", or no `display` map.
+ * Pure and total.
+ */
+fun messageReactionsOf(config: JsonObject?): Boolean =
+    when (val value = (config?.get("display") as? JsonObject)?.get("message_reactions")) {
+        null, JsonNull -> false
+        is JsonObject -> value.isNotEmpty()
+        is JsonArray -> value.isNotEmpty()
+        is JsonPrimitive -> when {
+            value.isString -> value.content.isNotEmpty()
+            else -> value.booleanOrNull ?: (value.doubleOrNull?.let { it != 0.0 } ?: false)
+        }
+    }
 
 /** One skill as the core lists it (`skills_list`): [enabled] is the global `skills.disabled` list's answer (D7). */
 data class SkillRow(val name: String, val description: String, val category: String?, val enabled: Boolean) {

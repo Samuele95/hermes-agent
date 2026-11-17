@@ -102,6 +102,10 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps
     val facts = bridge.ask(BridgeCalls.RUNTIME_FACTS)
     // The start-up facts: they cannot change in this process; the manifest at each open (D4).
     val about: suspend () -> About = { aboutOf(deps.packageInfo, deps.payloadJson(), facts) }
+    val settings = SettingsControl(gateway, bridge, deps.seen, ProviderAccess(setup::connected, setup::remove), about)
+    // D4: the chat knows the switch before Settings opens; Ready never waits. Launched before the warm, which stays the
+    // composition's last call (K1).
+    scope.launch { settings.readReactions() }
     // Last: the warm's plugin loads (the delivery targets, then the skills listing) share the GIL with every call above
     // (+650 ms to ready, K1); the chat is open now.
     bridge.ask(BridgeCalls.CRON_WARM_DELIVERY_TARGETS)
@@ -110,7 +114,7 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps
     scope.launch { setup.followReadiness() }
     scope.launch { setup.checkReadiness() }
     return CoreState.Ready(gateway, chat, setup,
-                           Pages(SettingsControl(gateway, bridge, deps.seen, ProviderAccess(setup::connected, setup::remove), about),
+                           Pages(settings,
                                  SkillsControl(bridge), JobsControl(gateway, bridge, deps.seen, continueInChat = chat::resume),
                                  TelegramSetup(deps.secrets, bridge, deps.seen), SshSetup(deps.secrets, bridge), history, context,
                                  export, status, models),

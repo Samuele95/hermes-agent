@@ -765,4 +765,42 @@ class ChatTest {
         assertEquals("a correction sent as a prompt keeps the time it was written", 6L,
                      (corrected.prompted(correction.stableId).entries.single() as Entry.User).at)
     }
+
+    @Test
+    fun onlyAnAnswerWhoseRowTheCoreNamedCanBeReactedTo() {
+        val chat = Chat(listOf(Entry.User("hi", 21, 0), Entry.Reply("Done.", TurnStatus.COMPLETE, stableId = 1, rowId = 22),
+                               Entry.Reply("Stopped.", TurnStatus.INTERRUPTED, stableId = 2)))
+
+        assertEquals(22L, chat.reactable(1))
+        assertNull("the core never named its row (D2)", chat.reactable(2))
+        assertNull("a prompt", chat.reactable(0))
+        assertNull("no such entry", chat.reactable(9))
+        assertNull("a job's run (D10)", chat.copy(runOwned = true).reactable(1))
+    }
+
+    @Test
+    fun aRollbackRestoresOnlyWhatItsOwnTapPainted() {
+        val heart = listOf(Reaction("❤️", Author.USER))
+        val thumb = listOf(Reaction("👍", Author.USER))
+        fun showing(reactions: List<Reaction>) =
+            Chat(listOf(Entry.User("hi", 21, 0), Entry.Reply("Done.", TurnStatus.COMPLETE, stableId = 1, rowId = 22, reactions = reactions)))
+
+        assertEquals(emptyList<Reaction>(), (showing(heart).unreacted(1, painted = heart, before = emptyList()).entries.last() as Entry.Reply).reactions)
+        assertEquals("a later answer replaced the paint: it stays", thumb,
+                     (showing(thumb).unreacted(1, painted = heart, before = emptyList()).entries.last() as Entry.Reply).reactions)
+        assertEquals(showing(heart), showing(heart).unreacted(9, painted = heart, before = emptyList()))
+    }
+
+    @Test
+    fun aReactionEventReplacesTheAnswersByItsRowWithTheUsersOwn() {
+        val chat = Chat(listOf(Entry.User("hi", 21, 0), Entry.Reply("Done.", TurnStatus.COMPLETE, stableId = 1, rowId = 22)))
+        val reactions = """[{"emoji":"👍","author":"agent","at":1.0},{"emoji":"❤️","author":"user","at":2.0}]"""
+
+        val reacted = chat.reduce(event("message.reaction", """{"row_id":22,"reactions":$reactions,"role":"assistant"}"""))
+
+        assertEquals(listOf(Reaction("❤️", Author.USER)), (reacted.entries.last() as Entry.Reply).reactions)
+        assertEquals("a user row", chat, chat.reduce(event("message.reaction", """{"row_id":21,"reactions":$reactions,"role":"user"}""")))
+        assertEquals("an unknown row", chat, chat.reduce(event("message.reaction", """{"row_id":99,"reactions":$reactions,"role":"assistant"}""")))
+        assertEquals("a payload the app cannot read", chat, chat.reduce(event("message.reaction", """{"row_id":"x"}""")))
+    }
 }

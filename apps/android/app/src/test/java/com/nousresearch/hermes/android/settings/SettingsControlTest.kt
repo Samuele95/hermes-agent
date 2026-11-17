@@ -28,6 +28,9 @@ class SettingsControlTest {
     private var mode = "smart"
     private var personality = "concise"
     private var refuse: String? = null
+    private var display = "{}"  // the core's `display` map, as `config.get full` answers it
+    private var fullRefused: String? = null  // the `config.get full` read fails with these words
+    private var reactionsSet: String? = null  // the last `display.message_reactions` config.set wrote
     private var personalityKept = true  // false: config.set answers ok but the core keeps its name (persist_personality's False, methods_config_set.py:463)
     private val core = FakeCoreGateway { method, params ->
         val key = params.getValue("key").jsonPrimitive.content
@@ -35,6 +38,7 @@ class SettingsControlTest {
             "config.get" -> when (key) {
                 "approvals.mode" -> { refuse?.let { throw CoreError(5001, it) }; """{"value":"$mode"}""" }
                 "personality" -> """{"value":"$personality"}"""
+                "full" -> { fullRefused?.let { throw CoreError(5001, it) }; """{"config":{"display":$display}}""" }
                 else -> error("unexpected key $key")
             }
             "config.set" -> {
@@ -43,9 +47,11 @@ class SettingsControlTest {
                 when (key) {
                     "approvals.mode" -> mode = value
                     "personality" -> if (personalityKept) personality = effective(value)
+                    "display.message_reactions" -> reactionsSet = value
                     else -> error("unexpected key $key")
                 }
-                """{"key":"$key","value":"$value"}"""  // the raw value, as the core's _kv (methods_config_set.py:465)
+                // A display toggle answers its bool (_set_display_toggle's _kv); the rest the raw value, as the core's _kv (methods_config_set.py:465).
+                if (key == "display.message_reactions") """{"key":"$key","value":$value}""" else """{"key":"$key","value":"$value"}"""
             }
             else -> error("unexpected $method")
         }
@@ -114,7 +120,7 @@ class SettingsControlTest {
         settings.approvals(ApprovalMode.OFF)
 
         assertEquals(SettingsUi(ApprovalMode.SMART, "concise", CFG, connected = ROWS, about = AboutTest.ABOUT,
-                                error = "managed install — settings are read-only"),
+                                error = "managed install — settings are read-only", reactions = false),
                      settings.state.value)
     }
 
@@ -125,7 +131,7 @@ class SettingsControlTest {
         settings.open()
 
         assertEquals(SettingsUi(approvals = null, personality = "concise", config = CFG, connected = ROWS,
-                                about = AboutTest.ABOUT, error = "config.yaml could not be read"),
+                                about = AboutTest.ABOUT, error = "config.yaml could not be read", reactions = false),
                      settings.state.value)
     }
 
@@ -173,9 +179,9 @@ class SettingsControlTest {
     fun openingShowsTheCoresModePersonalityAndSettings() = runTest {
         settings.open()
 
-        assertEquals(SettingsUi(ApprovalMode.SMART, "concise", CFG, connected = ROWS, about = AboutTest.ABOUT), settings.state.value)
+        assertEquals(SettingsUi(ApprovalMode.SMART, "concise", CFG, connected = ROWS, about = AboutTest.ABOUT, reactions = false), settings.state.value)
         assertEquals(listOf("settings_read" to "{}"), bridgeCalls)
-        assertEquals(listOf("approvals.mode", "personality"),
+        assertEquals(listOf("approvals.mode", "personality", "full"),
                      core.calls.filter { it.first == "config.get" }.map { it.second.getValue("key").jsonPrimitive.content })
     }
 
@@ -765,6 +771,74 @@ class SettingsControlTest {
 
         assertEquals(AboutTest.ABOUT, settings.state.value?.about)
         assertEquals(1, aboutReads)
+    }
+
+    @Test
+    fun openingReadsTheReactionsSwitchOffUnlessTheCoreHasItOn() = runTest {
+        suspend fun opened(map: String): Pair<Boolean?, Boolean?> {
+            display = map
+            settings.close()
+            settings.open()
+            return settings.state.value?.reactions to settings.reactionsOn.value
+        }
+
+        assertEquals("absent: Desktop's default, off", false to false, opened("{}"))
+        assertEquals(true to true, opened("""{"message_reactions":true}"""))
+        assertEquals("the core's bool(): a non-empty string is on", true to true, opened("""{"message_reactions":"yes"}"""))
+        assertEquals(false to false, opened("""{"message_reactions":0}"""))
+        assertEquals(false to false, opened("""{"message_reactions":null}"""))
+    }
+
+    @Test
+    fun aFlipIsWrittenForEverySessionAndShowsTheCoresAnswer() = runTest {
+        settings.open()
+        core.calls.clear()
+
+        settings.reactions(true)
+
+        val (method, params) = core.calls.single()
+        assertEquals("config.set", method)
+        assertEquals(write("""{"key":"display.message_reactions","value":true}"""), params)
+        assertEquals("true", reactionsSet)
+        assertEquals(true, settings.state.value?.reactions)
+        assertEquals(true, settings.reactionsOn.value)
+        assertFalse(settings.state.value!!.busy)
+    }
+
+    @Test
+    fun aRefusedFlipKeepsTheSwitchAndSaysWhy() = runTest {
+        settings.open()
+        refuse = "unknown config key"
+
+        settings.reactions(true)
+
+        assertEquals(false, settings.state.value?.reactions)
+        assertEquals(false, settings.reactionsOn.value)
+        assertEquals("unknown config key", settings.state.value?.error)
+        assertFalse(settings.state.value!!.busy)
+    }
+
+    @Test
+    fun theStartUpReadNeverReplacesANewerAnswer() = runTest {
+        fun control() = SettingsControl(core, bridge = { function, _ -> if (function == "settings_read") DEFAULT_READ else error("unexpected $function") },
+                                        seen = { seenNow }, providers = ProviderAccess(connected = { ROWS }, remove = {}),
+                                        about = { AboutTest.ABOUT })
+        display = """{"message_reactions":true}"""
+
+        val fresh = control()
+        fresh.readReactions()
+        assertEquals(true, fresh.reactionsOn.value)
+
+        val written = control()
+        written.open()
+        written.reactions(false)
+        written.readReactions()
+        assertEquals("a write since the start-up read began wins", false, written.reactionsOn.value)
+
+        fullRefused = "config.yaml could not be read"
+        val unread = control()
+        unread.readReactions()
+        assertNull("unknown: the chat shows no React", unread.reactionsOn.value)
     }
 
     companion object {

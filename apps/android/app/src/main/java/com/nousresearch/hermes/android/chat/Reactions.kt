@@ -1,5 +1,6 @@
 package com.nousresearch.hermes.android.chat
 
+import com.nousresearch.hermes.bridge.protocol.MessageReaction
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -34,3 +35,25 @@ fun reactionsOf(meta: JsonElement?): List<Reaction> {
         Reaction(emoji, author).takeIf { it.author == Author.USER }
     }
 }
+
+/** Desktop's six quick reactions, Apple's Tapback defaults in Apple's order (reactions.ts:9; DC-P16: no full picker). */
+val QUICK = listOf("❤️", "👍", "👎", "😂", "‼️", "❓")
+
+/**
+ * These reactions after the user's tap on [emoji], as the core will apply it (`set_message_reaction`, Desktop's
+ * `applyReaction`): the user's own entry goes, and [emoji] takes its place unless it is null or the one that went (the
+ * same emoji again retracts, another replaces). Other authors' entries stay where they are.
+ */
+fun List<Reaction>.tapped(emoji: String?): List<Reaction> {
+    val mine = firstOrNull { it.author == Author.USER }
+    val others = filterNot { it.author == Author.USER }
+    return if (emoji == null || emoji == mine?.emoji) others else others + Reaction(emoji, Author.USER)
+}
+
+/**
+ * The user's own reactions in the core's [rows] (a `message.react` answer, a `message.reaction` payload), read as
+ * [reactionsOf] reads a stored row: a non-blank emoji by the user, in the core's order; anything else is left out (D7,
+ * D51). Total.
+ */
+fun reactionsOf(rows: List<MessageReaction>): List<Reaction> =
+    rows.filter { it.emoji.isNotBlank() && Author.of(it.author) == Author.USER }.map { Reaction(it.emoji, Author.USER) }
