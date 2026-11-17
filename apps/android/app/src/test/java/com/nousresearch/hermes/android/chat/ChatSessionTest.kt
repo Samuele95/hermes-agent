@@ -3719,4 +3719,44 @@ class ChatSessionTest {
         assertEquals(3, dispatches().size)
         assertEquals("/github fix it", submitted().last())
     }
+
+    @Test
+    fun theRetryButtonAndTheRecoveryCardDispatchACommandsTurnAgainNeverSendingItsLine() = runTest(UnconfinedTestDispatcher()) {
+        dispatch = { p ->
+            if (p.getValue("name").jsonPrimitive.content != "goal") skillOf(p)
+            else buildJsonObject { put("type", "send"); put("message", "GOAL: ${p["arg"]?.jsonPrimitive?.content}") }.toString()
+        }
+        val chat = openChat().apply { open() }
+        chat.send("/goal ship it")
+        turn()
+
+        chat.retry()  // the Retry button under the answer (MainActivity's onRetry)
+
+        assertEquals(listOf("goal" to "ship it", "goal" to "ship it"), dispatches())
+        assertEquals(listOf("GOAL: ship it", "GOAL: ship it"), submitted())
+        assertEquals(emptyList<String>(), slashSubmits())
+        turn()
+
+        // A failed command turn: the recovery card's Retry runs the same call (RecoveryRoutes.retry).
+        chat.send("/goal build it")
+        turn(status = "error")
+        chat.retry()
+        assertEquals(listOf("goal" to "ship it", "goal" to "ship it", "goal" to "build it", "goal" to "build it"), dispatches())
+        assertEquals("GOAL: build it", submitted().last())
+        assertEquals(emptyList<String>(), slashSubmits())
+        turn()
+
+        // A skill's turn still replays the bubble's invocation, which the core re-expands; a plain prompt its words.
+        chat.send("/github fix it")
+        turn()
+        chat.retry()
+        assertEquals(5, dispatches().size)
+        assertEquals("/github fix it", submitted().last())
+        turn()
+        chat.send("hi")
+        turn()
+        chat.retry()
+        assertEquals(5, dispatches().size)
+        assertEquals("hi", submitted().last())
+    }
 }

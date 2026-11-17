@@ -834,23 +834,10 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         }
     }
 
-    /**
-     * `/retry`: the last prompt again ([retry]), or [NOTHING_TO_RETRY]. A prompt that is a command `command.dispatch`
-     * built a turn for (`/plan build it`, `/goal …`: the bubble shows the typed line, D6) is dispatched again, after the
-     * old turn, nothing cut (as B5-D1's unmatched retry): a replay of the bubble would give the model the line as typed
-     * (invariant 4), since the core re-expands only a skill (`session_history.py:244-256`). A skill's turn replays as
-     * ever. A catalog that cannot be read sends nothing ([SLASH_UNREAD], D12).
-     */
+    /** `/retry`: the last prompt again ([retry]), or [NOTHING_TO_RETRY]. */
     private suspend fun retryLine() {
         val (session, target) = synchronized(lock) { live.ref?.runtime to live.chat.retryTarget() }
         if (session == null || target == null) return say(NOTHING_TO_RETRY)
-        if (!target.text.startsWith("/")) return retry()
-        val catalog = try {
-            catalogOf(session)
-        } catch (failed: Exception) {
-            return say("$SLASH_UNREAD: ${forUser(failed)}")  // a cancellation goes on
-        }
-        catalog.dispatchedCommand(target.text)?.let { return runSlash(session, Typed(it, target.text)) }
         retry()
     }
 
@@ -1004,9 +991,25 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     /** One tap on its way: the session and row it went to, the reactions shown before it, and the ones it painted. */
     private data class Tap(val session: RuntimeSessionId, val rowId: Long, val before: List<Reaction>, val painted: List<Reaction>)
 
-    /** Runs the last prompt again, as the desktop's Retry does: [resend] of its own words, never a deep cut (B5, DC-P7). */
+    /**
+     * Runs the last prompt again, as the desktop's Retry does: [resend] of its own words, never a deep cut (B5, DC-P7).
+     * The one retry `/retry`, the Retry button and the recovery card share. A prompt that is a command
+     * `command.dispatch` built a turn for (`/plan build it`, `/goal …`: the bubble shows the typed line, D6) is
+     * dispatched again, after the old turn, nothing cut (as B5-D1's unmatched retry): a replay of the bubble would give
+     * the model the line as typed (invariant 4), since the core re-expands only a skill (`session_history.py:244-256`).
+     * A skill's turn replays as ever. A `/` prompt whose catalog cannot be read sends nothing ([SLASH_UNREAD], D12).
+     */
     suspend fun retry() {
-        val target = synchronized(lock) { live.chat.retryTarget() } ?: return
+        val (session, target) = synchronized(lock) { live.ref?.runtime to live.chat.retryTarget() }
+        if (session == null || target == null) return
+        if (target.text.startsWith("/")) {
+            val catalog = try {
+                catalogOf(session)
+            } catch (failed: Exception) {
+                return say("$SLASH_UNREAD: ${forUser(failed)}")  // a cancellation goes on
+            }
+            catalog.dispatchedCommand(target.text)?.let { return runSlash(session, Typed(it, target.text)) }
+        }
         resend(Rewind(target, target.text, deep = false))
     }
 
