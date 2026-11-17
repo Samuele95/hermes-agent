@@ -70,12 +70,14 @@ import com.nousresearch.hermes.android.jobs.JobsControl
 import com.nousresearch.hermes.android.jobs.JobsScreen
 import com.nousresearch.hermes.android.jobs.JobsUi
 import com.nousresearch.hermes.bridge.CoreEvent
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import com.nousresearch.hermes.android.settings.BackupActions
 import com.nousresearch.hermes.android.settings.BackupScreen
+import com.nousresearch.hermes.android.settings.RestoreActions
 import com.nousresearch.hermes.android.settings.HubActions
 import com.nousresearch.hermes.android.settings.HubItemActions
 import com.nousresearch.hermes.android.settings.HubScreen
@@ -121,6 +123,15 @@ class MainActivity : ComponentActivity() {
                             val toolsets by state.pages.toolsets.state.collectAsState()
                             val exported by state.pages.export.state.collectAsState()
                             val backup by state.pages.backup.state.collectAsState()
+                            // The system document picker for a restore (SAF: a per-URI read grant, no permission), registered whichever
+                            // page shows so a recreated activity still gets its answer; the archive is copied into the cache first (D10).
+                            val pickBackup = rememberLauncherForActivityResult(OpenBackup()) { uri ->
+                                uri ?: return@rememberLauncherForActivityResult  // the picker was cancelled
+                                app.backup {
+                                    withContext(Dispatchers.IO) { copyPicked(contentResolver, uri, File(cacheDir, "imports")) }
+                                        ?.let { picked(it.path, it.name) } ?: unreadable()
+                                }
+                            }
                             val status by state.pages.status.state.collectAsState()
                             val models by state.pages.models.state.collectAsState()
                             // The core's Message Reactions switch, known before Settings opens (D4): React shows only while it is on.
@@ -186,7 +197,11 @@ class MainActivity : ComponentActivity() {
                                 return@Surface
                             }
                             backup?.let {  // above Settings, which stays open beneath: Back returns to it
-                                BackupScreen(it, BackupActions(create = { app.backup { create() } }, close = state.pages.backup::close))
+                                BackupScreen(it, BackupActions(create = { app.backup { create() } }, close = state.pages.backup::close,
+                                                               restore = RestoreActions(pick = { pickBackup.launch(BACKUP_TYPES) },
+                                                                                        confirm = { app.backup { confirmRestore() } },
+                                                                                        cancel = state.pages.backup::cancel,
+                                                                                        restart = state.pages.backup::restartNow)))
                                 return@Surface
                             }
                             val settings by state.pages.settings.state.collectAsState()

@@ -269,6 +269,17 @@ class HermesApplication : Application() {
         scope.launch { (state.value as? CoreState.Ready)?.pages?.toolsets?.action() }
     }
 
+    /**
+     * Restarts the app after a restore (P15 D8): a fresh task for [MainActivity], then this process ends. The embedded
+     * interpreter cannot be started twice in one process (`GatewayService`'s stop path ends its process for the same
+     * reason), and the chat's in-memory sessions, caches and config are older than the restored files, so only a new
+     * process reads them. No turn runs: the restore was admitted only while the chat was idle.
+     */
+    fun restartApp() {
+        startActivity(restartIntent(this))
+        Runtime.getRuntime().exit(0)
+    }
+
     /** Runs one Backup-page action on the app's scope, so it outlives the activity that asked for it. */
     fun backup(action: suspend BackupControl.() -> Unit) {
         scope.launch { (state.value as? CoreState.Ready)?.pages?.backup?.action() }
@@ -298,7 +309,8 @@ class HermesApplication : Application() {
                             customModels = PrefsCustomModels(getSharedPreferences("custom_models", MODE_PRIVATE)),
                             subnet = { wifiSubnet(this@HermesApplication) }, seen = seen,
                             queues = queueFiles(File(noBackupFilesDir, "queue")),  // app-private, never backed up
-                            packageInfo = app, payloadJson = { assets.payloadManifest() }, log = { Log.i(TAG, it) })
+                            packageInfo = app, payloadJson = { assets.payloadManifest() }, log = { Log.i(TAG, it) },
+                            restart = ::restartApp)
         val ready = composeCore(runtime, paths, deps, scope)
         return ready.copy(about = "${ready.about} · ready in ${SystemClock.elapsedRealtime() - began} ms")
     }

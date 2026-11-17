@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.Instrumentation
 import android.content.Intent
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import android.util.Log
 import androidx.core.content.IntentCompat
@@ -12,7 +13,11 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.nousresearch.hermes.android.settings.BackupControl
 import com.nousresearch.hermes.android.settings.BackupFile
+import com.nousresearch.hermes.android.gateway.GatewaySeen
+import com.nousresearch.hermes.android.gateway.GatewayStatus
+import com.nousresearch.hermes.android.gateway.observeGateway
 import com.nousresearch.hermes.android.settings.BackupPart
+import com.nousresearch.hermes.android.settings.alive
 import com.nousresearch.hermes.bridge.CoreGateway
 import com.nousresearch.hermes.bridge.EmbeddedBridge
 import com.nousresearch.hermes.bridge.protocol.Methods
@@ -20,8 +25,10 @@ import com.nousresearch.hermes.bridge.protocol.SessionCloseParams
 import com.nousresearch.hermes.bridge.protocol.SessionCreateParams
 import com.nousresearch.hermes.bridge.protocol.SessionCreateResult
 import com.nousresearch.hermes.bridge.protocol.SessionDeleteParams
+import com.nousresearch.hermes.bridge.protocol.SessionListParams
 import com.nousresearch.hermes.bridge.protocol.SessionTitleParams
 import java.io.File
+import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.zip.ZipFile
@@ -39,8 +46,10 @@ import org.json.JSONObject
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -143,7 +152,7 @@ class BackupDeviceTest {
         val canary = ByteArray(32).also(SecureRandom()::nextBytes).joinToString("") { "%02x".format(it) }.toByteArray()
         app.secrets.put(CANARY, canary.copyOf())
         EmbeddedBridge.secretsChanged()  // the core's env holds it now
-        val backup = BackupControl(EmbeddedBridge)
+        val backup = BackupControl(EmbeddedBridge, idle = { true }, seen = { observeGateway(ctx) }, restart = {})
         var file: BackupFile? = null
         val secrets = mutableListOf<ByteArray>()
         val sheet = ShareSheet()
@@ -224,5 +233,149 @@ class BackupDeviceTest {
             if (!lockWas) lock.delete()  // the core's backup slot file
             backup.close()
         }
+    }
+
+    private val config = File(home, "config.yaml")
+    private val imports = File(ctx.cacheDir, "imports")
+
+    private fun sha(bytes: ByteArray?): String =
+        bytes?.let { MessageDigest.getInstance("SHA-256").digest(it).joinToString("") { b -> "%02x".format(b) } } ?: "absent"
+
+    /** Every stored session id the core lists (a window wide enough for this phone). */
+    private suspend fun listed(): Set<String> =
+        core.call(Methods.SESSION_LIST, SessionListParams(limit = 100_000, includeHidden = true)).sessions.map { it.id }.toSet()
+
+    /** The picked copies in `cache/imports/` (the app's own picks). */
+    private fun picks(): List<String> = imports.list().orEmpty().filter { it.startsWith("picked-") }.sorted()
+
+    @Test
+    fun theSameBackupRestoresIntoTheDebugAppAndItsSessionsAreStillThere() = runBlocking<Unit> {
+        var restarts = 0
+        val backup = BackupControl(EmbeddedBridge, idle = { true }, seen = { observeGateway(ctx) }, restart = { restarts++ })
+        val gateway = observeGateway(ctx)
+        Log.i(TAG, "gateway ${gateway.status}")
+        if (gateway.alive()) {
+            val probe = File(imports.apply { mkdirs() }, "picked-gateway-${System.nanoTime()}.zip").apply { writeText("x") }
+            backup.open()
+            backup.picked(probe.path, "probe.zip")
+            assertEquals(BackupControl.GATEWAY, backup.state.value?.error)
+            assertFalse(probe.exists())
+            backup.close()
+            Log.i(TAG, "restore not run (gateway on)")
+            assumeTrue("the always-on gateway is on: the restore is refused, and the test never turns it off", false)
+        }
+        val lockWas = lock.exists()
+        val original = config.takeIf { it.exists() }?.readBytes()
+        val originalSha = sha(original)
+        val before = listed()
+        val (created, title) = canarySession()
+        var file: BackupFile? = null
+        var restoredSha: String? = null
+        try {
+            backup.open()
+            val createMs = measureTimeMillis { backup.create() }
+            file = checkNotNull(backup.state.value?.file) { "no backup: ${backup.state.value?.error}" }
+            backup.handOff(file) { true }  // the share sheet is the activity's; here the zip is picked back at once
+
+            val copy = checkNotNull(copyPicked(ctx.contentResolver, exportUri(ctx, file.path), imports)) { "the zip could not be copied" }
+            assertEquals(imports.canonicalFile, File(copy.path).canonicalFile.parentFile)
+            assertTrue(copy.path, File(copy.path).name.startsWith("picked-") && copy.path.endsWith(".zip"))
+            assertEquals(file.name, copy.name)
+            assertArrayEquals(File(file.path).readBytes(), File(copy.path).readBytes())
+
+            val inspectMs = measureTimeMillis { backup.picked(copy.path, copy.name) }
+            val holds = checkNotNull(backup.state.value?.picked?.holds) { "not read: ${backup.state.value?.error}" }
+            assertEquals(file.parts, holds.parts)
+            assertTrue("${holds.sessions} sessions", holds.sessions >= 1)
+            assertTrue(File(copy.path).exists())
+
+            val restoreMs = measureTimeMillis { backup.confirmRestore() }  // the live state.db page copy under this process's open core (§8)
+            val ui = backup.state.value!!
+            assertNull(ui.error)
+            val report = checkNotNull(ui.report)
+            assertEquals(file.parts, report.restored)
+            assertEquals(holds.sessions, report.sessions)
+            assertEquals(0, restarts)
+            assertFalse("the picked copy is still there", File(copy.path).exists())
+            restoredSha = sha(config.takeIf { it.exists() }?.readBytes())
+
+            backup.close()
+            assertNotNull("a restored page was left", backup.state.value)
+            backup.restartNow()
+            assertEquals(1, restarts)
+
+            val canary = core.call(Methods.SESSION_LIST, SessionListParams(title = title)).sessions.map { it.id }
+            assertTrue("$canary", created.storedSessionId in canary)
+            val after = listed()
+            assertTrue("${(before - after).size} earlier sessions are gone", after.containsAll(before))
+            Log.i(TAG, "backup_create ms=$createMs bytes=${file.bytes} parts=${file.parts}; backup_inspect ms=$inspectMs " +
+                       "sessions=${holds.sessions} skipped=${holds.skipped}; backup_restore ms=$restoreMs restored=${report.restored} " +
+                       "skipped=${report.skipped}; sessions before=${before.size} after=${after.size}")
+        } finally {
+            cleanUp(created)
+            val now = config.takeIf { it.exists() }?.readBytes()
+            Log.i(TAG, "config.yaml before=$originalSha restored=$restoredSha differed=${restoredSha != null && restoredSha != originalSha}")
+            if (!original.contentEquals(now)) {
+                if (original != null) config.writeBytes(original) else config.delete()
+            }
+            file?.let { File(it.path).delete() }
+            imports.listFiles()?.filter { it.name.startsWith("picked-") }?.forEach { it.delete() }
+            if (!lockWas) lock.delete()
+            assertEquals(originalSha, sha(config.takeIf { it.exists() }?.readBytes()))
+        }
+    }
+
+    private fun exportsDir() = File(ctx.cacheDir, "exports")
+
+    @Test
+    fun aPickedFileThatIsNoBackupIsRefusedAndRemoved() = runBlocking<Unit> {
+        // backup_inspect writes nothing and is never gated by the gateway in the Python half; the app's gate is held off
+        // here so the file's own refusal is what answers, whatever the gateway does on the shared phone.
+        ready  // the interpreter starts with the core
+        val backup = BackupControl(EmbeddedBridge, idle = { true }, seen = { GatewaySeen(GatewayStatus.STOPPED) }, restart = {})
+        val notes = File(exportsDir().apply { mkdirs() }, "notes.txt").apply { writeText("not a backup\n") }
+        val shaBefore = sha(config.takeIf { it.exists() }?.readBytes())
+        val picksBefore = picks()
+        try {
+            val copy = checkNotNull(copyPicked(ctx.contentResolver, exportUri(ctx, notes.path), imports))
+            assertEquals("notes.txt", copy.name)
+            backup.open()
+
+            val ms = measureTimeMillis { backup.picked(copy.path, copy.name) }
+
+            assertEquals("This file is not a zip archive.", backup.state.value?.error)
+            assertNull(backup.state.value?.picked)
+            assertFalse(File(copy.path).exists())
+            assertEquals(picksBefore, picks())
+            assertEquals(shaBefore, sha(config.takeIf { it.exists() }?.readBytes()))
+            Log.i(TAG, "backup_inspect of a text file ms=$ms")
+        } finally {
+            notes.delete()
+            backup.close()
+        }
+    }
+
+    @Test
+    fun thePickerAndTheRestartAreThePlatformsOwn() {
+        val pick = OpenBackup().createIntent(ctx, BACKUP_TYPES)
+        assertEquals(Intent.ACTION_OPEN_DOCUMENT, pick.action)
+        assertTrue(pick.hasCategory(Intent.CATEGORY_OPENABLE))
+        assertArrayEquals(arrayOf("application/zip"), pick.getStringArrayExtra(Intent.EXTRA_MIME_TYPES))
+        Log.i(TAG, "picker intent type=${pick.type} extras=${pick.extras?.keySet()}")
+        // The app declares no <queries> for the picker, so package visibility hides it from the app's own resolveActivity
+        // (startActivity is not filtered); the shell, which sees every package, asks for the same intent, opening nothing.
+        val asked = instrumentation.uiAutomation.executeShellCommand(
+            "cmd package query-activities --brief -a ${Intent.ACTION_OPEN_DOCUMENT} -c ${Intent.CATEGORY_OPENABLE} -t ${pick.type}")
+        val answer = ParcelFileDescriptor.AutoCloseInputStream(asked).use { it.readBytes().decodeToString() }
+        Log.i(TAG, "picker: ${answer.lines().map(String::trim).filter { "/" in it && "=" !in it }} (app-visible: " +
+                   "${ctx.packageManager.resolveActivity(pick, 0) != null})")
+        assertTrue("no document picker answers on this phone: $answer", "activities found" in answer && "No activities" !in answer)
+
+        val restart = restartIntent(ctx)
+        assertEquals(MainActivity::class.java.name, restart.component?.className)
+        assertEquals(ctx.packageName, restart.component?.packageName)
+        assertTrue(restart.flags and Intent.FLAG_ACTIVITY_NEW_TASK != 0)
+        assertTrue(restart.flags and Intent.FLAG_ACTIVITY_CLEAR_TASK != 0)
+        // restartApp() itself is not called: it would end this test's process.
     }
 }

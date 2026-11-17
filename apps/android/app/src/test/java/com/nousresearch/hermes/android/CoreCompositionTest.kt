@@ -15,6 +15,7 @@ import com.nousresearch.hermes.android.gateway.PlatformState
 import com.nousresearch.hermes.android.jobs.JobId
 import com.nousresearch.hermes.android.jobs.JobsWarning
 import com.nousresearch.hermes.android.settings.AboutTest
+import com.nousresearch.hermes.android.settings.BackupControl
 import com.nousresearch.hermes.android.settings.ConnectedProvider
 import com.nousresearch.hermes.android.settings.SettingsControlTest
 import com.nousresearch.hermes.android.settings.SkillRow
@@ -94,6 +95,8 @@ class CoreCompositionTest {
                 "session_export" -> """{"path":"/data/app-files/cache/exports/session-db1.json","name":"session-db1.json","bytes":42}"""
                 "toolsets_keys" -> ToolsetsControlTest.KEYS
                 "backup_create" -> """{"path":"/data/app-files/cache/exports/hermes-backup-x.zip","name":"hermes-backup-x.zip","bytes":42,"parts":["sessions","config"]}"""
+                "backup_inspect" -> """{"parts":["sessions","config"],"skipped":2,"sessions":3}"""
+                "backup_restore" -> """{"restored":["sessions","config"],"skipped":2,"sessions":3}"""
                 else -> "{}"
             }
         }
@@ -406,6 +409,39 @@ class CoreCompositionTest {
 
         assertTrue(bridgeCalls.toString(), "backup_create" in bridgeCalls)
         assertEquals("hermes-backup-x.zip", backup.state.value?.file?.name)
+    }
+
+    @Test
+    fun theComposedBackupRefusesWhileTheChatRunsATurnOrTheGatewayRunsAndRestartsThroughItsDeps() = runTest(UnconfinedTestDispatcher()) {
+        fun picked() = File.createTempFile("picked-", ".zip").apply { deleteOnExit() }
+        val gatewayOn = composeCore(runtime, paths, deps.copy(seen = { GatewaySeen(GatewayStatus.RUNNING, pid = 7) }), backgroundScope)
+        gatewayOn.pages.backup.open()
+        gatewayOn.pages.backup.picked(picked().path, "b.zip")
+
+        assertEquals(BackupControl.GATEWAY, gatewayOn.pages.backup.state.value?.error)
+        assertFalse(bridgeCalls.toString(), "backup_inspect" in bridgeCalls)
+
+        var restarts = 0
+        val turning = composeCore(runtime, paths, deps.copy(restart = { restarts++ }), backgroundScope)
+        turning.chat.send("hi")  // the fake answers `streaming`: a turn runs
+        assertTrue(turning.chat.state.value.busy)
+        turning.pages.backup.open()
+        turning.pages.backup.picked(picked().path, "b.zip")
+
+        assertEquals(BackupControl.BUSY, turning.pages.backup.state.value?.error)
+        assertFalse(bridgeCalls.toString(), "backup_inspect" in bridgeCalls)
+
+        val quiet = composeCore(runtime, paths, deps.copy(restart = { restarts++ }), backgroundScope)
+        val backup = quiet.pages.backup
+        backup.open()
+        backup.picked(picked().path, "b.zip")
+        assertNotNull(backup.state.value?.picked?.holds)
+        backup.confirmRestore()
+        assertEquals(0, restarts)
+        backup.restartNow()
+
+        assertTrue(bridgeCalls.toString(), bridgeCalls.containsAll(listOf("backup_inspect", "backup_restore")))
+        assertEquals(1, restarts)
     }
 
     @Test

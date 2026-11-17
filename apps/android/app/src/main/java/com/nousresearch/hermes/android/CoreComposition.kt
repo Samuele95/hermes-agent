@@ -58,9 +58,9 @@ fun installRuntime(context: Context): HermesPaths {
  * the one value the chat, the jobs page and the bot's live state all judge it by (§3.1), and [queues], where the chat
  * keeps each session's queue of unsent messages (batch-3 F2); [packageInfo] the APK's version and [payloadJson] the
  * payload's manifest, which About reads at each open (F13), and [log], the platform's log for what the chat notes for
- * diagnosis. A field left out is today's default: names and model ids kept in memory, no subnet, a stopped gateway,
- * queues kept in memory, nothing logged. Its lambdas compare by identity, so two values are
- * never compared.
+ * diagnosis; [restart], the app's restart after a restore (P15 D8). A field left out is today's default: names and
+ * model ids kept in memory, no subnet, a stopped gateway, queues kept in memory, nothing logged, no restart. Its
+ * lambdas compare by identity, so two values are never compared.
  */
 data class CoreDeps(val secrets: SecretStore, val turns: TurnHost, val notifier: Notifier,
                     val keyNames: KeyNames = KeyNames.InMemory(),
@@ -70,7 +70,8 @@ data class CoreDeps(val secrets: SecretStore, val turns: TurnHost, val notifier:
                     val queues: QueueStore = QueueStore.inMemory(),
                     val packageInfo: AppPackage = AppPackage("", 0),
                     val payloadJson: () -> String = { "{}" },
-                    val log: (String) -> Unit = {})
+                    val log: (String) -> Unit = {},
+                    val restart: () -> Unit = {})
 
 /**
  * The chat process's composition root: starts [runtime]'s core and builds what the screens drive over it. The
@@ -125,6 +126,7 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps
                                  skills, JobsControl(gateway, bridge, deps.seen, continueInChat = chat::resume),
                                  TelegramSetup(deps.secrets, bridge, deps.seen), SshSetup(deps.secrets, bridge), history, context,
                                  export, status, models, HubControl(gateway, bridge, session = { chat.openSessionId?.value }, listed = skills::listed),
-                                 ToolsetsControl(gateway, bridge), BackupControl(bridge)),
+                                 ToolsetsControl(gateway, bridge),
+                                 BackupControl(bridge, idle = { !chat.state.value.busy }, seen = deps.seen, restart = deps.restart)),
                            "Python ${facts.python} · SQLite ${facts.sqlite} $fts")
 }

@@ -691,3 +691,15 @@ def test_inspect_refuses_what_restore_refuses_but_never_a_running_turn_or_gatewa
         assert inspect(picked) == {"error": words}, picked.name
     assert _tree(b) == before
     assert sorted(p.name for p in imports.iterdir()) == sorted(p.name for p, _ in cases)  # nothing deleted
+
+
+def test_the_apps_restore_gate_says_the_python_halfs_words():
+    """The app refuses first (BackupControl), in this half's own sentences; this half stays the last gate (P15 D3)."""
+    from hermes_android import backup
+
+    root = Path(__file__).resolve().parents[2]
+    control = (root / "apps/android/app/src/main/java/com/nousresearch/hermes/android/settings/BackupControl.kt").read_text(
+        encoding="utf-8")
+
+    assert f'"{backup.BUSY}"' in control
+    assert f'"{backup.GATEWAY}"' in control

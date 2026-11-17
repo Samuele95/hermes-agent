@@ -421,6 +421,29 @@
     <string name="backup_part_skills">skills</string>
     <string name="backup_part_config">settings</string>
     <string name="backup_part_jobs">jobs</string>
+    <string name="restore_section">Restore</string>
+    <string name="backup_restore_explain">Restoring replaces this phone\'s sessions, memories, skills, settings and jobs with the backup\'s. Keys and sign-ins on this phone are kept. Hermes restarts afterwards.</string>
+    <string name="backup_restore">Restore from backup…</string>
+    <string name="backup_restore_title">Restore from backup?</string>
+    <string name="backup_restore_body">Replace this phone\'s sessions, memories, skills, settings and jobs with the backup?</string>
+    <string name="backup_restore_holds">“%1$s” holds: %2$s.</string>
+    <plurals name="backup_sessions">
+        <item quantity="one">%d session</item>
+        <item quantity="other">%d sessions</item>
+    </plurals>
+    <plurals name="backup_skipped">
+        <item quantity="one">%d other item (keys, sign-ins or other files) is skipped.</item>
+        <item quantity="other">%d other items (keys, sign-ins or other files) are skipped.</item>
+    </plurals>
+    <string name="backup_restore_undo">This cannot be undone.</string>
+    <string name="backup_restore_confirm">Restore</string>
+    <string name="backup_restored">Restored %1$s</string>
+    <plurals name="backup_restored_skipped">
+        <item quantity="one">" · %d item skipped"</item>
+        <item quantity="other">" · %d items skipped"</item>
+    </plurals>
+    <string name="backup_restart_explain">Hermes restarts to load the restored data. On a new phone, add your keys and sign in again.</string>
+    <string name="backup_restart">Restart now</string>
     <string name="skills_menu">Skills options</string>
     <string name="skills_refresh">Refresh skills</string>
     <string name="skills_learned">Learned</string>
