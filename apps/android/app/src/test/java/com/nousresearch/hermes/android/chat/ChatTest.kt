@@ -610,6 +610,14 @@ class ChatTest {
     }
 
     @Test
+    fun aFailedTurnKeepsTheCoresFailureForItsCard() {
+        assertEquals(Failure("billing", "billing", false, words = "402 Insufficient Balance",
+                             billingUrl = "https://platform.deepseek.com/top_up"),
+                     (walled.entries.last() as Entry.Reply).failure)
+        assertNull("a completed turn did not fail", (walled.answered("Hello").entries.last() as Entry.Reply).failure)
+    }
+
+    @Test
     fun theWallStaysUntilALaterTurnCompletes() {
         val wall = walled.wall!!
 

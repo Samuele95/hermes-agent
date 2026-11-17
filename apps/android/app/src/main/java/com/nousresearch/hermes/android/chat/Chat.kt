@@ -41,11 +41,12 @@ sealed interface Entry {
      * as [User.rowId]). [at]: when it completed, epoch ms: the core's row time for a stored row, the app's clock at the
      * completion for a live one; null: not known. [tookMs]: the turn's length on the app's clock, only for a turn whose
      * `message.start` this process saw (invariant 7, bet 16); null otherwise. [reactions]: the user's own, as the core
-     * stored them (D4, D51).
+     * stored them (D4, D51). [failure]: why its turn failed, as the core classified it (`error_surface`), for the recovery
+     * card (chat-16); null for a turn that did not fail, or whose completion carried no descriptor (D9).
      */
     data class Reply(val text: String, val status: TurnStatus, val error: String? = null, val reasoning: String? = null,
                      override val stableId: Long, val rowId: Long? = null, val at: Long? = null, val tookMs: Long? = null,
-                     val reactions: List<Reaction> = emptyList()) : Entry
+                     val reactions: List<Reaction> = emptyList(), val failure: Failure? = null) : Entry
 
     /**
      * A tool the agent called, [summary] what the core said of it once [done]. Its detail, as `tool.start` /
@@ -327,7 +328,8 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
         // or otherwise failed turn leaves it (inv. 5, D5).
         val tookMs = turnStartedAt?.let { started -> (at - started).coerceAtLeast(0) }  // only a start this process saw (inv. 7)
         val rowId = done.persistedTurn?.finalAssistantRowId
-        val ended = adding { Entry.Reply(text, status, done.error, thought, it, rowId = rowId, at = at, tookMs = tookMs) }
+        val ended = adding { Entry.Reply(text, status, done.error, thought, it, rowId = rowId, at = at, tookMs = tookMs,
+                                             failure = Failure.of(done)) }
             .copy(streaming = null, activity = null, reasoning = null, submitted = false, turnStartedAt = null,
                   wall = done.billing?.let { BillingWall.of(it) } ?: wall.takeUnless { status == TurnStatus.COMPLETE })
             .measured(done.usage)

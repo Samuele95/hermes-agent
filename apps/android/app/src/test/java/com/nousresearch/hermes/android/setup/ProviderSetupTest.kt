@@ -401,6 +401,53 @@ class ProviderSetupTest : SetupFakes() {
         assertTrue(log.none { it == "model.disconnect" })
     }
 
+    // chat-16's Update API key / Sign in again: setup opens where the failing credential is replaced, chosen by how the app
+    // holds it (D1), never by the core's auth_kind.
+
+    @Test
+    fun reauthReplacesAHeldKeyAtTheKeyStep() = runTest {
+        setup.open()
+        setup.pick("deepseek")
+        deepseekRow = SIGNED_IN_DEEPSEEK  // as the core lists a configured provider: no key_env
+        setup.submitKey("sk-old".toByteArray())
+        setup.close()
+        assertEquals(AuthKind.KEY, setup.authOf("deepseek"))
+
+        setup.reauth("deepseek")
+
+        val key = setup.step() as SetupStep.Key
+        assertEquals("deepseek" to "DEEPSEEK_API_KEY", key.provider.slug to key.provider.keyEnv)
+        setup.submitKey("sk-new".toByteArray())
+        assertArrayEquals("the new key replaces the old one", "sk-new".toByteArray(), held["DEEPSEEK_API_KEY"])
+        assertTrue(setup.step() is SetupStep.Models)
+    }
+
+    @Test
+    fun reauthSignsInToNousAgainWhileItIsListedSignedIn() = runTest {
+        nousRow = READY_NOUS
+        assertEquals(AuthKind.SIGN_IN, setup.authOf("nous"))
+
+        val signing = launch { setup.reauth("nous") }
+        runCurrent()
+        assertEquals("NOUS-1234", (setup.step() as SetupStep.SignIn).userCode)
+        signing.join()
+
+        assertTrue(setup.step() is SetupStep.Models)
+        assertTrue("nous.login.start" in log)
+    }
+
+    @Test
+    fun reauthOfACredentialTheAppDoesNotHoldShowsTheProviderList() = runTest {
+        assertNull(setup.authOf("copilot"))
+
+        setup.reauth("copilot")
+        assertTrue(setup.step() is SetupStep.Providers)
+        setup.reauth("absent")
+        assertTrue(setup.step() is SetupStep.Providers)
+
+        assertTrue(log.none { it == "nous.login.start" })
+    }
+
     @Test
     fun aScreenOpenedDuringAnotherExchangeIsNotBusy() = runTest {
         answers["probe_endpoint"] = """{"found":{"base_url":"http://spark-98d1:11434/v1","kind":"ollama","models":["m1"]},"failure":null}"""

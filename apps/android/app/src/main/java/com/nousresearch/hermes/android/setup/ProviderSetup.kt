@@ -45,6 +45,9 @@ data class ProviderChoice(val slug: String, val name: String, val keyEnv: String
                           val signIn: Boolean = false, val facts: ProviderFacts = ProviderFacts.NONE,
                           val custom: List<String> = emptyList())
 
+/** How the app holds a provider's credential (D1, DC-P10): a key it stored, or the Nous sign-in it runs. */
+enum class AuthKind { KEY, SIGN_IN }
+
 sealed interface SetupStep {
     data object Loading : SetupStep
 
@@ -188,6 +191,33 @@ class ProviderSetup(
 
     fun close() {
         setup.value = null
+    }
+
+    /**
+     * How the app holds [slug]'s credential, from its own records, never the core's `auth_kind` (outside the contract) nor
+     * `model.options` `auth_type` (sent only for rows not signed in, `inventory.py:835-849`): Nous is the sign-in the app
+     * runs; a provider whose key the app stored ([keyNames]) takes a key; else null: the app cannot tell, nor fix it in place.
+     */
+    fun authOf(slug: String): AuthKind? = when {
+        slug == "nous" -> AuthKind.SIGN_IN
+        keyNames[slug] != null -> AuthKind.KEY
+        else -> null
+    }
+
+    /**
+     * Opens setup where [slug]'s credential is replaced (chat-16 Update API key / Sign in again, by [authOf]): the key step
+     * under the variable the app stored its key in (the new key replaces it), the core's device-code sign-in for Nous, else
+     * the provider list; a provider the core does not offer here also leaves the list showing.
+     */
+    suspend fun reauth(slug: String) {
+        open()
+        val shown = setup.value ?: return
+        val provider = shown.list.choices.firstOrNull { it.slug == slug } ?: return
+        when (authOf(slug)) {
+            AuthKind.KEY -> show(SetupStep.Key(provider.copy(keyEnv = keyName(provider))))
+            AuthKind.SIGN_IN -> signIn(provider, shown.showing)
+            null -> Unit
+        }
     }
 
     suspend fun pick(slug: String) {
