@@ -20,13 +20,16 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.nousresearch.hermes.android.settings.Provenance
 import com.nousresearch.hermes.android.settings.SkillRow
 import com.nousresearch.hermes.android.settings.SkillText
+import com.nousresearch.hermes.android.settings.SkillWriteActions
 import com.nousresearch.hermes.android.settings.SkillsActions
+import com.nousresearch.hermes.android.settings.SkillsNotice
 import com.nousresearch.hermes.android.settings.SkillsScreen
 import com.nousresearch.hermes.android.settings.SkillsUi
 import kotlinx.coroutines.flow.first
@@ -59,6 +62,21 @@ class SkillsScreenTest {
     private var closes = 0
     private val actions = SkillsActions(query = { queries += it }, refresh = { refreshes++ }, read = { reads += it },
                                         closeSkill = { closes++ })
+
+    private val writes = mutableListOf<String>()  // each write action handed over, by name and argument
+    private val write = SkillWriteActions(edit = { writes += "edit" }, draft = { writes += "draft:$it" }, cancelEdit = { writes += "cancelEdit" },
+                                          save = { writes += "save" }, askArchive = { writes += "askArchive:$it" },
+                                          confirmArchive = { writes += "confirmArchive" }, showArchived = { writes += "showArchived" },
+                                          hideArchived = { writes += "hideArchived" }, restore = { writes += "restore:$it" })
+    private val writing = SkillsActions(query = { queries += it }, refresh = { refreshes++ }, read = { reads += it },
+                                        closeSkill = { closes++ }, write = write)
+
+    /** The page with the write actions too, its state held so a test can change it. */
+    private fun showWriting(initial: SkillsUi): (SkillsUi) -> Unit {
+        var state by mutableStateOf(initial)
+        compose.setContent { SkillsScreen(state, onEnable = { _, _ -> }, onClose = {}, actions = writing) }
+        return { state = it }
+    }
 
     /** The page with the actions, its state held so a test can change it. */
     private fun showWithActions(initial: SkillsUi): (SkillsUi) -> Unit {
@@ -261,7 +279,110 @@ class SkillsScreenTest {
         }
     }
 
+    @Test
+    fun editAndArchiveShowOnlyForAgentAndExternalSkills() {
+        var state by mutableStateOf(SkillsUi(KINDS, open = SkillText("mine", "x")))
+        var with by mutableStateOf(writing)
+        compose.setContent { SkillsScreen(state, onEnable = { _, _ -> }, onClose = {}, actions = with) }
+
+        for (name in listOf("mine", "ext")) {
+            state = SkillsUi(KINDS, open = SkillText(name, "x"))
+            compose.onNodeWithTag("skill-edit").assertExists()
+            compose.onNodeWithTag("skill-archive").assertExists()
+        }
+        for (name in listOf("arxiv", "hubbed")) {
+            state = SkillsUi(KINDS, open = SkillText(name, "x"))
+            compose.onNodeWithTag("skill").assertExists()
+            compose.onNodeWithTag("skill-edit").assertDoesNotExist()
+            compose.onNodeWithTag("skill-archive").assertDoesNotExist()
+        }
+        state = SkillsUi(KINDS, open = SkillText("mine", "x"))
+        with = actions  // no write actions: read only
+        compose.onNodeWithTag("skill").assertExists()
+        compose.onNodeWithTag("skill-edit").assertDoesNotExist()
+        compose.onNodeWithTag("skill-archive").assertDoesNotExist()
+    }
+
+    @Test
+    fun theEditorHandsOverTheDraftAndKeepsItOnARefusal() {
+        val set = showWriting(SkillsUi(KINDS, open = SkillText("mine", "orig", editing = "x")))
+
+        compose.onNode(hasTestTag("skill-editor") and hasText("x")).assertExists()
+        compose.onNode(hasTestTag("skill") and hasAnyDescendant(hasText("mine/SKILL.md"))).assertExists()
+        compose.onNodeWithTag("skill-edit").assertDoesNotExist()
+        compose.onNodeWithTag("skill-editor").performTextReplacement("y")
+        assertEquals(listOf("draft:y"), writes)
+        compose.onNodeWithTag("skill-save").performClick()
+        assertEquals("save", writes.last())
+
+        set(SkillsUi(KINDS, busy = true, open = SkillText("mine", "orig", editing = "x")))
+        compose.onNode(hasTestTag("skill-save") and hasText("Saving…")).assertIsNotEnabled()
+
+        set(SkillsUi(KINDS, error = REFUSED_EDIT, open = SkillText("mine", "orig", editing = "x")))
+        compose.onNode(hasTestTag("skills-error") and hasText(REFUSED_EDIT)).assertExists()
+        compose.onNode(hasTestTag("skill-editor") and hasText("x")).assertExists()
+        compose.onNodeWithTag("skill-edit-cancel").performClick()
+        assertEquals("cancelEdit", writes.last())
+    }
+
+    @Test
+    fun archiveAsksInADialogFirst() {
+        val set = showWriting(SkillsUi(KINDS, open = SkillText("mine", "x")))
+
+        compose.onNodeWithTag("skill-archive").performClick()
+        assertEquals(listOf("askArchive:mine"), writes)
+        compose.onNodeWithTag("archive-dialog").assertDoesNotExist()
+
+        set(SkillsUi(KINDS, open = SkillText("mine", "x"), confirmArchive = "mine"))
+        compose.onNode(hasTestTag("archive-dialog") and hasAnyDescendant(hasText("Archive mine?")) and
+                       hasAnyDescendant(hasText("The skill is archived and can be restored from Archived skills."))).assertExists()
+        compose.onNodeWithTag("archive-confirm").performClick()
+        assertEquals("confirmArchive", writes.last())
+        compose.onNodeWithTag("archive-cancel").performClick()
+        assertEquals("askArchive:null", writes.last())
+    }
+
+    @Test
+    fun theArchivedViewRestoresAndSaysWhenEmpty() {
+        val set = showWriting(SkillsUi(KINDS))
+
+        compose.onNodeWithTag("skills-menu").performClick()
+        compose.onNodeWithTag("skills-archived-open").performClick()
+        assertEquals(listOf("showArchived"), writes)
+
+        set(SkillsUi(KINDS, archived = listOf("old")))
+        compose.onNode(hasTestTag("skills-archived") and hasAnyDescendant(hasText("Archived skills"))).assertExists()
+        compose.onNodeWithTag("skills-archived-none").assertDoesNotExist()
+        compose.onNodeWithTag("skill-restore-old").performClick()
+        assertEquals("restore:old", writes.last())
+
+        set(SkillsUi(KINDS, archived = listOf("old"), busy = true))
+        compose.onNodeWithTag("skill-restore-old").assertIsNotEnabled()
+
+        set(SkillsUi(KINDS, archived = emptyList()))
+        compose.onNodeWithTag("skills-archived-none").assertExists()
+        compose.onNodeWithTag("skills-archived-close").performClick()
+        assertEquals("hideArchived", writes.last())
+    }
+
+    @Test
+    fun aNoticeSaysWhatChanged() {
+        val set = showWriting(SkillsUi(KINDS, open = SkillText("mine", "x"), notice = SkillsNotice(SkillsNotice.Kind.UPDATED, "mine")))
+
+        compose.onNode(hasTestTag("skills-notice") and hasAnyDescendant(hasText("Skill updated")) and
+                       hasAnyDescendant(hasText("mine applies to new chats."))).assertExists()
+
+        set(SkillsUi(KINDS, notice = SkillsNotice(SkillsNotice.Kind.ARCHIVED, "mine")))
+        compose.onNode(hasTestTag("skills-notice") and hasAnyDescendant(hasText("Skill archived")) and
+                       hasAnyDescendant(hasText("Restorable from Archived skills."))).assertExists()
+
+        set(SkillsUi(KINDS, archived = listOf("older"), notice = SkillsNotice(SkillsNotice.Kind.RESTORED, "old")))
+        compose.onNode(hasTestTag("skills-notice") and hasAnyDescendant(hasText("Skill restored")) and
+                       hasAnyDescendant(hasText("old applies to new chats."))).assertExists()
+    }
+
     private companion object {
+        const val REFUSED_EDIT = "SKILL.md must start with YAML frontmatter (---). See existing skills for format."
         const val SKILL_MD = "---\nname: arxiv\ndescription: Search arXiv\n---\n\n# arxiv\n"
 
         /** One skill of each provenance. */

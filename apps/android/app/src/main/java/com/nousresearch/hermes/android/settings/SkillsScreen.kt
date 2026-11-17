@@ -14,6 +14,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -23,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -38,18 +42,32 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nousresearch.hermes.android.R
+import com.nousresearch.hermes.android.ui.ButtonShape
 import com.nousresearch.hermes.android.ui.CodeBox
+import com.nousresearch.hermes.android.ui.CodeFont
 import com.nousresearch.hermes.android.ui.Hermes
 import com.nousresearch.hermes.android.ui.HermesIcons
 import com.nousresearch.hermes.android.ui.Hint
 import com.nousresearch.hermes.android.ui.Page
+import com.nousresearch.hermes.android.ui.PrimaryButton
+import com.nousresearch.hermes.android.ui.SecondaryButton
 import com.nousresearch.hermes.android.ui.SectionLabel
 
 /**
  * What the page does beyond its switches (F10): [query] narrows the list, [refresh] rescans the core's skills, [read]
- * opens one skill and [closeSkill] returns to the list.
+ * opens one skill and [closeSkill] returns to the list; with [write], an editable skill is edited and archived and the
+ * archive restores.
  */
-class SkillsActions(val query: (String) -> Unit, val refresh: () -> Unit, val read: (String) -> Unit, val closeSkill: () -> Unit)
+class SkillsActions(val query: (String) -> Unit, val refresh: () -> Unit, val read: (String) -> Unit, val closeSkill: () -> Unit,
+                    val write: SkillWriteActions? = null)
+
+/**
+ * The writes (capabilities-05, -06): the editor's [edit] / [draft] / [cancelEdit] / [save]; [askArchive] (null stops
+ * asking) and [confirmArchive]; the Archived view's [showArchived] / [hideArchived] and [restore].
+ */
+class SkillWriteActions(val edit: () -> Unit, val draft: (String) -> Unit, val cancelEdit: () -> Unit, val save: () -> Unit,
+                        val askArchive: (String?) -> Unit, val confirmArchive: () -> Unit, val showArchived: () -> Unit,
+                        val hideArchived: () -> Unit, val restore: (String) -> Unit)
 
 /**
  * The core's skills by category, each category's switch and each skill's own (F11). It shows only what the core last
@@ -61,6 +79,12 @@ class SkillsActions(val query: (String) -> Unit, val refresh: () -> Unit, val re
 fun SkillsScreen(state: SkillsUi, onEnable: (names: List<String>, on: Boolean) -> Unit, onClose: () -> Unit,
                  modifier: Modifier = Modifier, actions: SkillsActions? = null) {
     val open = state.open
+    val archived = state.archived
+    val write = actions?.write
+    if (write != null && archived != null) {
+        ArchivedPage(state, archived, write, modifier)
+        return
+    }
     if (actions != null && open != null) {
         SkillPage(state, open, actions, modifier)
         return
@@ -69,6 +93,7 @@ fun SkillsScreen(state: SkillsUi, onEnable: (names: List<String>, on: Boolean) -
          action = actions?.let { a -> { SkillsMenu(state.busy, a) } }) {
         Hint(stringResource(R.string.skills_explain))
         Hint(stringResource(R.string.settings_new_chats), Modifier.padding(top = 8.dp).testTag("skills-new-chats"))
+        state.notice?.let { Notice(it) }
         state.error?.let { Hint(it, Modifier.padding(top = 12.dp).testTag("skills-error"), color = MaterialTheme.colorScheme.error) }
         if (actions != null) {
             OutlinedTextField(state.query, actions.query, Modifier.fillMaxWidth().padding(top = 12.dp).testTag("skills-search"),
@@ -88,7 +113,7 @@ fun SkillsScreen(state: SkillsUi, onEnable: (names: List<String>, on: Boolean) -
     }
 }
 
-/** The page's ⋮ menu: Refresh skills. */
+/** The page's ⋮ menu: Refresh skills and, with the writes, Archived skills. */
 @Composable
 private fun SkillsMenu(busy: Boolean, actions: SkillsActions) {
     var expanded by remember { mutableStateOf(false) }  // transient UI
@@ -99,6 +124,10 @@ private fun SkillsMenu(busy: Boolean, actions: SkillsActions) {
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             DropdownMenuItem(text = { Text(stringResource(R.string.skills_refresh)) }, onClick = { expanded = false; actions.refresh() },
                              Modifier.testTag("skills-refresh"))
+            actions.write?.let { w ->
+                DropdownMenuItem(text = { Text(stringResource(R.string.skills_archived_title)) }, onClick = { expanded = false; w.showArchived() },
+                                 Modifier.testTag("skills-archived-open"))
+            }
         }
     }
 }
@@ -176,15 +205,18 @@ private fun Pill(text: String, tag: String, color: Color = Hermes.colors.textTer
 
 /**
  * One skill, open for reading (capabilities-03): its description, its category, provenance and use pills (D12), then
- * its whole SKILL.md as the core holds it, selectable in the code face. Back (the arrow and the system's) returns to
- * the list, not while a change runs.
+ * its whole SKILL.md as the core holds it, selectable in the code face. With the writes and an editable skill
+ * ([Provenance.editable], DC-P19): Edit, which turns the text into the editor, and Archive, which asks first. Back (the
+ * arrow and the system's) closes the innermost view: the editor, else the skill; not while a change runs.
  */
 @Composable
 private fun SkillPage(state: SkillsUi, open: SkillText, actions: SkillsActions, modifier: Modifier) {
     val row = state.rows?.find { it.name == open.name }
-    BackHandler(enabled = !state.busy, onBack = actions.closeSkill)
-    Page(open.name, modifier.testTag("skill"), onBack = actions.closeSkill, backTag = "skill-close", backEnabled = !state.busy,
-         busy = state.busy) {
+    val write = actions.write?.takeIf { row?.provenance?.editable == true }
+    val editing = open.editing
+    val back = if (editing != null && write != null) write.cancelEdit else actions.closeSkill
+    BackHandler(enabled = !state.busy, onBack = back)
+    Page(open.name, modifier.testTag("skill"), onBack = back, backTag = "skill-close", backEnabled = !state.busy, busy = state.busy) {
         Hint(row?.description?.takeIf { it.isNotBlank() } ?: stringResource(R.string.skill_no_description),
              Modifier.testTag("skill-description"))
         Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -192,8 +224,93 @@ private fun SkillPage(state: SkillsUi, open: SkillText, actions: SkillsActions, 
             row?.let { r -> badgeOf(r.provenance)?.let { Pill(stringResource(it), "skill-provenance", badgeColor(r.provenance)) } }
             row?.uses?.takeIf { it > 0 }?.let { Pill(stringResource(R.string.skill_used, it), "skill-used") }
         }
+        state.notice?.let { Notice(it) }
+        if (editing != null && write != null) {
+            Editor(open.name, editing, state, write)
+            return@Page
+        }
+        if (write != null) {
+            Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SecondaryButton(stringResource(R.string.skills_edit), write.edit, Modifier.testTag("skill-edit"), enabled = !state.busy)
+                SecondaryButton(stringResource(R.string.skills_archive), { write.askArchive(open.name) }, Modifier.testTag("skill-archive"),
+                                enabled = !state.busy, color = MaterialTheme.colorScheme.error)
+            }
+        }
         state.error?.let { Hint(it, Modifier.padding(top = 12.dp).testTag("skills-error"), color = MaterialTheme.colorScheme.error) }
         SelectionContainer(Modifier.padding(top = 12.dp)) { CodeBox(open.content, Modifier.testTag("skill-text")) }
+    }
+    if (write != null && state.confirmArchive == open.name) ArchiveDialog(open.name, state.busy, write)
+}
+
+/** The SKILL.md editor (Desktop's "{name}/SKILL.md" pane): the draft, the core's words under it, Save and Cancel. */
+@Composable
+private fun Editor(name: String, draft: String, state: SkillsUi, write: SkillWriteActions) {
+    Text(stringResource(R.string.skills_editor_title, name), Modifier.padding(top = 16.dp, bottom = 6.dp),
+         style = MaterialTheme.typography.labelLarge.copy(fontFamily = CodeFont), color = Hermes.colors.textTertiary)
+    OutlinedTextField(draft, write.draft, Modifier.fillMaxWidth().testTag("skill-editor"), enabled = !state.busy, minLines = 12,
+                      textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = CodeFont),
+                      keyboardOptions = KeyboardOptions(autoCorrectEnabled = false))
+    state.error?.let { Hint(it, Modifier.padding(top = 8.dp).testTag("skills-error"), color = MaterialTheme.colorScheme.error) }
+    Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        PrimaryButton(stringResource(if (state.busy) R.string.skills_saving else R.string.skills_save), write.save,
+                      Modifier.testTag("skill-save"), enabled = !state.busy)
+        SecondaryButton(stringResource(R.string.skills_cancel), write.cancelEdit, Modifier.testTag("skill-edit-cancel"), enabled = !state.busy)
+    }
+}
+
+/** Asks before a skill is archived (Desktop's dialog, naming the in-app Archived skills, D4); only its Archive sends. */
+@Composable
+private fun ArchiveDialog(name: String, busy: Boolean, write: SkillWriteActions) {
+    AlertDialog(onDismissRequest = { write.askArchive(null) }, modifier = Modifier.testTag("archive-dialog"),
+                containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                title = { Text(stringResource(R.string.skills_archive_title, name)) },
+                text = { Text(stringResource(R.string.skills_archive_body)) },
+                confirmButton = {
+                    Button(write.confirmArchive, Modifier.testTag("archive-confirm"), enabled = !busy, shape = ButtonShape,
+                           colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error,
+                                                                contentColor = MaterialTheme.colorScheme.onError)) {
+                        Text(stringResource(R.string.skills_archive))
+                    }
+                },
+                dismissButton = { SecondaryButton(stringResource(R.string.skills_cancel), { write.askArchive(null) },
+                                                  Modifier.testTag("archive-cancel"), enabled = !busy) })
+}
+
+/**
+ * The core's archive (`skills/.archive/`) by name, each with Restore (DC-P20: the phone's `hermes curator restore`).
+ * Back returns to the list, not while a change runs.
+ */
+@Composable
+private fun ArchivedPage(state: SkillsUi, names: List<String>, write: SkillWriteActions, modifier: Modifier) {
+    BackHandler(enabled = !state.busy, onBack = write.hideArchived)
+    Page(stringResource(R.string.skills_archived_title), modifier.testTag("skills-archived"), onBack = write.hideArchived,
+         backTag = "skills-archived-close", backEnabled = !state.busy, busy = state.busy) {
+        state.notice?.let { Notice(it) }
+        state.error?.let { Hint(it, Modifier.padding(top = 12.dp).testTag("skills-error"), color = MaterialTheme.colorScheme.error) }
+        if (names.isEmpty()) Hint(stringResource(R.string.skills_archived_none), Modifier.padding(top = 12.dp).testTag("skills-archived-none"))
+        names.forEach { name ->
+            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(name, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+                TextButton({ write.restore(name) }, Modifier.testTag("skill-restore-$name"), enabled = !state.busy) {
+                    Text(stringResource(R.string.skills_restore))
+                }
+            }
+            HorizontalDivider(color = Hermes.colors.stroke)
+        }
+    }
+}
+
+/** What the core just did (D2): a title and, under it, where the change shows. */
+@Composable
+private fun Notice(notice: SkillsNotice) {
+    val (title, message) = when (notice.kind) {
+        SkillsNotice.Kind.UPDATED -> R.string.skills_updated to stringResource(R.string.skills_notice_new_chats, notice.name)
+        SkillsNotice.Kind.ARCHIVED -> R.string.skills_archived_notice to stringResource(R.string.skills_archived_message)
+        SkillsNotice.Kind.RESTORED -> R.string.skills_restored to stringResource(R.string.skills_notice_new_chats, notice.name)
+    }
+    Column(Modifier.padding(top = 12.dp).testTag("skills-notice")) {
+        Text(stringResource(title), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+        Hint(message)
     }
 }
 

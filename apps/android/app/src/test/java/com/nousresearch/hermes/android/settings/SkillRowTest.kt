@@ -39,4 +39,10 @@ class SkillRowTest {
         assertEquals(rows, found(""))
         assertEquals(rows, found("   "))
     }
+
+    @Test
+    fun onlyAgentAndExternalSkillsAreEditable() {
+        assertEquals(mapOf(Provenance.HUB to false, Provenance.BUNDLED to false, Provenance.EXTERNAL to true, Provenance.AGENT to true),
+                     Provenance.entries.associateWith { it.editable })
+    }
 }

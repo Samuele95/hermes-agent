@@ -78,6 +78,7 @@ import com.nousresearch.hermes.android.settings.SettingsActions
 import com.nousresearch.hermes.android.settings.SettingsControl
 import com.nousresearch.hermes.android.settings.SettingsScreen
 import com.nousresearch.hermes.android.settings.SettingsUi
+import com.nousresearch.hermes.android.settings.SkillWriteActions
 import com.nousresearch.hermes.android.settings.SkillsActions
 import com.nousresearch.hermes.android.settings.SkillsScreen
 import com.nousresearch.hermes.android.setup.SetupScreen
@@ -130,7 +131,15 @@ class MainActivity : ComponentActivity() {
                                 SkillsScreen(it, onEnable = { names, on -> app.skills { enable(names, on) } }, onClose = state.pages.skills::close,
                                              actions = SkillsActions(query = state.pages.skills::query, refresh = { app.skills { refresh() } },
                                                                      read = { name -> app.skills { read(name) } },
-                                                                     closeSkill = state.pages.skills::closeSkill))
+                                                                     closeSkill = state.pages.skills::closeSkill,
+                                                                     write = state.pages.skills.let { s ->
+                                                                         SkillWriteActions(edit = s::edit, draft = s::draft, cancelEdit = s::cancelEdit,
+                                                                                           save = { app.skills { save() } }, askArchive = s::askArchive,
+                                                                                           confirmArchive = { app.skills { confirmArchive() } },
+                                                                                           showArchived = { app.skills { showArchived() } },
+                                                                                           hideArchived = s::hideArchived,
+                                                                                           restore = { name -> app.skills { restore(name) } })
+                                                                     }))
                                 return@Surface
                             }
                             val settings by state.pages.settings.state.collectAsState()

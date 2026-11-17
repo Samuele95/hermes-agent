@@ -144,6 +144,12 @@ fun messageReactionsOf(config: JsonObject?): Boolean =
 enum class Provenance {
     HUB, BUNDLED, EXTERNAL, AGENT;
 
+    /**
+     * Whether the user may edit or archive a skill of this provenance: the agent's own and mounted ones (Desktop's
+     * `isEditableProvenance`, DC-P19); hub and bundled skills have an upstream to keep. The one definition of the rule.
+     */
+    val editable: Boolean get() = this == AGENT || this == EXTERNAL
+
     companion object {
         /** The bridge's [wire] value (§5: no screen reads the wire type). Total. */
         fun of(wire: WireProvenance): Provenance = when (wire) {
@@ -206,11 +212,13 @@ data class SkillsNotice(val kind: Kind, val name: String) {
 /**
  * The skills page: [rows] the core's last answer, null while read or when it could not be read (D3); [busy] while one
  * change is written; [error] the core's words; [query] the search typed, which only narrows what is shown; [open] the
- * skill being read; [notice] what the last change did (D2). The core owns every skill (§2.5); no screen reads the
- * wire type (§5).
+ * skill being read; [notice] what the last change did (D2); [archived] the core's archive by name while the Archived
+ * view is open, null while it is closed (D1); [confirmArchive] the skill whose archive is being asked. The core owns
+ * every skill (§2.5); no screen reads the wire type (§5).
  */
 data class SkillsUi(val rows: List<SkillRow>? = null, val busy: Boolean = false, val error: String? = null,
-                    val query: String = "", val open: SkillText? = null, val notice: SkillsNotice? = null)
+                    val query: String = "", val open: SkillText? = null, val notice: SkillsNotice? = null,
+                    val archived: List<String>? = null, val confirmArchive: String? = null)
 
 /** The rows the page shows: the core's, narrowed by the [SkillsUi.query]; null while none are read. Pure. */
 fun SkillsUi.shown(): List<SkillRow>? = rows?.filter { it.matches(query) }

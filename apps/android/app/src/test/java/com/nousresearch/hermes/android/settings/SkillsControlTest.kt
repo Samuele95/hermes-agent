@@ -8,6 +8,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -36,6 +38,29 @@ class SkillsControlTest {
 
         const val RELOADED = """{"output":"No new skills detected. 4 skill(s) available.","result":{"total":4,"commands":4}}"""
         const val SKILL_MD = "---\nname: arxiv\n---\n# arxiv\n"
+        /** One skill of each provenance (the writes' fixture). */
+        val KINDS = listOf(SkillRow("mine", "Made by the agent", null, true, Provenance.AGENT),
+                           SkillRow("ext", "Mounted", "research", true, Provenance.EXTERNAL),
+                           SkillRow("arxiv", "Search arXiv", "research", true, Provenance.BUNDLED),
+                           SkillRow("hubbed", "From the hub", null, true, Provenance.HUB))
+
+        /** The core's `skills_list` answer for [rows], each with its own provenance and uses. */
+        fun kinds(rows: List<SkillRow>): String = rows.joinToString(",", """{"skills":[""", "]}") { r ->
+            val category = r.category?.let { "\"$it\"" } ?: "null"
+            """{"name":"${r.name}","description":"${r.description}","category":$category,"enabled":${r.enabled},""" +
+                """"provenance":"${r.provenance.name.lowercase()}","uses":${r.uses}}"""
+        }
+
+        /** [name]'s SKILL.md, and the core's `learning.detail` answer holding it. */
+        fun md(name: String) = "---\nname: $name\n---\n# $name\n"
+        fun detail(name: String) = """{"ok":true,"kind":"skill","id":"$name","label":"$name","content":${JsonPrimitive(md(name))}}"""
+
+        const val OK = """{"ok":true,"message":"saved"}"""
+        const val NEW = "---\nname: mine\ndescription: Better\n---\n# mine, rewritten\n"
+        const val FRONTMATTER = "SKILL.md must start with YAML frontmatter (---). See existing skills for format."
+        const val PINNED = "'mine' is pinned — unpin it first (hermes curator unpin mine)"
+        const val EXTERNAL = "skill 'ext' lives in skills.external_dirs; external skills are read-only to the curator"
+        const val SHADOW = "skill 'old' is now bundled; restore would shadow the upstream version"
         const val DETAIL = """{"ok":true,"kind":"skill","id":"arxiv","label":"arxiv","content":"---\nname: arxiv\n---\n# arxiv\n"}"""
     }
 
@@ -48,11 +73,18 @@ class SkillsControlTest {
     private val order = mutableListOf<String>()  // every call, core and bridge, in the order sent
     private var reloadFails: CoreError? = null
     private var detailReply = DETAIL
+    private var editReply = OK
+    private var editFails: CoreError? = null
+    private var deleteReply = OK
+    private var archivedReply = """{"names":["old","older"]}"""
+    private var restoreReply = kinds(KINDS + SkillRow("old", "Back again", null, true, Provenance.AGENT))
     private val core = FakeCoreGateway { method, _ ->
         order += method
         when (method) {
             "skills.reload" -> { reloadFails?.let { throw it }; RELOADED }
             "learning.detail" -> detailReply
+            "learning.edit" -> { editFails?.let { throw it }; editReply }
+            "learning.delete" -> deleteReply
             else -> error("unexpected $method")
         }
     }
@@ -62,6 +94,8 @@ class SkillsControlTest {
         when (function) {
             "skills_list" -> { listGate?.await(); listReply }
             "skills_enable" -> { enableGate?.await(); enableAnswer }
+            "skills_archived" -> archivedReply
+            "skills_restore" -> restoreReply
             else -> error("unexpected $function")
         }
     }) { sessionId }
@@ -285,5 +319,239 @@ class SkillsControlTest {
 
         assertEquals(listOf("learning.detail" to json("""{"id":"arxiv"}""")), core.calls)
         assertEquals("arxiv", skills.state.value?.open?.name)
+    }
+    /** The page open on [KINDS] with [name]'s SKILL.md open (none: the list), every call so far forgotten. */
+    private suspend fun openOn(name: String?) {
+        listReply = kinds(KINDS)
+        skills.open()
+        name?.let { readOnly(it) }
+        order.clear()
+        core.calls.clear()
+        bridgeCalls.clear()
+    }
+
+    /** Opens [name] from the list (closing any open skill first). */
+    private suspend fun readOnly(name: String) {
+        skills.closeSkill()
+        detailReply = detail(name)
+        skills.read(name)
+        assertEquals(name, skills.state.value?.open?.name)
+    }
+
+    private fun params(vararg pairs: Pair<String, String>) = JsonObject(pairs.associate { (k, v) -> k to JsonPrimitive(v) })
+
+    @Test
+    fun editStartsFromTheCoresTextOnlyForAnEditableSkill() = runTest {
+        openOn("mine")
+
+        skills.edit()
+
+        assertEquals(md("mine"), skills.state.value?.open?.editing)
+        assertEquals(emptyList<String>(), order)
+
+        for (name in listOf("arxiv", "hubbed")) {
+            readOnly(name)
+            order.clear()
+
+            skills.edit()
+
+            assertNull(skills.state.value?.open?.editing)
+            assertEquals(emptyList<String>(), order)
+        }
+    }
+
+    @Test
+    fun aSavedEditShowsTheSavedTextAndReloads() = runTest {
+        openOn("mine")
+        skills.edit()
+        skills.draft(NEW)
+        val reread = KINDS.map { if (it.name == "mine") it.copy(description = "Better") else it }
+        listReply = kinds(reread)
+
+        skills.save()
+
+        assertEquals(listOf("learning.edit", "skills.reload", "skills_list"), order)  // no second learning.detail (D6)
+        assertEquals("learning.edit" to params("id" to "mine", "content" to NEW), core.calls.first())
+        val ui = skills.state.value!!
+        assertEquals(SkillText("mine", NEW, null), ui.open)
+        assertEquals(SkillsNotice(SkillsNotice.Kind.UPDATED, "mine"), ui.notice)
+        assertEquals(reread, ui.rows)
+        assertNull(ui.error)
+        assertFalse(ui.busy)
+    }
+
+    @Test
+    fun aRefusedEditKeepsTheDraftAndShowsTheCoresWords() = runTest {
+        openOn("mine")
+        skills.edit()
+        skills.draft("no frontmatter")
+        editReply = """{"ok":false,"message":"$FRONTMATTER"}"""
+
+        skills.save()
+
+        val ui = skills.state.value!!
+        assertEquals(SkillText("mine", md("mine"), "no frontmatter"), ui.open)
+        assertEquals(FRONTMATTER, ui.error)
+        assertEquals(listOf("learning.edit"), order)
+        assertNull(ui.notice)
+        assertFalse(ui.busy)
+    }
+
+    @Test
+    fun aFailedEditCallKeepsTheDraft() = runTest {
+        openOn("mine")
+        skills.edit()
+        skills.draft(NEW)
+        editFails = CoreError(5000, "learning.edit failed: boom")
+
+        skills.save()
+
+        assertEquals(NEW, skills.state.value?.open?.editing)
+        assertEquals("learning.edit failed: boom", skills.state.value?.error)
+        assertEquals(listOf("learning.edit"), order)
+    }
+
+    @Test
+    fun archiveAsksFirstAndSendsNothingUntilConfirmed() = runTest {
+        openOn("mine")
+
+        skills.askArchive("mine")
+        assertEquals("mine", skills.state.value?.confirmArchive)
+        skills.askArchive(null)
+        assertNull(skills.state.value?.confirmArchive)
+        skills.askArchive("ext")  // listed and editable, but not the open skill
+        assertNull(skills.state.value?.confirmArchive)
+        skills.askArchive("gone")
+        assertNull(skills.state.value?.confirmArchive)
+        readOnly("arxiv")
+        order.clear()
+        skills.askArchive("arxiv")  // bundled
+
+        assertNull(skills.state.value?.confirmArchive)
+        assertEquals(emptyList<String>(), order)
+    }
+
+    @Test
+    fun aConfirmedArchiveClosesTheSkillAndTheListLosesIt() = runTest {
+        openOn("mine")
+        skills.askArchive("mine")
+        deleteReply = """{"ok":true,"message":"archived 'mine' — restore with: hermes curator restore mine"}"""
+        listReply = kinds(KINDS.drop(1))
+
+        skills.confirmArchive()
+
+        assertEquals(listOf("learning.delete", "skills.reload", "skills_list"), order)
+        assertEquals("learning.delete" to params("id" to "mine"), core.calls.first())
+        val ui = skills.state.value!!
+        assertNull(ui.open)
+        assertNull(ui.confirmArchive)
+        assertEquals(KINDS.drop(1), ui.rows)
+        assertEquals(SkillsNotice(SkillsNotice.Kind.ARCHIVED, "mine"), ui.notice)
+        assertFalse(ui.busy)
+    }
+
+    @Test
+    fun aPinnedOrExternalArchiveIsRefusedInTheCoresWords() = runTest {
+        for ((name, words) in listOf("mine" to PINNED, "ext" to EXTERNAL)) {
+            openOn(name)
+            skills.askArchive(name)
+            deleteReply = """{"ok":false,"message":"$words"}"""
+
+            skills.confirmArchive()
+
+            val ui = skills.state.value!!
+            assertEquals(words, ui.error)
+            assertEquals(name, ui.open?.name)
+            assertEquals(KINDS, ui.rows)
+            assertEquals(listOf("learning.delete"), order)  // no reload
+            assertNull(ui.notice)
+            assertFalse(ui.busy)
+        }
+    }
+
+    @Test
+    fun aDoubleConfirmArchivesOnce() = runTest {
+        openOn("mine")
+        skills.askArchive("mine")
+        val gate = CompletableDeferred<Unit>().also { listGate = it }  // the first archive waits in its re-read
+        val first = launch { skills.confirmArchive() }
+        val second = launch { skills.confirmArchive() }
+        runCurrent()
+
+        gate.complete(Unit)
+        first.join()
+        second.join()
+
+        assertEquals(1, order.count { it == "learning.delete" })
+        assertEquals(1, core.calls.count { it.first == "learning.delete" })
+    }
+
+    @Test
+    fun theArchivedViewListsTheCoresArchive() = runTest {
+        openOn(null)
+
+        skills.showArchived()
+
+        assertEquals(listOf("skills_archived" to "{}"), bridgeCalls)
+        assertEquals(listOf("old", "older"), skills.state.value?.archived)
+        assertFalse(skills.state.value!!.busy)
+
+        skills.hideArchived()
+
+        assertNull(skills.state.value?.archived)
+    }
+
+    @Test
+    fun aRestoreBringsTheSkillBackReloadsAndReReadsTheArchive() = runTest {
+        openOn(null)
+        skills.showArchived()
+        order.clear()
+        bridgeCalls.clear()
+        archivedReply = """{"names":["older"]}"""
+
+        skills.restore("old")
+
+        assertEquals(listOf("skills_restore", "skills.reload", "skills_archived"), order)
+        assertEquals("skills_restore" to json("""{"name":"old"}"""), bridgeCalls.first().let { it.first to json(it.second) })
+        assertEquals(listOf("skills.reload" to params("session_id" to "s1")), core.calls)
+        val ui = skills.state.value!!
+        assertTrue(ui.rows!!.any { it.name == "old" })
+        assertEquals(listOf("older"), ui.archived)
+        assertEquals(SkillsNotice(SkillsNotice.Kind.RESTORED, "old"), ui.notice)
+        assertFalse(ui.busy)
+    }
+
+    @Test
+    fun aRefusedRestoreSaysTheCoresWordsAndMovesNothing() = runTest {
+        openOn(null)
+        skills.showArchived()
+        order.clear()
+        restoreReply = """{"error":"$SHADOW"}"""
+
+        skills.restore("old")
+
+        val ui = skills.state.value!!
+        assertEquals(SHADOW, ui.error)
+        assertEquals(listOf("old", "older"), ui.archived)
+        assertEquals(KINDS, ui.rows)
+        assertEquals(listOf("skills_restore"), order)
+        assertNull(ui.notice)
+    }
+
+    @Test
+    fun aNameTheArchiveDoesNotListIsNotRestored() = runTest {
+        openOn(null)
+        skills.restore("old")  // the archive is not open
+        skills.showArchived()
+        order.clear()
+
+        skills.restore("nope")
+
+        assertEquals(emptyList<String>(), order)
+        assertTrue(bridgeCalls.none { it.first == "skills_restore" })
+
+        skills.restore("old")  // listed: restored
+
+        assertEquals(1, bridgeCalls.count { it.first == "skills_restore" })
     }
 }
