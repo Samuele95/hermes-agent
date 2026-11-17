@@ -29,6 +29,7 @@ import com.nousresearch.hermes.android.settings.AppPackage
 import com.nousresearch.hermes.android.settings.HubControl
 import com.nousresearch.hermes.android.settings.SettingsControl
 import com.nousresearch.hermes.android.settings.SkillsControl
+import com.nousresearch.hermes.android.settings.ToolsetsControl
 import com.nousresearch.hermes.android.setup.PrefsCustomModels
 import com.nousresearch.hermes.android.setup.PrefsKeyNames
 import com.nousresearch.hermes.android.setup.ProviderSetup
@@ -66,7 +67,7 @@ sealed interface CoreState {
 /** The pages the chat opens, each a controller with nullable state (F12): one holder, not ten positional fields. */
 data class Pages(val settings: SettingsControl, val skills: SkillsControl, val jobs: JobsControl, val telegram: TelegramSetup,
                  val ssh: SshSetup, val history: SessionHistory, val context: ContextPanel, val export: SessionExport,
-                 val status: StatusPanel, val models: ModelSwitch, val hub: HubControl)
+                 val status: StatusPanel, val models: ModelSwitch, val hub: HubControl, val toolsets: ToolsetsControl)
 
 /**
  * Owns the embedded core for the whole process. Activities come and go (rotation, the task being
@@ -259,6 +260,11 @@ class HermesApplication : Application() {
     /** Runs one Skills Hub action on the app's scope, so it outlives the activity that asked for it. */
     fun hub(action: suspend HubControl.() -> Unit) {
         scope.launch { (state.value as? CoreState.Ready)?.pages?.hub?.action() }
+    }
+
+    /** Runs one Toolsets-page action on the app's scope, so it outlives the activity that asked for it. */
+    fun toolsets(action: suspend ToolsetsControl.() -> Unit) {
+        scope.launch { (state.value as? CoreState.Ready)?.pages?.toolsets?.action() }
     }
 
     /** Runs one Telegram setup action on the app's scope, so it outlives the activity that asked for it. */

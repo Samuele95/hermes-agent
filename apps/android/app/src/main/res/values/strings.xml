@@ -391,6 +391,18 @@
     <string name="skills_category_switch">All %1$s skills</string>
     <string name="skills_search">Search skills...</string>
     <string name="skills_no_match">Nothing matches “%1$s”.</string>
+    <string name="toolsets_title">Tools</string>
+    <string name="settings_toolsets_open">Turn toolsets on or off</string>
+    <string name="toolsets_explain">Hermes gets the tools of every toolset that is on.</string>
+    <string name="toolsets_search">Search tools...</string>
+    <plurals name="toolsets_count">
+        <item quantity="one">%d tool</item>
+        <item quantity="other">%d tools</item>
+    </plurals>
+    <string name="toolsets_needs_keys">Needs keys</string>
+    <string name="toolsets_turn_on">Turn %1$s toolset on</string>
+    <string name="toolsets_turn_off">Turn %1$s toolset off</string>
+    <string name="toolsets_none">No toolsets found</string>
     <string name="skills_menu">Skills options</string>
     <string name="skills_refresh">Refresh skills</string>
     <string name="skills_learned">Learned</string>

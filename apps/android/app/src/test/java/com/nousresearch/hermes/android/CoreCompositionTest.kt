@@ -18,6 +18,7 @@ import com.nousresearch.hermes.android.settings.AboutTest
 import com.nousresearch.hermes.android.settings.ConnectedProvider
 import com.nousresearch.hermes.android.settings.SettingsControlTest
 import com.nousresearch.hermes.android.settings.SkillRow
+import com.nousresearch.hermes.android.settings.ToolsetsControlTest
 import com.nousresearch.hermes.android.setup.Readiness
 import com.nousresearch.hermes.android.turn.TurnHost
 import com.nousresearch.hermes.bridge.AppBridge
@@ -65,6 +66,8 @@ class CoreCompositionTest {
             "session.context_breakdown" -> EMPTY_BREAKDOWN
             "setup.runtime_check" -> """{"ok":true,"provider":"deepseek","model":"deepseek-v4-pro"}"""
             "cron.manage" -> """{"success":true,"count":1,"jobs":[{"job_id":"j1","name":"n","state":"scheduled"}]}"""
+            "toolsets.list" -> ToolsetsControlTest.LIST
+            "tools.configure" -> ToolsetsControlTest.configured(listOf("web"))
             else -> error("unexpected $method")
         }
     }
@@ -89,6 +92,7 @@ class CoreCompositionTest {
                 "settings_read" -> SettingsControlTest.DEFAULT_READ
                 "skills_list" -> """{"skills":[{"name":"arxiv","description":"Search arXiv.","category":"research","enabled":true,"provenance":"bundled","uses":0}]}"""
                 "session_export" -> """{"path":"/data/app-files/cache/exports/session-db1.json","name":"session-db1.json","bytes":42}"""
+                "toolsets_keys" -> ToolsetsControlTest.KEYS
                 else -> "{}"
             }
         }
@@ -337,6 +341,23 @@ class CoreCompositionTest {
 
         assertTrue(bridgeCalls.toString(), "skills_list" in bridgeCalls)
         assertEquals(listOf(SkillRow("arxiv", "Search arXiv.", "research", true)), ready.pages.skills.state.value?.rows)
+    }
+
+    @Test
+    fun theToolsetsPageSwitchesWithoutTheOpenChatsSession() = runTest(UnconfinedTestDispatcher()) {
+        val ready = composeCore(runtime, paths, deps, backgroundScope)
+        assertEquals(RuntimeSessionId("s1"), ready.chat.sessionId)  // a chat is open
+        val toolsets = ready.pages.toolsets
+
+        toolsets.open()
+        val sessionCalls = core.calls.count { it.first.startsWith("session.") }
+        toolsets.set(listOf("browser"), false)
+
+        val sent = core.calls.filter { it.first == "toolsets.list" || it.first == "tools.configure" }.map { it.second }
+        assertEquals(listOf("toolsets.list", "tools.configure"), core.calls.map { it.first }.filter { it.startsWith("tool") })
+        assertTrue(sent.toString(), sent.none { "session_id" in it })
+        assertEquals("the switch touches no session", sessionCalls, core.calls.count { it.first.startsWith("session.") })
+        assertEquals(false, toolsets.state.value?.rows?.single { it.name == "browser" }?.enabled)
     }
 
     @Test

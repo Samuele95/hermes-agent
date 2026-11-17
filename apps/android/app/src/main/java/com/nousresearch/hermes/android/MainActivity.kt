@@ -84,6 +84,8 @@ import com.nousresearch.hermes.android.settings.SettingsUi
 import com.nousresearch.hermes.android.settings.SkillWriteActions
 import com.nousresearch.hermes.android.settings.SkillsActions
 import com.nousresearch.hermes.android.settings.SkillsScreen
+import com.nousresearch.hermes.android.settings.ToolsetsActions
+import com.nousresearch.hermes.android.settings.ToolsetsScreen
 import com.nousresearch.hermes.android.setup.SetupScreen
 import com.nousresearch.hermes.android.setup.SshScreen
 import com.nousresearch.hermes.android.ui.Hermes
@@ -113,6 +115,7 @@ class MainActivity : ComponentActivity() {
                             val queue by state.chat.queueState.collectAsState()
                             val skills by state.pages.skills.state.collectAsState()
                             val hub by state.pages.hub.state.collectAsState()
+                            val toolsets by state.pages.toolsets.state.collectAsState()
                             val exported by state.pages.export.state.collectAsState()
                             val status by state.pages.status.state.collectAsState()
                             val models by state.pages.models.state.collectAsState()
@@ -155,6 +158,12 @@ class MainActivity : ComponentActivity() {
                                                                                            restore = { name -> app.skills { restore(name) } })
                                                                      },
                                                                      hub = { app.hub { open() } }))
+                                return@Surface
+                            }
+                            toolsets?.let {  // above Settings, which stays open beneath: Back returns to it
+                                ToolsetsScreen(it, ToolsetsActions(query = state.pages.toolsets::query,
+                                                                   set = { names, on -> app.toolsets { set(names, on) } },
+                                                                   close = state.pages.toolsets::close))
                                 return@Surface
                             }
                             val settings by state.pages.settings.state.collectAsState()
@@ -357,7 +366,8 @@ class MainActivity : ComponentActivity() {
                                            askRemoveProvider = settings::askRemoveProvider,
                                            confirmRemoveProvider = { app.settings { confirmRemoveProvider() } },
                                            openSkills = { app.skills { open() } }, copy = { text -> copy("Hermes version", text) },
-                                           reactions = { on -> app.settings { reactions(on) } }),
+                                           reactions = { on -> app.settings { reactions(on) } },
+                                           openToolsets = { app.toolsets { open() } }),
                        onClose = settings::close)
     }
 
