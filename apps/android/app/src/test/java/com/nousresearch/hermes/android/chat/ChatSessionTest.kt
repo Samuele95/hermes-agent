@@ -3596,4 +3596,73 @@ class ChatSessionTest {
         assertEquals(emptyList<SlashItem>(), chat.slashItems("/a\nb"))
         assertEquals(before, core.calls.size)
     }
+
+    /** The texts of every `prompt.submit`, in order. */
+    private fun submitted() = submits().map { it.second.getValue("text").jsonPrimitive.content }
+
+    @Test
+    fun aQueuedAppCommandActsBeforeTheNextHeadLeaves() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        chat.queue("/retry")  // the Queue button: the line as typed
+        chat.queue("more")
+
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")
+
+        assertEquals("/retry sent hi again, and more waits for that turn", listOf("hi", "hi"), submitted())
+        assertEquals(listOf("more"), chat.items())
+        assertTrue(chat.state.value.entries.none { it is Entry.Notice })  // never "There is nothing to retry now."
+        turn()
+        assertEquals(Json.parseToJsonElement("""{"session_id":"s1","text":"more","queued":true}"""), lastSubmit())
+        assertEquals(emptyList<String>(), chat.items())
+        turn()
+
+        // An alias whose target is an app command, reached from the drain, holds the queue the same way.
+        dispatch = { p -> if (p.getValue("name").jsonPrimitive.content == "hi") """{"type":"alias","target":"retry"}""" else skillOf(p) }
+        chat.send("again")
+        core.emit("message.start", "s1")
+        chat.queue("/hi")
+        chat.queue("after")
+
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")
+
+        assertEquals(listOf("hi" to null), dispatches())
+        assertEquals(listOf("hi", "hi", "more", "again", "again"), submitted())
+        assertEquals(listOf("after"), chat.items())
+        assertTrue(chat.state.value.entries.none { it is Entry.Notice })
+        turn()
+        assertEquals("after", submitted().last())
+        assertEquals(emptyList<String>(), slashSubmits())
+    }
+
+    @Test
+    fun aQueuedCompressOrNewChatKeepsTheRestOfTheQueueOffTheCoreUntilItHasActed() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        chat.queue("/compress")
+        chat.queue("more")
+
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")
+
+        assertEquals(1, core.calls.count { it.first == "session.compress" })  // it compressed: never "still replying"
+        assertEquals("Nothing to compress.", chat.lastNotice())
+        assertEquals("a notice since the turn: the rest pauses for Resume", listOf("more"), chat.items())
+        assertTrue(chat.queueState.value.paused)
+        assertEquals(listOf("hi"), submitted())
+
+        chat.deleteQueued(chat.idOf("more"))
+        chat.send("again")
+        core.emit("message.start", "s1")
+        chat.queue("/new")
+        chat.queue("later")
+
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")
+
+        assertEquals(runtime("s2"), chat.sessionId)
+        assertEquals("later stays with the chat it was queued in", listOf("hi", "again"), submitted())
+        assertEquals(listOf("later"), saved("db1"))
+        assertEquals(emptyList<String>(), chat.items())
+    }
 }

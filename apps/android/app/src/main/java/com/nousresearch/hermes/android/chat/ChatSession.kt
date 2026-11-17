@@ -154,10 +154,12 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
      * for that end, in this session only (D6).
      * [queue]: the session's queue of unsent messages (§2.4); [nextQueued] the id the next queued item takes. It only
      * grows in this process, so a tap on a stale row never meets a new item (inv. 4).
+     * [acting]: the app's own commands a slash line let go (a queue head, an alias's target) still acting; while any
+     * acts the queue neither drains nor pauses, so no head leaves before the command has acted ([actFor]).
      */
     private data class Live(val ref: SessionRef? = null, val chat: Chat = Chat(), val waiting: Map<String, InTurnPrompt> = emptyMap(),
                             val jobsNoticed: Boolean = false, val resend: Long? = null, val queue: QueueUi = QueueUi(),
-                            val nextQueued: Long = 0) {
+                            val nextQueued: Long = 0, val acting: Int = 0) {
         /** [text] at the queue's tail. */
         fun queued(text: String): Live = copy(queue = queue.added(text, nextQueued), nextQueued = nextQueued + 1)
 
@@ -170,7 +172,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
          * else this and null (inv. 3, inv. 4).
          */
         fun draining(at: Long): Pair<Live, String?> {
-            if (chat.busy || chat.compressing || chat.runOwned) return this to null
+            if (chat.busy || chat.compressing || chat.runOwned || acting > 0) return this to null
             val (item, rest) = queue.next() ?: return this to null
             // A slash head gets its bubble once the catalog says what it is (D9): a dispatch shows the core's display.
             val shown = if (item.text.startsWith("/")) chat.copy(submitted = true) else chat.sent(item.text, at)
@@ -181,11 +183,11 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
          * The queue as no change may leave it: never idle, unpaused and stranded with a head to send. After a turn that
          * completed the head goes out ([draining]; Desktop drains whenever idle and not parked, so a missed edge cannot
          * strand it, `use-composer-queue.ts:580-594`); after anything else (a refused prompt, a late refusal, a notice
-         * since) it pauses, so Resume shows (DC-M6). Busy, paused, or nothing but the edited item: this and null.
-         * [at] is the time a head that goes out is sent.
+         * since) it pauses, so Resume shows (DC-M6). Busy, an app command still [acting], paused, or nothing but the
+         * edited item: this and null. [at] is the time a head that goes out is sent.
          */
         fun settled(at: Long): Pair<Live, String?> = when {
-            ref == null || chat.busy || queue.next() == null -> this to null
+            ref == null || chat.busy || acting > 0 || queue.next() == null -> this to null
             chat.endedComplete -> draining(at)
             else -> paused() to null
         }
@@ -759,7 +761,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
                 val target = orElse(null) { catalogOf(session).line("/${directive.target} ${line.arg}".trim()) }
                 when {
                     target == null || typed.aliased -> unsent(session, NOT_ON_PHONE.format("/${directive.target}"))
-                    target.runs == Runner.APP -> { idle(session); runApp(target) }
+                    target.runs == Runner.APP -> actFor(session, target)
                     else -> dispatched(session, typed.copy(line = target, aliased = true))
                 }
             }
@@ -780,7 +782,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         val line = catalog.line(text)
         when {
             line?.runs == Runner.DISPATCH -> dispatched(session, Typed(line, text, queued = true))
-            line != null -> { idle(session); runApp(line) }  // a line the Queue button queued
+            line != null -> actFor(session, line)  // a line the Queue button queued
             else -> catalog.unavailable(text)?.let { unsent(session, NOT_ON_PHONE.format(it)) } ?: run {
                 change { now -> if (now.ref?.runtime == session) now.copy(chat = now.chat.sent(text, clock())) else now }
                 submit(session, text, queued = true)  // text after all: a path
@@ -788,9 +790,23 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         }
     }
 
-    /** [session]'s chat, held busy for a slash line, is idle again: nothing went out. */
-    private fun idle(session: RuntimeSessionId) {
-        change { now -> if (now.ref?.runtime == session) now.copy(chat = now.chat.unsent()) else now }
+    /**
+     * The app's own command [line], let go in [session] by a slash line held busy (a queue head, an alias's target):
+     * the chat is idle again, nothing went out, and the queue waits ([Live.acting]) until the command has acted, so the
+     * next head never leaves before it (a `/retry` head then `more`: `more` goes after the retried turn). Then
+     * [Live.settled] decides as after any change: a completed turn last lets the next head go; a notice since pauses it.
+     */
+    private suspend fun actFor(session: RuntimeSessionId, line: SlashLine) {
+        var held = false
+        change { now ->
+            if (now.ref?.runtime != session) now
+            else { held = true; now.copy(chat = now.chat.unsent(), acting = now.acting + 1) }
+        }
+        try {
+            runApp(line)
+        } finally {  // acted, refused, failed or cancelled: the queue goes on under its own rules
+            if (held) change { now -> if (now.ref?.runtime == session && now.acting > 0) now.copy(acting = now.acting - 1) else now }
+        }
     }
 
     /**
