@@ -107,6 +107,8 @@ class MainActivity : ComponentActivity() {
                             val exported by state.pages.export.state.collectAsState()
                             val status by state.pages.status.state.collectAsState()
                             val models by state.pages.models.state.collectAsState()
+                            // The core's Message Reactions switch, known before Settings opens (D4): React shows only while it is on.
+                            val reactionsOn by state.pages.settings.reactionsOn.collectAsState()
                             // Whichever page shows: a finished export goes to the share sheet each time the activity is started, until one
                             // opened it (D8, architect #2); one no app can take waits no longer (N15); no key changes at a stop, so the
                             // lifecycle, not a key, brings the retry.
@@ -171,6 +173,7 @@ class MainActivity : ComponentActivity() {
                             ChatScreen(chat, about = state.about, answers = answers, places = places, onStop = { app.chat { cancel() } },
                                        onRetry = { app.chat { retry() } }, onCopy = { copy("Hermes", it) },
                                        onEdit = { rewind -> app.chat { resend(rewind) } },
+                                       onReact = { id: Long, emoji: String? -> app.chat { react(id, emoji) } }.takeIf { reactionsOn == true },
                                        // A failed answer's fixes run the controls the app already has (chat-16, D7); Compress
                                        // opens the context sheet first, so its outcome or refusal shows there.
                                        recovery = RecoveryRoutes(retry = { app.chat { retry() } }, send = app::send,
@@ -318,7 +321,8 @@ class MainActivity : ComponentActivity() {
                                            confirmRemove = { app.settings { confirmRemove() } }, restartGateway = app::restartGateway,
                                            askRemoveProvider = settings::askRemoveProvider,
                                            confirmRemoveProvider = { app.settings { confirmRemoveProvider() } },
-                                           openSkills = { app.skills { open() } }, copy = { text -> copy("Hermes version", text) }),
+                                           openSkills = { app.skills { open() } }, copy = { text -> copy("Hermes version", text) },
+                                           reactions = { on -> app.settings { reactions(on) } }),
                        onClose = settings::close)
     }
 

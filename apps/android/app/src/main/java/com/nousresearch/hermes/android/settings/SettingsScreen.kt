@@ -52,10 +52,10 @@ import androidx.compose.material3.HorizontalDivider
 class SettingsActions(val approvals: (ApprovalMode) -> Unit, val personality: (String) -> Unit, val edit: (SettingsEdit) -> Unit,
                       val askRemove: (String?) -> Unit, val confirmRemove: () -> Unit, val restartGateway: () -> Unit,
                       val askRemoveProvider: (String?) -> Unit, val confirmRemoveProvider: () -> Unit, val openSkills: () -> Unit,
-                      val copy: (String) -> Unit)
+                      val copy: (String) -> Unit, val reactions: (Boolean) -> Unit)
 
 /**
- * The app's settings kept in the core's config, in the order of §4: Chat (the personality), Command approvals (the
+ * The app's settings kept in the core's config, in the order of §4: Chat (the personality and Message Reactions), Command approvals (the
  * mode, the timeout, the always-allowed commands), Memory, Providers (each connected one with Remove, which asks
  * first), Skills (a row that opens the skills page), and About (the build, with Copy details). It shows only what the core last answered: a part the
  * core could not read is absent (the mode keeps "none selected, still choosable"), and while one write runs every
@@ -66,9 +66,13 @@ fun SettingsScreen(state: SettingsUi, actions: SettingsActions, onClose: () -> U
     Page(stringResource(R.string.settings_title), modifier.testTag("settings"), onBack = onClose, backTag = "settings-close", busy = state.busy) {
         val config = state.config
         val enabled = !state.busy
-        if (config != null && state.personality != null) {
+        if ((config != null && state.personality != null) || state.reactions != null) {
             SectionCaption(stringResource(R.string.settings_chat), Modifier.padding(top = 0.dp))
-            PersonalityRow(state.personality, config.personalities, enabled, actions.personality)
+        }
+        if (config != null && state.personality != null) PersonalityRow(state.personality, config.personalities, enabled, actions.personality)
+        state.reactions?.let {
+            SwitchSetting(stringResource(R.string.settings_reactions), stringResource(R.string.settings_reactions_detail), it,
+                          "reactions-switch", enabled) { on -> actions.reactions(on) }
         }
         SectionCaption(stringResource(R.string.approvals_title), Modifier.padding(top = 0.dp))
         Hint(stringResource(R.string.approvals_explain))

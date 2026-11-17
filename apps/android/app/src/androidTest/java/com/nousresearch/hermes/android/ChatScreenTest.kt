@@ -69,6 +69,13 @@ import com.nousresearch.hermes.android.chat.NoticeShortcut
 import com.nousresearch.hermes.android.chat.Retry
 import com.nousresearch.hermes.android.chat.Rewind
 import com.nousresearch.hermes.android.chat.Entry
+import com.nousresearch.hermes.android.chat.Author
+import com.nousresearch.hermes.android.chat.QUICK
+import com.nousresearch.hermes.android.chat.Reaction
+import androidx.compose.ui.test.assertContentDescriptionEquals
+import androidx.compose.ui.test.assertIsNotSelected
+import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.hasClickAction
 import com.nousresearch.hermes.android.chat.ContextMeter
 import com.nousresearch.hermes.android.chat.Todo
 import com.nousresearch.hermes.android.chat.TodoList
@@ -1640,5 +1647,59 @@ class ChatScreenTest {
         compose.onNodeWithTag("recovery-card").assertDoesNotExist()  // today's look (D9)
         compose.onAllNodesWithText("429 Too Many Requests").assertCountEquals(1)
         compose.onNodeWithText("Retry").assertExists()
+    }
+
+    // The user's reactions (chat-14): React in an answer's action row, the six quick reactions, the chip that removes its own.
+
+    private val reacted = mutableListOf<Pair<Long, String?>>()
+
+    /** "hi" and its answer, whose row the core named, showing [reactions]. */
+    private fun stored(reactions: List<Reaction> = emptyList()) =
+        Chat(listOf(Entry.User("hi", 21, 0), Entry.Reply("Done.", TurnStatus.COMPLETE, stableId = 1, rowId = 22, reactions = reactions)))
+
+    @Test
+    fun anAnswerOffersTheSixQuickReactionsAndAPickIsHandedOver() {
+        compose.setContent { ChatScreen(stored(), onSend = {}, onReact = { id, e -> reacted += id to e }) }
+
+        compose.onNodeWithTag("react").assertContentDescriptionEquals(words(R.string.chat_react)).performClick()
+        QUICK.forEachIndexed { i, emoji ->
+            compose.onNodeWithTag("quick-reaction-$i").assertContentDescriptionEquals(emoji).assertIsNotSelected()
+        }
+        compose.onNodeWithTag("quick-reaction-1").performClick()
+
+        assertEquals(listOf(1L to "👍"), reacted)
+        compose.onNodeWithTag("quick-reaction-0").assertDoesNotExist()  // the row closed
+    }
+
+    @Test
+    fun theUsersReactionIsAChipUnderTheAnswerAndATapRemovesIt() {
+        compose.setContent { ChatScreen(stored(listOf(Reaction("❤️", Author.USER))), onSend = {}, onReact = { id, e -> reacted += id to e }) }
+
+        compose.onNodeWithTag("reaction-chip").assertContentDescriptionEquals("Remove ❤️ reaction").performClick()
+        assertEquals(listOf(1L to null), reacted)
+
+        compose.onNodeWithTag("react").performClick()
+        compose.onNodeWithTag("quick-reaction-0").assertIsSelected()
+    }
+
+    @Test
+    fun withReactionsOffThereIsNoReactButAStoredOneStillShows() {
+        compose.setContent { ChatScreen(stored(listOf(Reaction("❤️", Author.USER))), onSend = {}, onReact = null) }
+
+        compose.onNodeWithTag("react").assertDoesNotExist()
+        compose.onNodeWithTag("reaction-chip").assertExists().assert(hasClickAction().not())
+    }
+
+    @Test
+    fun anAnswerWithoutARowOrInAJobsRunOffersNoReact() {
+        var chat by mutableStateOf(Chat(listOf(Entry.User("hi", 21, 0), Entry.Reply("Done.", TurnStatus.COMPLETE, stableId = 1))))
+        compose.setContent { ChatScreen(chat, onSend = {}, onReact = { id, e -> reacted += id to e }) }
+
+        compose.onNodeWithTag("react").assertDoesNotExist()  // the core never named its row (D2)
+        chat = stored().copy(runOwned = true)
+        compose.onNodeWithText("Done.").assertExists()
+        compose.onNodeWithTag("react").assertDoesNotExist()  // a job's run the gateway still owns (D10)
+        chat = stored()
+        compose.onNodeWithTag("react").assertExists()  // the same answer, writable: React
     }
 }

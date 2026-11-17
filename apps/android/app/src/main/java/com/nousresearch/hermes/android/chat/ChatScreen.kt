@@ -36,6 +36,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -152,6 +153,9 @@ class ModelActions(val open: () -> Unit, val close: () -> Unit, val query: (Stri
  * [models] is this chat's model picker while it is open and [modelActions] what it does: a ready pill opens it; without
  * them the pill opens setup (models-08).
  * [now] is the wall clock a message's time is read against when a tap shows it (a test passes its own), as `SetupScreen`'s.
+ * [onReact] reacts to an answer as the user (chat-14): React in an answer's action row offers the six quick reactions,
+ * and the user's chip removes its own. Without it the switch is off: no React, and a stored reaction shows without a tap
+ * (D3).
  */
 @Composable
 fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifier, answers: PromptAnswers? = null,
@@ -163,7 +167,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
                onCheckReadiness: (() -> Unit)? = null, onOpenUrl: ((String) -> Unit)? = null, onDismissWall: () -> Unit = {},
                exportUi: ExportUi = ExportUi(), exportActions: ExportActions? = null, status: StatusUi? = null,
                statusActions: StatusActions? = null, models: PickerUi? = null, modelActions: ModelActions? = null,
-               now: () -> Long = System::currentTimeMillis) {
+               now: () -> Long = System::currentTimeMillis, onReact: ((stableId: Long, emoji: String?) -> Unit)? = null) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var picked by remember { mutableIntStateOf(0) }  // a conversation picked in the drawer is shown from its end (V5)
@@ -193,7 +197,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
                    exportActions?.export, exporting = exportUi.busy)
             if (exportUi.busy) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp).testTag("export-busy"))
             if (chat.entries.isEmpty() && !chat.running && chat.prompts.isEmpty()) Intro(Modifier.weight(1f))
-            else Transcript(chat, onRetry, onEdit, onCopy, recovery, picked, places?.gateway, now, Modifier.weight(1f))
+            else Transcript(chat, onRetry, onEdit, onCopy, recovery, picked, places?.gateway, now, onReact, Modifier.weight(1f))
             // The billing wall tops the stack above the composer: a blocker outranks the rest (D7); the composer stays usable.
             chat.wall?.let { BillingBanner(it, onOpenUrl, places?.setup, onDismissWall) }
             // One question at a time, the oldest first: the turn waits on it.
@@ -273,7 +277,7 @@ private fun Intro(modifier: Modifier) {
 @Composable
 private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, onEdit: ((Rewind) -> Unit)?, onCopy: ((String) -> Unit)?,
                        recovery: RecoveryRoutes?, picked: Int,
-                       onGateway: (() -> Unit)?, now: () -> Long, modifier: Modifier) {
+                       onGateway: (() -> Unit)?, now: () -> Long, onReact: ((Long, String?) -> Unit)?, modifier: Modifier) {
     val list = rememberLazyListState()
     val h24 = android.text.format.DateFormat.is24HourFormat(LocalContext.current)  // the phone's own clock setting (D3)
     // chat-17 (F9, DC-B16): whether the list follows its newest row belongs to the view, never to the conversation.
@@ -334,8 +338,10 @@ private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, onEdit: ((Rewind) -> 
                         }.orEmpty()
                         RecoveryUi(fixes, details = failure.details((entry as Entry.Reply).at, recovery.app))
                     }
+                    // Only an answer the core stored, outside a job's run (D2, D10), and only while the switch is on (D3).
+                    val react = onReact?.let { r -> chat.reactable(entry.stableId)?.let { { emoji: String? -> r(entry.stableId, emoji) } } }
                     EntryRow(entry, onCopy, edit, retry.takeIf { i == chat.entries.lastIndex && entry is Entry.Reply }, onGateway, now, h24,
-                             card)
+                             card, react)
                 }
             }
             retry?.takeIf { chat.entries.last() !is Entry.Reply }?.let { item { RetryAction(failed = true, it) } }
@@ -430,14 +436,19 @@ private fun RetryAction(failed: Boolean, onRetry: () -> Unit) {
 }
 
 /**
- * Under a finished answer: Copy (its Markdown, DC-B13) and Retry when it is the last (the desktop's action bar), then its
- * time when a tap showed it and how long its turn took when this app measured it (chat-15).
+ * Under a finished answer: Copy (its Markdown, DC-B13) and Retry when it is the last (the desktop's action bar), the
+ * user's reaction and React ([react], chat-14), then its time when a tap showed it and how long its turn took when this
+ * app measured it (chat-15).
  */
 @Composable
-private fun ReplyActions(reply: Entry.Reply, onCopy: ((String) -> Unit)?, onRetry: (() -> Unit)?, time: String?) {
+private fun ReplyActions(reply: Entry.Reply, onCopy: ((String) -> Unit)?, onRetry: (() -> Unit)?, time: String?,
+                         react: ((String?) -> Unit)?) {
     Row(Modifier.fillMaxWidth().testTag("reply-actions"), verticalAlignment = Alignment.CenterVertically) {
         onCopy?.let { CopyButton(reply.text, it, stringResource(R.string.chat_copy), Modifier.testTag("copy-reply")) }
         onRetry?.let { RetryAction(failed = reply.status != TurnStatus.COMPLETE, it) }
+        val mine = reply.reactions.firstOrNull { it.author == Author.USER }?.emoji
+        mine?.let { ReactionChip(it, onRemove = react?.let { r -> { r(null) } }) }
+        react?.let { ReactButton(mine, onPick = it) }
         Spacer(Modifier.weight(1f))
         time?.let {
             Text(it, Modifier.padding(horizontal = 4.dp).testTag("message-time"), style = MaterialTheme.typography.labelSmall,
@@ -484,6 +495,51 @@ internal fun CopyButton(text: String, onCopy: (String) -> Unit, label: String, m
     }
 }
 
+/**
+ * The user's own reaction under an answer, flat as Desktop's badge: no pill, no border, no fill. With [onRemove] a tap
+ * takes it back ("Remove {emoji} reaction"); without it (the switch off, D3) it is words only.
+ */
+@Composable
+private fun ReactionChip(emoji: String, onRemove: (() -> Unit)?) {
+    val label = stringResource(R.string.chat_reaction_remove, emoji)
+    val tap = onRemove?.let {
+        Modifier.clip(CircleShape).clickable(onClickLabel = label, onClick = it).semantics { contentDescription = label }
+            .heightIn(min = 48.dp).widthIn(min = 48.dp)
+    } ?: Modifier
+    Box(Modifier.testTag("reaction-chip").then(tap).padding(horizontal = 6.dp), contentAlignment = Alignment.Center) {
+        Text(emoji, style = MaterialTheme.typography.titleMedium)
+    }
+}
+
+/**
+ * React, built like Copy: one tap opens one row of the six quick reactions ([QUICK], DC-P16), the user's current one
+ * ([mine]) marked; a pick closes the row and goes to [onPick]. The core applies it: the marked one again retracts.
+ */
+@Composable
+private fun ReactButton(mine: String?, onPick: (String) -> Unit) {
+    var open by remember { mutableStateOf(false) }  // the row's open flag: transient UI
+    val label = stringResource(R.string.chat_react)
+    Box {
+        Row(Modifier.clip(CircleShape).clickable(onClickLabel = label) { open = true }.testTag("react").heightIn(min = 48.dp)
+                .padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(HermesIcons.MoodPlus, label, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            Row {  // 6 × 48 dp = 288 dp: one row at a phone's width
+                QUICK.forEachIndexed { i, emoji ->
+                    val selected = emoji == mine
+                    val tint = if (selected) Modifier.background(MaterialTheme.colorScheme.surfaceContainerHighest, CircleShape) else Modifier
+                    Box(Modifier.size(48.dp).then(tint).clip(CircleShape)
+                            .selectable(selected = selected, onClick = { open = false; onPick(emoji) })
+                            .testTag("quick-reaction-$i").semantics { contentDescription = emoji }, contentAlignment = Alignment.Center) {
+                        Text(emoji, style = MaterialTheme.typography.titleLarge)
+                    }
+                }
+            }
+        }
+    }
+}
+
 /** Back to the newest row, following it again (chat-17): Desktop's jump control, made round for a phone. */
 @Composable
 private fun JumpToLatest(modifier: Modifier, onClick: () -> Unit) {
@@ -498,7 +554,7 @@ private fun JumpToLatest(modifier: Modifier, onClick: () -> Unit) {
 
 @Composable
 private fun EntryRow(entry: Entry, onCopy: ((String) -> Unit)?, onEdit: (() -> Unit)?, retry: (() -> Unit)?, onGateway: (() -> Unit)?,
-                     now: () -> Long, h24: Boolean, card: RecoveryUi?) {
+                     now: () -> Long, h24: Boolean, card: RecoveryUi?, react: ((String?) -> Unit)?) {
     when (entry) {
         is Entry.User -> UserBubble(entry, onCopy, onEdit, now, h24)
         is Entry.Reply -> {
@@ -529,7 +585,8 @@ private fun EntryRow(entry: Entry, onCopy: ((String) -> Unit)?, onEdit: (() -> U
                 val copy = onCopy?.takeIf { entry.text.isNotBlank() }
                 val time = entry.at?.let { timeText(it, timeShown, now, h24) }
                 val again = retry.takeIf { card == null }  // the card owns Retry: it never shows twice
-                if (copy != null || again != null || entry.tookMs != null || time != null) ReplyActions(entry, copy, again, time)
+                if (copy != null || again != null || entry.tookMs != null || time != null || react != null || entry.reactions.isNotEmpty())
+                    ReplyActions(entry, copy, again, time, react)
             }
         }
         // Commentary reads like the agent's words, without the reply's reasoning fold (and, later, its actions).

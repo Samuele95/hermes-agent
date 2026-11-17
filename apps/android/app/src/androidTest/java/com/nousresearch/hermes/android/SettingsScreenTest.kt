@@ -68,10 +68,11 @@ class SettingsScreenTest {
     private var providerConfirms = 0
     private var skillsOpened = 0
     private val copies = mutableListOf<String>()
+    private val reactionFlips = mutableListOf<Boolean>()
     private val actions = SettingsActions(approvals = { chosen += it }, personality = { personalities += it }, edit = { edits += it },
                                           askRemove = { asks += it }, confirmRemove = { confirms++ }, restartGateway = { restarts++ },
                                           askRemoveProvider = { providerAsks += it }, confirmRemoveProvider = { providerConfirms++ },
-                                          openSkills = { skillsOpened++ }, copy = { copies += it })
+                                          openSkills = { skillsOpened++ }, copy = { copies += it }, reactions = { reactionFlips += it })
 
     private fun show(state: SettingsUi) = compose.setContent { SettingsScreen(state, actions, onClose = {}) }
 
@@ -464,6 +465,24 @@ class SettingsScreenTest {
         assertEquals(personality, again.personality)
         assertNotNull(again.config)
         assertEquals(config, again.config)
+    }
+
+    @Test
+    fun theMessageReactionsSwitchShowsTheCoresStateAndHandsOverAFlip() {
+        var state by mutableStateOf(SettingsUi(reactions = false))
+        compose.setContent { SettingsScreen(state, actions, onClose = {}) }
+
+        compose.onNodeWithTag("reactions-switch").performScrollTo().assertIsOff().performClick()
+        assertEquals(listOf(true), reactionFlips)
+
+        state = SettingsUi(reactions = true)
+        compose.onNodeWithTag("reactions-switch").performScrollTo().assertIsOn()
+
+        state = SettingsUi(reactions = true, busy = true)
+        compose.onNodeWithTag("reactions-switch").performScrollTo().assertIsNotEnabled()
+
+        state = SettingsUi(reactions = null)
+        compose.onNodeWithTag("reactions-switch").assertDoesNotExist()
     }
 
     private companion object {
