@@ -189,6 +189,7 @@ class MainActivity : ComponentActivity() {
                                                                        export = { id -> app.export { export(id) } }),
                                        context = context, contextActions = contextActions, queue = queue, queueActions = queueActions,
                                        onOfferTaken = state.chat::offerTaken, onOpenUrl = ::openInBrowser, onDismissWall = state.chat::dismissWall,
+                                       onSlash = state.chat::slashItems, onPrefillTaken = state.chat::prefillTaken,
                                        readiness = readiness, onCheckReadiness = { app.setup { checkReadiness() } },
                                        exportUi = exported,
                                        exportActions = ExportActions(export = { app.export { export(null) } }, dismiss = state.pages.export::dismiss),

@@ -82,6 +82,11 @@
     <string name="chat_edit_message">Edit message</string>
     <string name="chat_react">React</string>
     <string name="chat_reaction_remove">Remove %1$s reaction</string>
+    <string name="chat_slash_menu">Slash commands</string>
+    <string name="chat_slash_commands">Commands</string>
+    <string name="chat_slash_skills">Skills</string>
+    <string name="chat_slash_options">Options</string>
+    <string name="chat_slash_none">No matching commands</string>
     <string name="chat_send_edited">Send edited message</string>
     <string name="chat_edit_cancel">Cancel</string>
     <string name="chat_restore_title">Restore to this checkpoint?</string>

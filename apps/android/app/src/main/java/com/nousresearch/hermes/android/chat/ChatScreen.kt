@@ -107,6 +107,7 @@ import com.nousresearch.hermes.android.ui.SecondaryButton
 import com.nousresearch.hermes.android.ui.Wordmark
 import com.nousresearch.hermes.bridge.protocol.TurnStatus
 import kotlinx.coroutines.delay
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
@@ -156,6 +157,8 @@ class ModelActions(val open: () -> Unit, val close: () -> Unit, val query: (Stri
  * [onReact] reacts to an answer as the user (chat-14): React in an answer's action row offers the six quick reactions,
  * and the user's chip removes its own. Without it the switch is off: no React, and a stored reaction shows without a tap
  * (D3).
+ * [onSlash] lists the slash menu for a draft that starts with `/` (chat-20); without it there is no menu. [chat]'s
+ * prefill (`/undo`'s words) replaces the draft once and goes back to [onPrefillTaken].
  */
 @Composable
 fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifier, answers: PromptAnswers? = null,
@@ -167,7 +170,8 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
                onCheckReadiness: (() -> Unit)? = null, onOpenUrl: ((String) -> Unit)? = null, onDismissWall: () -> Unit = {},
                exportUi: ExportUi = ExportUi(), exportActions: ExportActions? = null, status: StatusUi? = null,
                statusActions: StatusActions? = null, models: PickerUi? = null, modelActions: ModelActions? = null,
-               now: () -> Long = System::currentTimeMillis, onReact: ((stableId: Long, emoji: String?) -> Unit)? = null) {
+               now: () -> Long = System::currentTimeMillis, onReact: ((stableId: Long, emoji: String?) -> Unit)? = null,
+               onSlash: (suspend (draft: String) -> List<SlashItem>)? = null, onPrefillTaken: (String) -> Unit = {}) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var picked by remember { mutableIntStateOf(0) }  // a conversation picked in the drawer is shown from its end (V5)
@@ -207,7 +211,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
             // The messages that wait for a turn's end, in the order they go out (chat-19).
             queueActions?.takeIf { queue.items.isNotEmpty() }?.let { QueuePanel(queue, chat.busy, chat.steerMode != null, it) }
             Composer(chat, onSend, onStop, places?.setup, contextActions?.open, queueActions?.add, chat.offer, onOfferTaken, places?.newChat,
-                     readiness, onCheckReadiness, modelActions?.open)
+                     readiness, onCheckReadiness, modelActions?.open, onSlash, onPrefillTaken)
             context?.let { ContextSheet(it, running = chat.busy, compressing = chat.compressing, onCompress = contextActions?.compress ?: {},
                                           onClose = contextActions?.close ?: {}) }
             status?.let { StatusSheet(it, onClose = statusActions?.close ?: {}) }
@@ -739,6 +743,46 @@ private fun Problem(text: String, modifier: Modifier = Modifier) {
 }
 
 /**
+ * The slash menu above the composer's field (chat-20): sections Commands, Skills and Options, a header only over rows
+ * that exist; a tap on a row hands it to [onPick], which fills the line and sends nothing. No row: "No matching commands".
+ * It takes at most 264 dp and only the room [modifier] leaves it: with the keyboard up, the field and Send keep theirs.
+ */
+@Composable
+private fun SlashMenu(items: List<SlashItem>, modifier: Modifier, onPick: (SlashItem) -> Unit) {
+    val words = stringResource(R.string.chat_slash_menu)
+    Column(modifier.fillMaxWidth().testTag("slash-menu").semantics { contentDescription = words }) {
+        Column(Modifier.weight(1f, fill = false).fillMaxWidth().heightIn(max = 264.dp).verticalScroll(rememberScrollState())
+                   .padding(top = 6.dp)) {
+            if (items.isEmpty()) {
+                Text(stringResource(R.string.chat_slash_none), Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("slash-empty")
+                         .padding(horizontal = 16.dp, vertical = 14.dp),
+                     style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            listOf(Triple(SlashKind.COMMAND, R.string.chat_slash_commands, "slash-section-commands"),
+                   Triple(SlashKind.SKILL, R.string.chat_slash_skills, "slash-section-skills"),
+                   Triple(SlashKind.OPTION, R.string.chat_slash_options, "slash-section-options")).forEach { (kind, header, tag) ->
+                val rows = items.filter { it.kind == kind }
+                if (rows.isEmpty()) return@forEach
+                Text(stringResource(header), Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 2.dp).testTag(tag),
+                     style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                rows.forEach { item ->
+                    val rowTag = if (kind == SlashKind.OPTION) "slash-option-${item.name}" else "slash-item-${item.name.removePrefix("/")}"
+                    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { onPick(item) }.testTag(rowTag).padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Text(item.name, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface, maxLines = 1)
+                        if (item.description.isNotBlank()) {
+                            Text(item.description, Modifier.weight(1f).padding(start = 12.dp), style = MaterialTheme.typography.bodySmall,
+                                 color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
+        }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Hermes.colors.stroke))
+    }
+}
+
+/**
  * The desktop's composer: a rounded field, the model it will ask beneath, and Send — or Stop while a turn runs or is
  * about to; Send waits while the session compresses, or while it is a job's run the gateway still runs. While a turn
  * runs, Send stands beside Stop, named by the core's busy mode (redirect or steer the run; the field says the same),
@@ -753,25 +797,60 @@ private fun Problem(text: String, modifier: Modifier = Modifier) {
 @Composable
 private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, onSetup: (() -> Unit)?, onContext: (() -> Unit)?,
                      onQueue: ((String) -> Unit)?, offer: IncomingText?, onOfferTaken: (IncomingText) -> Unit, onNewChat: (() -> Unit)?,
-                     readiness: Readiness?, onCheckReadiness: (() -> Unit)?, onModels: (() -> Unit)?) {
-    var draft by rememberSaveable { mutableStateOf("") }
+                     readiness: Readiness?, onCheckReadiness: (() -> Unit)?, onModels: (() -> Unit)?,
+                     onSlash: (suspend (String) -> List<SlashItem>)?, onPrefillTaken: (String) -> Unit) {
+    // A value, not a string: words set from outside (a pick, a prefill, an offer) leave the cursor at their end (D8).
+    var draft by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
     var shared by rememberSaveable { mutableStateOf(false) }  // the draft holds words another app shared
     var cut by rememberSaveable { mutableStateOf(false) }
     // Keyed on the value: once per offer; the cleared null runs nothing.
     LaunchedEffect(offer) {
         offer?.let {
-            draft = if (draft.isBlank()) it.draft else draft.trimEnd() + "\n\n" + it.draft
+            val joined = if (draft.text.isBlank()) it.draft else draft.text.trimEnd() + "\n\n" + it.draft
+            draft = TextFieldValue(joined, TextRange(joined.length))
             shared = true
             cut = it.cut
             onOfferTaken(it)
         }
     }
+    // The core's words for the composer (`/undo`), taken once, as the offer is.
+    LaunchedEffect(chat.prefill) {
+        chat.prefill?.let {
+            draft = TextFieldValue(it, TextRange(it.length))
+            shared = false
+            onPrefillTaken(it)
+        }
+    }
+    // The slash menu (chat-20): only a leading `/` opens it; typing narrows it after a pause, so only the last keystroke
+    // asks the core (DC-P15); a failed read shows none. Back closes it until the draft opens it again.
+    var menu by remember { mutableStateOf<List<SlashItem>?>(null) }
+    var dismissed by remember { mutableStateOf(false) }
+    LaunchedEffect(draft.text, onSlash) {
+        val ask = onSlash
+        if (ask == null || !opensMenu(draft.text)) {
+            menu = null
+            dismissed = false
+            return@LaunchedEffect
+        }
+        if (draft.text != "/") delay(SLASH_DEBOUNCE_MS)
+        else dismissed = false
+        menu = try {
+            ask(draft.text)
+        } catch (failed: Exception) {
+            if (failed is CancellationException) throw failed
+            null
+        }
+    }
+    val listed = menu
+    val shown = listed != null && !dismissed && (listed.isNotEmpty() || ' ' !in draft.text)
+    BackHandler(enabled = shown) { dismissed = true }
     val shape = RoundedCornerShape(22.dp)
     Column(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 10.dp)
                .background(MaterialTheme.colorScheme.surfaceContainer, shape).border(1.dp, Hermes.colors.stroke, shape)) {
         // A job's run the gateway still runs is read here, not written (/architect #4): the draft stays, Send waits.
         // Another app's words are a draft, never a prompt: the user reads them before anything goes out (DC-M7).
-        if (shared && draft.isNotBlank()) {
+        if (shown && listed != null) SlashMenu(listed, Modifier.weight(1f, fill = false)) { draft = TextFieldValue(it.fill, TextRange(it.fill.length)) }
+        if (shared && draft.text.isNotBlank()) {
             Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 4.dp).testTag("offer"), verticalAlignment = Alignment.CenterVertically) {
                 Text(stringResource(if (cut) R.string.offer_cut else R.string.offer_shared), Modifier.weight(1f),
                      style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -823,13 +902,13 @@ private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, o
             chat.meter?.let { ContextChip(it, onContext) }
             if (chat.busy) {
                 if (onQueue != null && chat.queueable) {
-                    FilledTonalIconButton({ onQueue(draft.trim()); draft = ""; shared = false }, Modifier.size(36.dp).testTag("queue"), enabled = draft.isNotBlank()) {
+                    FilledTonalIconButton({ onQueue(draft.text.trim()); draft = TextFieldValue(""); shared = false }, Modifier.size(36.dp).testTag("queue"), enabled = draft.text.isNotBlank()) {
                         Icon(HermesIcons.Queue, stringResource(R.string.chat_queue), Modifier.size(18.dp))
                     }
                     Spacer(Modifier.width(8.dp))
                 }
                 chat.busySend?.let { mode ->
-                    FilledIconButton({ onSend(draft.trim()); draft = ""; shared = false }, Modifier.size(36.dp).testTag("send"), enabled = draft.isNotBlank()) {
+                    FilledIconButton({ onSend(draft.text.trim()); draft = TextFieldValue(""); shared = false }, Modifier.size(36.dp).testTag("send"), enabled = draft.text.isNotBlank()) {
                         Icon(HermesIcons.Send, stringResource(label(mode)), Modifier.size(18.dp))
                     }
                     Spacer(Modifier.width(8.dp))
@@ -840,7 +919,7 @@ private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, o
                     Icon(HermesIcons.Stop, stringResource(R.string.chat_stop), Modifier.size(14.dp))
                 }
             } else {
-                FilledIconButton({ onSend(draft.trim()); draft = ""; shared = false }, Modifier.size(36.dp).testTag("send"), enabled = draft.isNotBlank() && !chat.compressing && !chat.runOwned) {
+                FilledIconButton({ onSend(draft.text.trim()); draft = TextFieldValue(""); shared = false }, Modifier.size(36.dp).testTag("send"), enabled = draft.text.isNotBlank() && !chat.compressing && !chat.runOwned) {
                     Icon(HermesIcons.Send, stringResource(R.string.chat_send), Modifier.size(18.dp))
                 }
             }

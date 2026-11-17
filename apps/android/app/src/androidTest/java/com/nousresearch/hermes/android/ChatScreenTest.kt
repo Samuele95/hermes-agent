@@ -80,6 +80,11 @@ import com.nousresearch.hermes.android.chat.ContextMeter
 import com.nousresearch.hermes.android.chat.Todo
 import com.nousresearch.hermes.android.chat.TodoList
 import com.nousresearch.hermes.android.chat.TodoStatus
+import com.nousresearch.hermes.android.chat.Runner
+import com.nousresearch.hermes.android.chat.SlashItem
+import com.nousresearch.hermes.android.chat.SlashKind
+import com.nousresearch.hermes.android.chat.SLASH_DEBOUNCE_MS
+import androidx.compose.ui.text.TextRange
 import com.nousresearch.hermes.bridge.protocol.TurnStatus
 import com.nousresearch.hermes.bridge.CoreEvent
 import kotlinx.serialization.json.Json
@@ -1701,5 +1706,84 @@ class ChatScreenTest {
         compose.onNodeWithTag("react").assertDoesNotExist()  // a job's run the gateway still owns (D10)
         chat = stored()
         compose.onNodeWithTag("react").assertExists()  // the same answer, writable: React
+    }
+
+    // The slash menu (chat-20, bet 9): a leading `/` opens it over built values; a pick fills the line, nothing is sent.
+
+    private fun command(name: String, runs: Runner = Runner.DISPATCH) = SlashItem(name, "about $name", SlashKind.COMMAND, runs, "$name ")
+    private fun skill(name: String) = SlashItem(name, "about $name", SlashKind.SKILL, Runner.DISPATCH, "$name ")
+
+    @Test
+    fun aSlashOpensTheMenuAndAPickFillsTheLine() {
+        val asked = mutableListOf<String>()
+        val sent = mutableListOf<String>()
+        compose.setContent {
+            ChatScreen(Chat(), onSend = { sent += it }, onSlash = { draft ->
+                asked += draft
+                if (draft == "/") listOf(command("/new", Runner.APP), skill("/github")) else emptyList()
+            })
+        }
+
+        compose.onNodeWithTag("draft").performTextInput("/")
+
+        compose.onNodeWithTag("slash-menu").assertIsDisplayed()
+        compose.onNodeWithTag("slash-section-commands").assertExists()
+        compose.onNodeWithTag("slash-section-skills").assertExists()
+        compose.onNodeWithTag("slash-item-new").assertExists()
+
+        compose.onNodeWithTag("slash-item-github").performClick()
+        compose.mainClock.advanceTimeBy(SLASH_DEBOUNCE_MS + 50)  // the pause runs on the test's clock
+
+        compose.onNodeWithTag("draft").assertTextEquals("/github ")
+        compose.onNodeWithTag("draft").assert(SemanticsMatcher.expectValue(SemanticsProperties.TextSelectionRange, TextRange(8)))  // D8
+        compose.runOnIdle { assertEquals("/github ", asked.last()) }
+        compose.onNodeWithTag("slash-menu").assertDoesNotExist()  // no option after a space: no menu
+        assertEquals("a pick sends nothing", emptyList<String>(), sent)
+    }
+
+    @Test
+    fun typingNarrowsAfterAPauseAndOnlyALeadingSlashOpensTheMenu() {
+        val asked = mutableListOf<String>()
+        compose.setContent { ChatScreen(Chat(), onSend = {}, onSlash = { draft -> asked += draft; listOf(skill("/github")) }) }
+
+        compose.onNodeWithTag("draft").performTextInput("hi /git")
+        compose.mainClock.advanceTimeBy(SLASH_DEBOUNCE_MS + 50)  // past the pause: a menu would have asked by now
+        compose.onNodeWithTag("slash-menu").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(emptyList<String>(), asked) }
+
+        compose.onNodeWithTag("draft").performTextClearance()
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithTag("draft").performTextInput("/gi")
+        compose.mainClock.advanceTimeBy(100)
+        assertFalse("not before the pause (DC-P15)", compose.runOnUiThread { "/gi" in asked })
+        compose.mainClock.advanceTimeBy(100)
+        assertEquals("/gi", compose.runOnUiThread { asked.last() })
+        compose.mainClock.autoAdvance = true
+    }
+
+    @Test
+    fun anOptionPickFillsTheArgumentAndNoMatchSaysSo() {
+        val option = SlashItem("pending", "list staged writes", SlashKind.OPTION, Runner.DISPATCH, "/memory pending")
+        compose.setContent { ChatScreen(Chat(), onSend = {}, onSlash = { draft -> if (draft == "/memory pe") listOf(option) else emptyList() }) }
+
+        compose.onNodeWithTag("draft").performTextInput("/memory pe")
+        compose.mainClock.advanceTimeBy(SLASH_DEBOUNCE_MS + 50)
+        compose.onNodeWithTag("slash-section-options").assertExists()
+        compose.onNodeWithTag("slash-option-pending").performClick()
+        compose.onNodeWithTag("draft").assertTextEquals("/memory pending")
+
+        compose.onNodeWithTag("draft").performTextClearance()
+        compose.onNodeWithTag("draft").performTextInput("/zz")
+        compose.mainClock.advanceTimeBy(SLASH_DEBOUNCE_MS + 50)
+        compose.onNodeWithTag("slash-empty").assert(hasText(words(R.string.chat_slash_none)))
+    }
+
+    @Test
+    fun aPrefillReplacesTheDraftOnce() {
+        val taken = mutableListOf<String>()
+        compose.setContent { ChatScreen(Chat(prefill = "earlier words"), onSend = {}, onPrefillTaken = { taken += it }) }
+
+        compose.onNodeWithTag("draft").assertTextEquals("earlier words")
+        compose.runOnIdle { assertEquals(listOf("earlier words"), taken) }
     }
 }
