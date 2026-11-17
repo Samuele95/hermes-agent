@@ -66,6 +66,7 @@ object Methods {
     val SKILLS_MANAGE = Method("skills.manage", SkillsManageParams.serializer(), SkillsManageResult.serializer())
     val SKILLS_RELOAD = Method("skills.reload", SkillsReloadParams.serializer(), SkillsReloadResult.serializer())
     val TOOLS_CONFIGURE = Method("tools.configure", ToolsConfigureParams.serializer(), ToolsConfigureResult.serializer())
+    val TOOLS_LIST = Method("tools.list", _SessionScoped.serializer(), ToolsetsListResult.serializer())
     val TOOLSETS_LIST = Method("toolsets.list", _SessionScoped.serializer(), ToolsetsListResult.serializer())
 }
 

@@ -1,5 +1,7 @@
 package com.nousresearch.hermes.bridge.protocol
 
+import com.nousresearch.hermes.bridge.contract.ToolsetLabel
+import com.nousresearch.hermes.bridge.contract.ToolsetsKeysReply
 import com.nousresearch.hermes.bridge.wire
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
@@ -354,6 +356,25 @@ class ProtocolTest {
         assertEquals(false, switched.reset)
         assertNull(switched.info)
         assertEquals(listOf("browser"), switched.changed)
+    }
+
+    @Test
+    fun theToolsListNamesEachToolsetsToolsAndNoSession() {
+        assertEquals("tools.list", Methods.TOOLS_LIST.name)
+        assertEquals("{}", wire.encodeToString(Methods.TOOLS_LIST.params, _SessionScoped()))
+
+        val row = wire.decodeFromString(
+            Methods.TOOLS_LIST.result,
+            """{"toolsets":[{"name":"web","description":"Web search","tool_count":2,"enabled":true,"tools":["web_extract","web_search"]}]}""",
+        ).toolsets.single()
+        assertEquals(listOf("web_extract", "web_search"), row.tools)
+
+        val keys = wire.decodeFromString(
+            ToolsetsKeysReply.serializer(),
+            """{"needs_keys":["vision"],"switchable":[{"name":"web","label":"Web Search & Scraping"}]}""",
+        )
+        assertEquals(listOf("vision"), keys.needsKeys)
+        assertEquals(listOf(ToolsetLabel(name = "web", label = "Web Search & Scraping")), keys.switchable)
     }
 
     @Test
