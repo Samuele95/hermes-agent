@@ -47,6 +47,21 @@ class ToolsetsTest {
     }
 
     @Test
+    fun toolsFromToolsListFillEveryRowAndItsCount() {
+        val answer = json.decodeFromString(ToolsetsListResult.serializer(), ToolsetsControlTest.TOOLS).toolsets
+        val lacking = answer.filter { it.name != "kanban" }
+
+        val filled = listOf(browser, kanban, web).withTools(lacking)
+
+        assertEquals(listOf("browser_click", "browser_navigate", "browser_snapshot"), filled[0].tools)
+        assertEquals(3L, filled[0].toolCount)  // tools.list's count replaces the list's
+        assertEquals(kanban, filled[1])  // a row the answer lacks keeps tools = null
+        assertEquals(web.copy(tools = listOf("web_extract", "web_search")), filled[2])
+        assertEquals(listOf(14L), listOf(browser, kanban, web).withTools(answer).filter { it.name == "kanban" }.map { it.toolCount })
+        assertEquals(listOf("kanban_add"), listOf(kanban).withTools(answer).single().tools)
+    }
+
+    @Test
     fun aSwitchShowsTheCoresEnabledSet() {
         val switched = listOf(browser, kanban, web).switched(listOf("web", "kanban"))
 

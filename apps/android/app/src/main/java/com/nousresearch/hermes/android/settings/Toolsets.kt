@@ -48,6 +48,15 @@ fun List<ToolsetRow>.switched(enabled: List<String>): List<ToolsetRow> {
 }
 
 /**
+ * Every row's [ToolsetRow.tools] and [ToolsetRow.toolCount] from the core's `tools.list` [rows] of the same name; a row
+ * the answer lacks keeps `tools = null`. Pure.
+ */
+fun List<ToolsetRow>.withTools(rows: List<WireToolsetRow>): List<ToolsetRow> {
+    val byName = rows.associateBy { it.name }
+    return map { row -> byName[row.name]?.let { row.copy(tools = it.tools.orEmpty(), toolCount = it.toolCount) } ?: row }
+}
+
+/**
  * The Toolsets page: [rows] the core's last answer, null while read or when it could not be read; [query] the search
  * typed, which only narrows what is shown; [open] the toolset whose tools are shown; [busy] while one call runs, every
  * switch off meanwhile; [error] the core's words. The core owns every toolset's state, `platform_toolsets.cli` (§2.5);
@@ -58,3 +67,6 @@ data class ToolsetsUi(val rows: List<ToolsetRow>? = null, val query: String = ""
 
 /** The rows the page shows: the core's, narrowed by the [ToolsetsUi.query]; null while none are read. Pure. */
 fun ToolsetsUi.shown(): List<ToolsetRow>? = rows?.filter { it.matches(query) }
+
+/** The toolset whose tools are shown: the listed row named [ToolsetsUi.open], if any. */
+fun ToolsetsUi.opened(): ToolsetRow? = open?.let { name -> rows?.find { it.name == name } }

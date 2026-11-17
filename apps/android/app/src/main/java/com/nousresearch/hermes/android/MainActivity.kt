@@ -84,6 +84,7 @@ import com.nousresearch.hermes.android.settings.SettingsUi
 import com.nousresearch.hermes.android.settings.SkillWriteActions
 import com.nousresearch.hermes.android.settings.SkillsActions
 import com.nousresearch.hermes.android.settings.SkillsScreen
+import com.nousresearch.hermes.android.settings.ToolsetActions
 import com.nousresearch.hermes.android.settings.ToolsetsActions
 import com.nousresearch.hermes.android.settings.ToolsetsScreen
 import com.nousresearch.hermes.android.setup.SetupScreen
@@ -163,7 +164,14 @@ class MainActivity : ComponentActivity() {
                             toolsets?.let {  // above Settings, which stays open beneath: Back returns to it
                                 ToolsetsScreen(it, ToolsetsActions(query = state.pages.toolsets::query,
                                                                    set = { names, on -> app.toolsets { set(names, on) } },
-                                                                   close = state.pages.toolsets::close))
+                                                                   close = state.pages.toolsets::close,
+                                                                   toolset = ToolsetActions(show = { n -> app.toolsets { show(n) } },
+                                                                                            back = state.pages.toolsets::back,
+                                                                                            keys = {
+                                                                                                state.pages.toolsets.close()
+                                                                                                state.pages.settings.close()
+                                                                                                app.setup { open() }
+                                                                                            })))
                                 return@Surface
                             }
                             val settings by state.pages.settings.state.collectAsState()

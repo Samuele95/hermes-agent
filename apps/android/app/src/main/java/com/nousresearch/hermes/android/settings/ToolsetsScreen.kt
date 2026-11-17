@@ -24,12 +24,22 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nousresearch.hermes.android.R
+import com.nousresearch.hermes.android.ui.CodeFont
 import com.nousresearch.hermes.android.ui.Hermes
 import com.nousresearch.hermes.android.ui.Hint
 import com.nousresearch.hermes.android.ui.Page
+import com.nousresearch.hermes.android.ui.SecondaryButton
+import com.nousresearch.hermes.android.ui.SectionCaption
 
-/** What the page hands over (capabilities-10): [query] narrows the list, [set] turns toolsets on or off, [close] leaves. */
-class ToolsetsActions(val query: (String) -> Unit, val set: (names: List<String>, on: Boolean) -> Unit, val close: () -> Unit)
+/**
+ * What the page hands over (capabilities-10): [query] narrows the list, [set] turns toolsets on or off, [close] leaves;
+ * with [toolset], a row's text opens that toolset's tools.
+ */
+class ToolsetsActions(val query: (String) -> Unit, val set: (names: List<String>, on: Boolean) -> Unit, val close: () -> Unit,
+                      val toolset: ToolsetActions? = null)
+
+/** One toolset's page: [show] opens it, [back] returns to the list; with [keys], provider setup opens (where keys are entered, D8). */
+class ToolsetActions(val show: (String) -> Unit, val back: () -> Unit, val keys: (() -> Unit)? = null)
 
 /**
  * The toolsets the phone can switch (batch-4 bet 12, F2): each with its title, description, "N tools", "Needs keys"
@@ -38,6 +48,12 @@ class ToolsetsActions(val query: (String) -> Unit, val set: (names: List<String>
  */
 @Composable
 fun ToolsetsScreen(state: ToolsetsUi, actions: ToolsetsActions, modifier: Modifier = Modifier) {
+    val toolset = actions.toolset
+    val opened = state.opened()
+    if (toolset != null && opened != null) {
+        ToolsetPage(state, opened, toolset, modifier)
+        return
+    }
     BackHandler(onBack = actions.close)
     Page(stringResource(R.string.toolsets_title), modifier.testTag("toolsets"), onBack = actions.close, backTag = "toolsets-close",
          busy = state.busy) {
@@ -53,7 +69,9 @@ fun ToolsetsScreen(state: ToolsetsUi, actions: ToolsetsActions, modifier: Modifi
                 shown.isEmpty() -> Hint(stringResource(R.string.skills_no_match, state.query.trim()),
                                         Modifier.padding(top = 12.dp).testTag("toolsets-no-match"))
                 else -> Column(Modifier.padding(top = 8.dp)) {
-                    shown.forEach { ToolsetLine(it, enabled = !state.busy, onSet = actions.set, onOpen = null) }
+                    shown.forEach { row ->
+                        ToolsetLine(row, enabled = !state.busy, onSet = actions.set, onOpen = toolset?.let { { it.show(row.name) } })
+                    }
                 }
             }
         }
@@ -82,4 +100,42 @@ private fun ToolsetLine(row: ToolsetRow, enabled: Boolean, onSet: (List<String>,
                Modifier.testTag("toolset-switch-${row.name}").semantics { contentDescription = switchLabel }, enabled = enabled)
     }
     HorizontalDivider(color = Hermes.colors.stroke)
+}
+
+/**
+ * One toolset, open (capabilities-10): its description, "Needs keys" and where keys go when the core lacks one (provider
+ * setup, the phone's only place keys are entered, into its keystore; this page never asks for, shows or stores a key),
+ * then its tools as `tools.list` named them, and the new-chats note. Back (the arrow and the system's) returns to the
+ * list; not while the tools are read.
+ */
+@Composable
+private fun ToolsetPage(state: ToolsetsUi, row: ToolsetRow, actions: ToolsetActions, modifier: Modifier) {
+    BackHandler(enabled = !state.busy, onBack = actions.back)
+    Page(row.label, modifier.testTag("toolset-page"), onBack = actions.back, backTag = "toolset-close", backEnabled = !state.busy,
+         busy = state.busy) {
+        Hint(row.description.takeIf { it.isNotBlank() } ?: stringResource(R.string.toolsets_no_description), Modifier.testTag("toolset-description"))
+        if (row.needsKeys) {
+            Row(Modifier.padding(top = 10.dp)) {
+                Pill(stringResource(R.string.toolsets_needs_keys), "toolset-needs-keys", MaterialTheme.colorScheme.error)
+            }
+            Hint(stringResource(R.string.toolsets_keys_explain), Modifier.padding(top = 8.dp).testTag("toolset-keys-explain"))
+            actions.keys?.let { keys ->
+                SecondaryButton(stringResource(R.string.toolsets_keys_open), keys, Modifier.padding(top = 8.dp).testTag("toolset-keys-open"),
+                                enabled = !state.busy)
+            }
+        }
+        state.error?.let { Hint(it, Modifier.padding(top = 12.dp).testTag("toolsets-error"), color = MaterialTheme.colorScheme.error) }
+        row.tools?.let { tools ->
+            SectionCaption(stringResource(R.string.toolsets_tools_caption))
+            Text(pluralStringResource(R.plurals.toolsets_count, row.toolCount.toInt(), row.toolCount.toInt()),
+                 style = MaterialTheme.typography.labelSmall, color = Hermes.colors.textTertiary)
+            Column(Modifier.padding(top = 6.dp).testTag("toolset-tools")) {
+                tools.forEach { tool ->
+                    Text(tool, Modifier.padding(vertical = 3.dp).testTag("toolset-tool-$tool"),
+                         style = MaterialTheme.typography.bodyMedium.copy(fontFamily = CodeFont))
+                }
+            }
+        }
+        Hint(stringResource(R.string.settings_new_chats), Modifier.padding(top = 16.dp).testTag("toolset-new-chats"))
+    }
 }

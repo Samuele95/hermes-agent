@@ -403,6 +403,10 @@
     <string name="toolsets_turn_on">Turn %1$s toolset on</string>
     <string name="toolsets_turn_off">Turn %1$s toolset off</string>
     <string name="toolsets_none">No toolsets found</string>
+    <string name="toolsets_no_description">No description.</string>
+    <string name="toolsets_tools_caption">Tools in this toolset</string>
+    <string name="toolsets_keys_explain">Hermes doesn\'t have a key this toolset needs. Keys are added with a provider in Setup and kept in the phone\'s keystore.</string>
+    <string name="toolsets_keys_open">Set up a provider</string>
     <string name="skills_menu">Skills options</string>
     <string name="skills_refresh">Refresh skills</string>
     <string name="skills_learned">Learned</string>

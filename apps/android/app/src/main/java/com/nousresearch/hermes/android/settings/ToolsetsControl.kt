@@ -28,6 +28,7 @@ private fun ToolsetsUi.writing(): ToolsetsUi? = if (busy) null else copy(busy = 
  * that chat's agent and empties its history, so this class holds, reads and sends no session, and both lists are the
  * config's, the set a switch changes (D5). A switch shows the core's re-read set, never the ask (D6). One call at a
  * time: a tap while one runs sends nothing (EJ-78). Changes reach new chats only (§8); the open chat keeps its tools.
+ * A toolset's tools are read through `tools.list`, since `toolsets.list` names none (P1 D3), also without a session.
  */
 class ToolsetsControl(private val core: CoreGateway, private val bridge: AppBridge) {
     private val screen = MutableStateFlow<ToolsetsUi?>(null)
@@ -77,6 +78,29 @@ class ToolsetsControl(private val core: CoreGateway, private val bridge: AppBrid
             val refused = answer.unknown.firstOrNull()?.let { name -> rows.find { it.name == name }?.label ?: name }
             ({ it.copy(rows = it.rows?.switched(answer.enabledToolsets), error = refused?.let { label -> "“$label” can't be switched here." }) })
         }
+    }
+
+    /**
+     * Opens the listed toolset [name] at once, on an idle page with nothing open. Its tools come from `tools.list`,
+     * because `toolsets.list` names none (P1 D3), read without a session id (D5) once per page open for every toolset:
+     * a later tap shows them at once. Tools the core cannot list show its words, stay unread, and the next tap reads
+     * again.
+     */
+    suspend fun show(name: String) {
+        val opens: (ToolsetsUi) -> Boolean = { ui -> !ui.busy && ui.open == null && ui.rows.orEmpty().any { it.name == name } }
+        val before = screen.getAndUpdate { ui ->
+            ui?.takeIf(opens)?.copy(open = name, error = null)?.let { if (it.opened()?.tools == null) it.copy(busy = true) else it } ?: ui
+        }
+        if (before == null || !opens(before) || before.copy(open = name).opened()?.tools != null) return
+        finish {
+            val tools = core.call(Methods.TOOLS_LIST, _SessionScoped()).toolsets
+            ({ it.copy(rows = it.rows?.withTools(tools)) })
+        }
+    }
+
+    /** Back from a toolset's tools to the list; nothing while a read runs. */
+    fun back() {
+        screen.update { if (it == null || it.busy) it else it.copy(open = null, error = null) }
     }
 
     /** Admits one call into an open, idle page that is [allowed] in one atomic step, answering the page as it was (null: not admitted). */

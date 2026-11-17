@@ -36,6 +36,13 @@ class ToolsetsControlTest {
             {"name":"web","label":"Web Search & Scraping"},{"name":"kanban","label":"Kanban"},
             {"name":"discord","label":"Discord (read/participate)"}]}"""
 
+        /** `tools.list {}`: the same rows with their tools' names (browser's count differs from the list's). */
+        const val TOOLS = """{"toolsets":[
+            {"name":"browser","description":"","tool_count":3,"enabled":true,"tools":["browser_click","browser_navigate","browser_snapshot"]},
+            {"name":"web","description":"","tool_count":2,"enabled":true,"tools":["web_extract","web_search"]},
+            {"name":"kanban","description":"","tool_count":14,"enabled":false,"tools":["kanban_add"]},
+            {"name":"hermes-telegram","description":"","tool_count":51,"enabled":false,"tools":["send_message"]}]}"""
+
         /** `tools.configure`'s answer: the core's re-read [enabled] set, and the names it did not know. */
         fun configured(enabled: List<String>, unknown: List<String> = emptyList()): String =
             """{"changed":[],"enabled_toolsets":${enabled.json()},"info":null,"missing_servers":[],"reset":false,"unknown":${unknown.json()}}"""
@@ -47,11 +54,13 @@ class ToolsetsControlTest {
     private var keysReply = KEYS
     private var configureReply = configured(listOf("web"))
     private var configureFails: Exception? = null
+    private var toolsFails: Exception? = null
     private val order = mutableListOf<String>()  // every call, core and bridge, in the order sent
     private val fake = FakeCoreGateway { method, _ ->
         when (method) {
             "toolsets.list" -> { listFails?.let { throw it }; LIST }
             "tools.configure" -> { configureFails?.let { throw it }; configureReply }
+            "tools.list" -> { toolsFails?.let { throw it }; TOOLS }
             else -> error("unexpected $method")
         }
     }
@@ -211,5 +220,80 @@ class ToolsetsControlTest {
         opening.join()
 
         assertNull(toolsets.state.value)
+    }
+
+    @Test
+    fun aTapShowsTheToolsetsToolsReadOnceThroughToolsList() = runTest {
+        opened()
+        gates["tools.list"] = CompletableDeferred()
+
+        val showing = launch { toolsets.show("web") }
+        runCurrent()
+
+        assertEquals("web", ui().open)
+        assertTrue(ui().busy)
+        gates.getValue("tools.list").complete(Unit)
+        showing.join()
+
+        assertFalse(ui().busy)
+        assertEquals(json("{}"), sent("tools.list").single())  // no session_id (D5)
+        assertEquals(listOf("web_extract", "web_search"), ui().opened()?.tools)
+        assertEquals(listOf(3, 1, 2), ui().rows?.map { it.tools?.size })  // every row's tools, from one read
+        toolsets.back()
+        toolsets.show("web")
+        toolsets.back()
+        toolsets.show("browser")
+        assertEquals(listOf("browser_click", "browser_navigate", "browser_snapshot"), ui().opened()?.tools)
+        assertEquals(listOf("tools.list"), order)
+        toolsets.back()
+        assertNull(ui().open)
+    }
+
+    @Test
+    fun toolsTheCoreCannotListSayItsWordsAndTheNextTapReadsAgain() = runTest {
+        opened()
+        toolsFails = CoreError(5031, "tools.list failed: x")
+
+        toolsets.show("web")
+
+        assertEquals("web", ui().open)
+        assertNull(ui().opened()?.tools)
+        assertEquals("tools.list failed: x", ui().error)
+        assertFalse(ui().busy)
+
+        toolsFails = null
+        toolsets.back()
+        assertNull(ui().error)
+        toolsets.show("web")
+
+        assertEquals(listOf("tools.list", "tools.list"), order)
+        assertEquals(listOf("web_extract", "web_search"), ui().opened()?.tools)
+    }
+
+    @Test
+    fun aToolsetNotListedIsNotOpened() = runTest {
+        opened()
+
+        toolsets.show("hermes-telegram")
+
+        assertNull(ui().open)
+        assertEquals(emptyList<String>(), order)
+    }
+
+    @Test
+    fun backWaitsForTheToolsRead() = runTest {
+        opened()
+        gates["tools.list"] = CompletableDeferred()
+
+        val showing = launch { toolsets.show("web") }
+        runCurrent()
+        toolsets.back()
+
+        assertEquals("web", ui().open)
+        gates.getValue("tools.list").complete(Unit)
+        showing.join()
+        toolsets.back()
+
+        assertNull(ui().open)
     }
 }
