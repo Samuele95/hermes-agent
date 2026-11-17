@@ -51,6 +51,7 @@ import com.nousresearch.hermes.android.chat.ModelActions
 import com.nousresearch.hermes.android.chat.StatusActions
 import com.nousresearch.hermes.android.chat.PromptAnswers
 import com.nousresearch.hermes.android.chat.QueueActions
+import com.nousresearch.hermes.android.chat.RecoveryRoutes
 import com.nousresearch.hermes.android.chat.SessionActions
 import com.nousresearch.hermes.android.entry.IncomingText
 import com.nousresearch.hermes.android.entry.NEW_CHAT
@@ -170,6 +171,13 @@ class MainActivity : ComponentActivity() {
                             ChatScreen(chat, about = state.about, answers = answers, places = places, onStop = { app.chat { cancel() } },
                                        onRetry = { app.chat { retry() } }, onCopy = { copy("Hermes", it) },
                                        onEdit = { rewind -> app.chat { resend(rewind) } },
+                                       // A failed answer's fixes run the controls the app already has (chat-16, D7); Compress
+                                       // opens the context sheet first, so its outcome or refusal shows there.
+                                       recovery = RecoveryRoutes(retry = { app.chat { retry() } }, send = app::send,
+                                                                 pickModel = { app.models { open() } }, newChat = { app.chat { open() } },
+                                                                 setup = { app.setup { open() } }, reauth = { slug -> app.setup { reauth(slug) } },
+                                                                 compress = { app.context { open(); compress(null) } },
+                                                                 openUrl = ::openInBrowser, auth = state.setup::authOf, app = appVersion),
                                        // The drawer's sessions load as it opens; a tap continues one.
                                        sessions = history, onSessions = { open -> if (open) app.history { open() } else state.pages.history.close() },
                                        onPickSession = { id -> app.history { pick(id) } },
@@ -320,6 +328,11 @@ class MainActivity : ComponentActivity() {
      */
     private fun copy(label: String, text: String) {
         getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText(label, text))
+    }
+
+    /** The app's version, for a failed answer's details (D6), read as the application reads it. */
+    private val appVersion by lazy {
+        @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0).versionName.orEmpty()
     }
 
     private fun openInBrowser(url: String) {

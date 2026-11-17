@@ -23,6 +23,10 @@ import com.nousresearch.hermes.android.chat.StatusActions
 import com.nousresearch.hermes.android.chat.StatusUi
 import com.nousresearch.hermes.android.chat.ModelActions
 import com.nousresearch.hermes.android.chat.PickerUi
+import com.nousresearch.hermes.android.chat.Failure
+import com.nousresearch.hermes.android.chat.RecoveryRoutes
+import com.nousresearch.hermes.android.chat.details
+import com.nousresearch.hermes.android.setup.AuthKind
 import com.nousresearch.hermes.android.setup.ModelCatalog
 import com.nousresearch.hermes.android.setup.ModelRow
 import com.nousresearch.hermes.bridge.protocol.ContextCategory
@@ -1520,5 +1524,121 @@ class ChatScreenTest {
 
         compose.onNodeWithText("Resumed.").performClick()
         compose.onNodeWithTag("message-time").assertExists()
+    }
+
+    // A failed answer's recovery card (chat-16): the core's words, one main fix and at most one second, View error details.
+
+    private val did = mutableListOf<String>()
+    private val authOf = mutableMapOf<String, AuthKind>()
+
+    /** Routes that record which fix ran, in [did]. */
+    private val recorded = RecoveryRoutes(retry = { did += "retry" }, send = { did += "send:$it" }, pickModel = { did += "models" },
+                                          newChat = { did += "new" }, setup = { did += "setup" }, reauth = { did += "reauth:$it" },
+                                          compress = { did += "compress" }, openUrl = { did += "url:$it" }, auth = { authOf[it] },
+                                          app = "0.1.0-test")
+
+    /** "hi" and its answer, failed with [failure]. */
+    private fun failedWith(failure: Failure) =
+        Chat(listOf(Entry.User("hi", 1, 0), Entry.Reply("The turn failed.", TurnStatus.ERROR, error = failure.words, stableId = 1,
+                                                         failure = failure)))
+
+    @Test
+    fun aFailedAnswerShowsItsFixesAndItsDetails() {
+        val copied = mutableListOf<String>()
+        val failure = Failure("billing", "billing", false, "deepseek", words = "402 Insufficient Balance",
+                              billingUrl = "https://platform.deepseek.com/top_up")
+        val chat = Chat(listOf(Entry.User("hi", 1, 0), Entry.Reply("Billing or credits exhausted: 402", TurnStatus.ERROR,
+                                                                   error = "402 Insufficient Balance", stableId = 1,
+                                                                   at = 1_794_729_600_000, failure = failure)))
+        compose.setContent { ChatScreen(chat, onSend = {}, onRetry = { did += "word-retry" }, recovery = recorded, onCopy = { copied += it }) }
+
+        compose.onNodeWithTag("recovery-card").assertExists()
+        compose.onAllNodesWithText("402 Insufficient Balance").assertCountEquals(1)
+        compose.onNodeWithTag("retry").assertDoesNotExist()  // the card owns Retry: never twice
+
+        compose.onNodeWithTag("recovery-main").assertTextEquals(words(R.string.recovery_open_billing)).performClick()
+        assertEquals(listOf("url:https://platform.deepseek.com/top_up"), did)
+        compose.onNodeWithTag("recovery-second").assertTextEquals(words(R.string.recovery_switch_provider)).performClick()
+        assertEquals("setup", did.last())
+
+        compose.onNodeWithTag("recovery-details").assertDoesNotExist()
+        compose.onNodeWithTag("recovery-details-toggle").assertTextEquals(words(R.string.recovery_view_details)).performClick()
+        val details = failure.details(1_794_729_600_000, "0.1.0-test")
+        compose.onNodeWithTag("recovery-details").assertTextEquals(details)
+        compose.onNodeWithTag("recovery-details-toggle").assertTextEquals(words(R.string.recovery_hide_details))
+        compose.onNodeWithTag("recovery-copy-details").performClick()
+        assertEquals(listOf(details), copied)
+    }
+
+    @Test
+    fun eachFixRunsItsRoute() {
+        val edited = mutableListOf<Rewind>()
+        var chat by mutableStateOf(failedWith(Failure("provider", "context_overflow", false)))
+        compose.setContent { ChatScreen(chat, onSend = {}, onRetry = {}, onEdit = { edited += it }, recovery = recorded) }
+
+        compose.onNodeWithTag("recovery-main").assertTextEquals(words(R.string.recovery_compress)).performClick()
+        assertEquals("compress", did.last())
+        compose.onNodeWithTag("recovery-second").assertTextEquals(words(R.string.recovery_new_chat)).performClick()
+        assertEquals("new", did.last())
+
+        chat = failedWith(Failure("provider", "model_not_found", false))
+        compose.onNodeWithTag("recovery-main").assertTextEquals(words(R.string.recovery_choose_model)).performClick()
+        assertEquals("models", did.last())
+
+        authOf["deepseek"] = AuthKind.KEY
+        chat = failedWith(Failure("auth", "auth", false, "deepseek"))
+        compose.onNodeWithTag("recovery-main").assertTextEquals(words(R.string.recovery_update_key)).performClick()
+        assertEquals("reauth:deepseek", did.last())
+        compose.onNodeWithTag("recovery-second").assertTextEquals(words(R.string.chat_retry)).performClick()
+        assertEquals("retry", did.last())
+
+        authOf["nous"] = AuthKind.SIGN_IN
+        chat = failedWith(Failure("auth", "auth_permanent", false, "nous"))
+        compose.onNodeWithTag("recovery-main").assertTextEquals(words(R.string.recovery_sign_in_nous)).performClick()
+        assertEquals("reauth:nous", did.last())
+
+        chat = failedWith(Failure("provider", "truncated", true))
+        compose.onNodeWithTag("recovery-main").assertTextEquals(words(R.string.recovery_continue)).performClick()
+        assertEquals("send:continue", did.last())
+
+        chat = failedWith(Failure("provider", "content_policy_blocked", false))
+        compose.onNodeWithTag("recovery-main").assertTextEquals(words(R.string.chat_edit_message)).performClick()
+        compose.onNodeWithTag("edit-field").assertTextEquals("hi")  // P7's editor, on the failed turn's prompt
+        assertEquals(emptyList<Rewind>(), edited)  // nothing sent until the user does
+
+        chat = failedWith(Failure("gateway", "interpreter_shutdown", false))
+        compose.onNodeWithTag("recovery-main").assertDoesNotExist()
+        compose.onNodeWithTag("recovery-second").assertDoesNotExist()
+        compose.onNodeWithTag("recovery-details-toggle").assertExists()
+    }
+
+    @Test
+    fun onlyTheNewestFailedAnswerOffersFixesAndOnlyWhileIdle() {
+        val failed = Entry.Reply("The turn failed.", TurnStatus.ERROR, error = "429 Too Many Requests", stableId = 1,
+                                 failure = Failure("provider", "rate_limit", true, words = "429 Too Many Requests"))
+        var chat by mutableStateOf(Chat(listOf(Entry.User("a", 1, 0), failed, Entry.User("b", 3, 2),
+                                               Entry.Reply("B", TurnStatus.COMPLETE, stableId = 3))))
+        var recovery by mutableStateOf<RecoveryRoutes?>(recorded)
+        compose.setContent { ChatScreen(chat, onSend = {}, onRetry = {}, recovery = recovery) }
+
+        compose.onNodeWithTag("recovery-card").assertExists()  // an older failed answer keeps its words and details
+        compose.onNodeWithTag("recovery-details-toggle").assertExists()
+        compose.onNodeWithTag("recovery-main").assertDoesNotExist()
+
+        val newest = listOf(Entry.User("a", 1, 0), failed)
+        chat = Chat(newest)
+        compose.onNodeWithTag("recovery-main").assertTextEquals(words(R.string.chat_retry))  // idle: its fix
+        chat = Chat(newest, streaming = "…")
+        compose.onNodeWithTag("recovery-main").assertDoesNotExist()  // a new turn runs
+        chat = Chat(newest, compressing = true)
+        compose.onNodeWithTag("recovery-main").assertDoesNotExist()
+        chat = Chat(newest, runOwned = true)
+        compose.onNodeWithTag("recovery-main").assertDoesNotExist()
+
+        chat = Chat(newest)
+        recovery = null
+        compose.onNodeWithTag("recovery-card").assertDoesNotExist()  // today's look (D9)
+        compose.onAllNodesWithText("429 Too Many Requests").assertCountEquals(1)
+        compose.onNodeWithText("Retry").assertExists()
     }
 }

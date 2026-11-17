@@ -30,6 +30,16 @@ data class RecoveryPlan(val main: RecoveryAction?, val second: RecoveryAction? =
 /** What Continue sends after a cut reply, as Desktop's composer does (`assistant-message.tsx:1086-1090`). */
 const val CONTINUE_WORDS = "continue"
 
+/**
+ * Where the recovery card's fixes go (bet 8, §5 "thin by intent"): the app's existing controls as function values, so the
+ * plan never calls a controller and chat/ never imports ProviderSetup (§4). [reauth] opens setup where a provider's
+ * credential is replaced; [auth] tells how the app holds one (`ProviderSetup.authOf`, D1); [openUrl] opens the billing
+ * page M7's wall opens; [app] is the app's version for the details (D6).
+ */
+class RecoveryRoutes(val retry: () -> Unit, val send: (String) -> Unit, val pickModel: () -> Unit, val newChat: () -> Unit,
+                     val setup: () -> Unit, val reauth: (String) -> Unit, val compress: () -> Unit,
+                     val openUrl: (String) -> Unit, val auth: (String) -> AuthKind?, val app: String)
+
 /** The layers where another model may answer (Desktop main's `SWITCH_PROVIDER_LAYERS` less auth and billing, D4). */
 private val PROVIDER_SIDE = setOf("provider", "endpoint")
 

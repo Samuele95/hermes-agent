@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -96,6 +98,7 @@ import com.nousresearch.hermes.android.R
 import com.nousresearch.hermes.android.entry.IncomingText
 import com.nousresearch.hermes.android.setup.ModelRow
 import com.nousresearch.hermes.android.setup.Readiness
+import com.nousresearch.hermes.android.ui.CodeBox
 import com.nousresearch.hermes.android.ui.Hermes
 import com.nousresearch.hermes.android.ui.HermesIcons
 import com.nousresearch.hermes.android.ui.PrimaryButton
@@ -131,7 +134,9 @@ class ModelActions(val open: () -> Unit, val close: () -> Unit, val query: (Stri
  * bubbles, the composer at the bottom naming the model, and a drawer with the sessions and the app's other places.
  * It holds only the draft; [onSend] gets the trimmed text, [onRetry] runs the last prompt again. [onEdit] sends an edited
  * prompt again from its place (chat-12): a long press on a sent prompt offers Edit message; a cut that archives later
- * turns asks first. [onSessions] hears the drawer open (load the sessions)
+ * turns asks first. [recovery] is where a failed answer's card sends its fixes (chat-16): the newest failed answer, while
+ * nothing runs, offers one main fix and at most one second; every failed answer opens its details. Without it a failed
+ * answer shows its words and Retry, as before. [onSessions] hears the drawer open (load the sessions)
  * and close; [sessionActions] is the rows' menu (rename, delete). [contextActions] opens the context sheet from the meter,
  * compresses and closes it; [context] is that sheet while it is open. [places] are where the drawer, the top bar, the
  * model pill and a notice's shortcut lead. The transcript follows a streaming reply only while the reader is at its end;
@@ -153,7 +158,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
                sessions: HistoryUi? = null, onSessions: (open: Boolean) -> Unit = {}, onPickSession: (StoredSessionId) -> Unit = {},
                sessionActions: SessionActions? = null, context: ContextUi? = null, contextActions: ContextActions? = null,
                places: ChatPlaces? = null, onStop: () -> Unit = {}, onRetry: (() -> Unit)? = null,
-               onEdit: ((Rewind) -> Unit)? = null, onCopy: ((String) -> Unit)? = null, about: String? = null, queue: QueueUi = QueueUi(),
+               onEdit: ((Rewind) -> Unit)? = null, recovery: RecoveryRoutes? = null, onCopy: ((String) -> Unit)? = null, about: String? = null, queue: QueueUi = QueueUi(),
                queueActions: QueueActions? = null, onOfferTaken: (IncomingText) -> Unit = {}, readiness: Readiness? = null,
                onCheckReadiness: (() -> Unit)? = null, onOpenUrl: ((String) -> Unit)? = null, onDismissWall: () -> Unit = {},
                exportUi: ExportUi = ExportUi(), exportActions: ExportActions? = null, status: StatusUi? = null,
@@ -188,7 +193,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
                    exportActions?.export, exporting = exportUi.busy)
             if (exportUi.busy) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp).testTag("export-busy"))
             if (chat.entries.isEmpty() && !chat.running && chat.prompts.isEmpty()) Intro(Modifier.weight(1f))
-            else Transcript(chat, onRetry, onEdit, onCopy, picked, places?.gateway, now, Modifier.weight(1f))
+            else Transcript(chat, onRetry, onEdit, onCopy, recovery, picked, places?.gateway, now, Modifier.weight(1f))
             // The billing wall tops the stack above the composer: a blocker outranks the rest (D7); the composer stays usable.
             chat.wall?.let { BillingBanner(it, onOpenUrl, places?.setup, onDismissWall) }
             // One question at a time, the oldest first: the turn waits on it.
@@ -266,7 +271,8 @@ private fun Intro(modifier: Modifier) {
 }
 
 @Composable
-private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, onEdit: ((Rewind) -> Unit)?, onCopy: ((String) -> Unit)?, picked: Int,
+private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, onEdit: ((Rewind) -> Unit)?, onCopy: ((String) -> Unit)?,
+                       recovery: RecoveryRoutes?, picked: Int,
                        onGateway: (() -> Unit)?, now: () -> Long, modifier: Modifier) {
     val list = rememberLazyListState()
     val h24 = android.text.format.DateFormat.is24HourFormat(LocalContext.current)  // the phone's own clock setting (D3)
@@ -279,6 +285,21 @@ private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, onEdit: ((Rewind) -> 
     LaunchedEffect(target == null) { if (target == null) editing = null }  // gone, compressing, a job's run: the editor closes
     var restoring by remember { mutableStateOf<Rewind?>(null) }  // an edit that waits for "Restore & rerun"
     fun send(rewind: Rewind) { if (chat.laterTurns(rewind.target) > 0) restoring = rewind else { onEdit?.invoke(rewind); editing = null } }
+    // The newest failed answer, while nothing runs, offers its fixes (D8: retry's own gate); an older one keeps its details.
+    val fixing = recovery?.takeIf { chat.retryTarget() != null }
+    val editable = onEdit?.let { chat.retryTarget() }?.let { chat.entries[it.index].stableId }?.takeIf { chat.editTarget(it) != null }
+    /** [action]'s run for [failure], or null: its route cannot act now, so no button (as Desktop's renderers return null). */
+    fun fix(action: RecoveryAction, failure: Failure, routes: RecoveryRoutes): (() -> Unit)? = when (action) {
+        RecoveryAction.RETRY -> routes.retry
+        RecoveryAction.CONTINUE -> { { routes.send(CONTINUE_WORDS) } }
+        RecoveryAction.CHOOSE_MODEL -> routes.pickModel
+        RecoveryAction.SWITCH_PROVIDER -> routes.setup
+        RecoveryAction.UPDATE_KEY, RecoveryAction.SIGN_IN_AGAIN -> failure.provider?.let { p -> { routes.reauth(p) } }
+        RecoveryAction.NEW_CHAT -> routes.newChat
+        RecoveryAction.COMPRESS -> routes.compress
+        RecoveryAction.EDIT_MESSAGE -> editable?.let { id -> { editing = id } }  // P7's editor on the failed turn's prompt
+        RecoveryAction.OPEN_BILLING -> failure.billingUrl?.let { url -> { routes.openUrl(url) } }
+    }
     // Only the reader moves the follow: dragging back stops it, and reaching the end starts it again (Follow.kt, V1).
     LaunchedEffect(list) {
         snapshotFlow { Triple(dragged, list.lastScrolledBackward, list.canScrollForward) }
@@ -304,7 +325,17 @@ private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, onEdit: ((Rewind) -> 
                     EditBubble(entry, onSend = { words -> send(Rewind(target, words, deep = false)) }, onCancel = { editing = null })
                 } else {
                     val edit = onEdit?.takeIf { chat.editTarget(entry.stableId) != null }?.let { { editing = entry.stableId } }
-                    EntryRow(entry, onCopy, edit, retry.takeIf { i == chat.entries.lastIndex && entry is Entry.Reply }, onGateway, now, h24)
+                    val failure = (entry as? Entry.Reply)?.failure
+                    val card = if (failure == null || recovery == null) null else {
+                        val routes = fixing?.takeIf { i == chat.entries.lastIndex }  // the newest answer only (D8)
+                        val fixes = routes?.let { r ->
+                            val plan = RecoveryPlan.of(failure, failure.provider?.let(r.auth))
+                            listOfNotNull(plan.main, plan.second).mapNotNull { a -> fix(a, failure, r)?.let { run -> label(a) to run } }
+                        }.orEmpty()
+                        RecoveryUi(fixes, details = failure.details((entry as Entry.Reply).at, recovery.app))
+                    }
+                    EntryRow(entry, onCopy, edit, retry.takeIf { i == chat.entries.lastIndex && entry is Entry.Reply }, onGateway, now, h24,
+                             card)
                 }
             }
             retry?.takeIf { chat.entries.last() !is Entry.Reply }?.let { item { RetryAction(failed = true, it) } }
@@ -467,7 +498,7 @@ private fun JumpToLatest(modifier: Modifier, onClick: () -> Unit) {
 
 @Composable
 private fun EntryRow(entry: Entry, onCopy: ((String) -> Unit)?, onEdit: (() -> Unit)?, retry: (() -> Unit)?, onGateway: (() -> Unit)?,
-                     now: () -> Long, h24: Boolean) {
+                     now: () -> Long, h24: Boolean, card: RecoveryUi?) {
     when (entry) {
         is Entry.User -> UserBubble(entry, onCopy, onEdit, now, h24)
         is Entry.Reply -> {
@@ -494,10 +525,11 @@ private fun EntryRow(entry: Entry, onCopy: ((String) -> Unit)?, onEdit: (() -> U
                 }
                 if (entry.text.isNotEmpty()) Reply(entry.text, onCopy)
                 // The core often words the error into the reply itself; show it apart only when it did not.
-                entry.error?.takeUnless { it in entry.text }?.let { Problem(it) }
+                if (card != null) RecoveryCard(entry, card, onCopy) else entry.error?.takeUnless { it in entry.text }?.let { Problem(it) }
                 val copy = onCopy?.takeIf { entry.text.isNotBlank() }
                 val time = entry.at?.let { timeText(it, timeShown, now, h24) }
-                if (copy != null || retry != null || entry.tookMs != null || time != null) ReplyActions(entry, copy, retry, time)
+                val again = retry.takeIf { card == null }  // the card owns Retry: it never shows twice
+                if (copy != null || again != null || entry.tookMs != null || time != null) ReplyActions(entry, copy, again, time)
             }
         }
         // Commentary reads like the agent's words, without the reply's reasoning fold (and, later, its actions).
@@ -508,6 +540,58 @@ private fun EntryRow(entry: Entry, onCopy: ((String) -> Unit)?, onEdit: (() -> U
             // The way to turn the gateway on (D39 F11), when the chat has one; the words name the drawer path either way.
             if (entry.opens == NoticeShortcut.GATEWAY) onGateway?.let {
                 SecondaryButton(stringResource(R.string.jobs_turn_on), it, Modifier.testTag("notice-open-gateway"))
+            }
+        }
+    }
+}
+
+/** A failed answer's card as drawn: its fixes ([fixes]: each label's string and its run, the main first) and its [details]. */
+private class RecoveryUi(val fixes: List<Pair<Int, () -> Unit>>, val details: String)
+
+/** Each fix's words, Desktop main's (D12): one label per action. */
+@StringRes
+private fun label(action: RecoveryAction): Int = when (action) {
+    RecoveryAction.RETRY -> R.string.chat_retry
+    RecoveryAction.CONTINUE -> R.string.recovery_continue
+    RecoveryAction.CHOOSE_MODEL -> R.string.recovery_choose_model
+    RecoveryAction.SWITCH_PROVIDER -> R.string.recovery_switch_provider
+    RecoveryAction.UPDATE_KEY -> R.string.recovery_update_key
+    RecoveryAction.SIGN_IN_AGAIN -> R.string.recovery_sign_in_nous
+    RecoveryAction.NEW_CHAT -> R.string.recovery_new_chat
+    RecoveryAction.COMPRESS -> R.string.recovery_compress
+    RecoveryAction.EDIT_MESSAGE -> R.string.chat_edit_message
+    RecoveryAction.OPEN_BILLING -> R.string.recovery_open_billing
+}
+
+/**
+ * A failed answer's recovery card, as Desktop main's error card (bet 8, DC-P9): the core's words when the reply did not
+ * already say them (D11), then its fixes, the first as the main button, and View error details, which opens the details
+ * text with Copy details.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun RecoveryCard(reply: Entry.Reply, card: RecoveryUi, onCopy: ((String) -> Unit)?) {
+    val shape = RoundedCornerShape(14.dp)
+    var open by rememberSaveable { mutableStateOf(false) }  // the view's own state, kept by the row's key
+    Column(Modifier.fillMaxWidth().padding(top = 8.dp).background(MaterialTheme.colorScheme.surfaceContainer, shape)
+               .border(1.dp, Hermes.colors.stroke, shape).padding(12.dp).testTag("recovery-card"),
+           verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        reply.error?.takeUnless { it in reply.text }?.let { Problem(it) }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            card.fixes.getOrNull(0)?.let { (label, run) ->
+                SecondaryButton(stringResource(label), run, Modifier.testTag("recovery-main"))  // Desktop: "the one action is secondary"
+            }
+            card.fixes.getOrNull(1)?.let { (label, run) ->
+                TextButton(run, Modifier.testTag("recovery-second")) { Text(stringResource(label)) }  // Desktop's ghost link
+            }
+            TextButton({ open = !open }, Modifier.testTag("recovery-details-toggle")) {
+                Text(stringResource(if (open) R.string.recovery_hide_details else R.string.recovery_view_details))
+            }
+        }
+        if (open) {
+            CodeBox(card.details, Modifier.testTag("recovery-details"))
+            onCopy?.let {
+                TextButton({ it(card.details) }, Modifier.testTag("recovery-copy-details")) { Text(stringResource(R.string.recovery_copy_details)) }
             }
         }
     }
