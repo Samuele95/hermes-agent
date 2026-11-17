@@ -3692,4 +3692,31 @@ class ChatSessionTest {
         assertEquals("/sdcard/notes.txt sum it up", lastOf("session.redirect").getValue("text").jsonPrimitive.content)
         assertEquals(listOf("/github fix it", "/q later", "/status"), chat.items())
     }
+
+    @Test
+    fun aRetryOfACommandsTurnDispatchesItAgainAndASkillsTurnReplaysAsBefore() = runTest(UnconfinedTestDispatcher()) {
+        dispatch = { p ->
+            if (p.getValue("name").jsonPrimitive.content != "goal") skillOf(p)
+            else buildJsonObject { put("type", "send"); put("message", "GOAL: ${p["arg"]?.jsonPrimitive?.content}"); put("notice", "⊙ Goal set") }.toString()
+        }
+        val chat = openChat().apply { open() }
+        chat.send("/goal ship it")
+        assertEquals("D6: no display, the typed line", "/goal ship it", (chat.state.value.entries.last() as Entry.User).text)
+        turn()
+
+        chat.send("/retry")
+
+        assertEquals(listOf("goal" to "ship it", "goal" to "ship it"), dispatches())
+        assertEquals(listOf("GOAL: ship it", "GOAL: ship it"), submitted())
+        assertEquals("/goal ship it", (chat.state.value.entries.last { it is Entry.User } as Entry.User).text)
+        assertEquals(emptyList<String>(), slashSubmits())
+        turn()
+
+        // A skill's turn replays as P7 sends it: the bubble's invocation, which the core re-expands (session_history.py:244-256).
+        chat.send("/github fix it")
+        turn()
+        chat.send("/retry")
+        assertEquals(3, dispatches().size)
+        assertEquals("/github fix it", submitted().last())
+    }
 }

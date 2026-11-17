@@ -821,7 +821,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
                 "new" -> open()
                 "model" -> openModels(line.arg)
                 "compress" -> say(compress(line.arg.ifBlank { null }))
-                "retry" -> if (synchronized(lock) { live.chat.retryTarget() } == null) say(NOTHING_TO_RETRY) else retry()
+                "retry" -> retryLine()
                 "steer" -> steerLine(line.arg)
                 "queue" -> when {
                     line.arg.isBlank() -> say(QUEUE_USAGE)
@@ -832,6 +832,26 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         } catch (failed: Exception) {
             say(forUser(failed))  // a cancellation goes on
         }
+    }
+
+    /**
+     * `/retry`: the last prompt again ([retry]), or [NOTHING_TO_RETRY]. A prompt that is a command `command.dispatch`
+     * built a turn for (`/plan build it`, `/goal …`: the bubble shows the typed line, D6) is dispatched again, after the
+     * old turn, nothing cut (as B5-D1's unmatched retry): a replay of the bubble would give the model the line as typed
+     * (invariant 4), since the core re-expands only a skill (`session_history.py:244-256`). A skill's turn replays as
+     * ever. A catalog that cannot be read sends nothing ([SLASH_UNREAD], D12).
+     */
+    private suspend fun retryLine() {
+        val (session, target) = synchronized(lock) { live.ref?.runtime to live.chat.retryTarget() }
+        if (session == null || target == null) return say(NOTHING_TO_RETRY)
+        if (!target.text.startsWith("/")) return retry()
+        val catalog = try {
+            catalogOf(session)
+        } catch (failed: Exception) {
+            return say("$SLASH_UNREAD: ${forUser(failed)}")  // a cancellation goes on
+        }
+        catalog.dispatchedCommand(target.text)?.let { return runSlash(session, Typed(it, target.text)) }
+        retry()
     }
 
     /**

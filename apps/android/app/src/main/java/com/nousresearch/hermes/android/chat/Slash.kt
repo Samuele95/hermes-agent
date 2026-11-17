@@ -74,6 +74,14 @@ data class SlashCatalog(val items: List<SlashItem>, val skillCount: Long, privat
         return canonical(head)
     }
 
+    /**
+     * The line [text] runs when it is a command `command.dispatch` runs, never a skill nor the app's own: one whose
+     * turn the core built from a prompt of its own (`/plan`, `/goal`; D6: its bubble is the typed line), which a replay
+     * of the bubble would send as typed: the core re-expands only a skill (`session_history.py:244-256`). Else null.
+     */
+    fun dispatchedCommand(text: String): SlashLine? =
+        line(text)?.takeIf { it.runs == Runner.DISPATCH && itemNamed("/" + it.name)?.kind == SlashKind.COMMAND }
+
     /** The bare `/` menu: the commands in their order, then the skills. */
     fun browse(): List<SlashItem> = items.filter { it.kind == SlashKind.COMMAND } + items.filter { it.kind == SlashKind.SKILL }
 

@@ -81,6 +81,15 @@ class SlashTest {
     }
 
     @Test
+    fun aCommandTheCoreDispatchesIsToldApartFromASkillAndTheAppsOwn() {
+        assertEquals(SlashLine("goal", "ship it", Runner.DISPATCH), catalog.dispatchedCommand("/goal ship it"))
+        assertEquals(SlashLine("hi", "", Runner.DISPATCH), catalog.dispatchedCommand("/hi"))  // a user command
+        listOf("/github fix it", "/worktree-kickoff", "/retry", "/q later", "/status", "/sdcard/x", "hi").forEach { text ->
+            assertNull(text, catalog.dispatchedCommand(text))
+        }
+    }
+
+    @Test
     fun typingNarrowsTheMenuToWhatThePhoneRuns() {
         val git = completion("""{"items":[{"text":"worktree","kind":"command"},{"text":"diff","kind":"command"},
                                           {"text":"github","kind":"skill"}],"replace_from":1}""")
