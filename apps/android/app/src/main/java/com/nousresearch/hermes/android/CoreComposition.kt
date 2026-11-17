@@ -85,10 +85,12 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps
         bridge.secretsChanged()
     }
     val readiness = CompletableDeferred<ProviderSetup>()  // the chat is built first; a failure it hears waits for setup (D9)
+    val picker = CompletableDeferred<ModelSwitch>()  // the chat is built first; /model waits for the picker (D13)
     val chat = ChatSession(gateway, deps.turns, scope, keepSecret, deps.notifier, gatewaySeen = deps.seen,
                            runOwned = { bridge.runOwnership(it).owned }, queues = deps.queues,
                            providerFailed = { readiness.await().checkReadiness() },
-                           exporter = { bridge.exportSession(it) }, log = deps.log).apply { start() }
+                           exporter = { bridge.exportSession(it) }, log = deps.log,
+                           openModels = { search -> picker.await().run { open(); if (search.isNotBlank()) query(search) } }).apply { start() }
     val setup = ProviderSetup(gateway, deps.secrets, bridge, session = { chat.sessionId.value }, reopenChat = chat::open,
                               keyNames = deps.keyNames, subnet = deps.subnet, customModels = deps.customModels)
     readiness.complete(setup)
@@ -97,6 +99,7 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps
     val export = SessionExport(export = chat::export)
     val status = StatusPanel(status = chat::status)
     val models = ModelSwitch(gateway, session = { chat.openSessionId?.value }, custom = deps.customModels)
+    picker.complete(models)
     // Undispatched: setup is showing before the core is Ready, so the chat never flashes first.
     if (setup.needed()) scope.launch(start = CoroutineStart.UNDISPATCHED) { setup.open() }
     val facts = bridge.ask(BridgeCalls.RUNTIME_FACTS)

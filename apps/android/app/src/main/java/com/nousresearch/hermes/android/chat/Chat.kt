@@ -147,13 +147,16 @@ data class Rewind(val target: Retry, val text: String, val deep: Boolean) {
  * carrying `billing`, gone with the next turn that completes, a session switch or Dismiss (inv. 5, DC-M12).
  * [turnStartedAt]: the app's clock at the `message.start` of the turn now running, as this process saw it; null: no
  * turn, or one whose start it did not see (a resumed turn), so its reply is not timed (invariant 7).
+ * [prefill]: words the core handed back for the composer (`/undo`), taken into the draft once, like [offer]; the chat
+ * never sends them (chat-20, D7).
  */
 data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? = null, val activity: String? = null,
                 val prompts: List<Prompt> = emptyList(), val reasoning: String? = null, val model: String? = null,
                 val todos: TodoList? = null, val meter: ContextMeter? = null, val submitted: Boolean = false,
                 val compressing: Boolean = false, val runOwned: Boolean = false,
                 val nextId: Long = entries.maxOfOrNull { it.stableId + 1 } ?: 0, val busyMode: BusyMode? = null,
-                val offer: IncomingText? = null, val wall: BillingWall? = null, val turnStartedAt: Long? = null) {
+                val offer: IncomingText? = null, val wall: BillingWall? = null, val turnStartedAt: Long? = null,
+                val prefill: String? = null) {
     val running: Boolean get() = streaming != null
 
     /** A turn runs or is about to: from the prompt's send to the turn's end (GoF-State; improve #4). */

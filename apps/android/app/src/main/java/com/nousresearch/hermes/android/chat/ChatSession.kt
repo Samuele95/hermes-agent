@@ -14,6 +14,9 @@ import com.nousresearch.hermes.bridge.answer
 import com.nousresearch.hermes.bridge.protocol.ApprovalChoice
 import com.nousresearch.hermes.bridge.protocol.ApprovalResult
 import com.nousresearch.hermes.bridge.protocol.ClarifyResult
+import com.nousresearch.hermes.bridge.protocol.CommandDispatchParams
+import com.nousresearch.hermes.bridge.protocol.CommandsCatalogParams
+import com.nousresearch.hermes.bridge.protocol.CompleteSlashParams
 import com.nousresearch.hermes.bridge.protocol.ConfigGetParams
 import com.nousresearch.hermes.bridge.protocol.Events
 import com.nousresearch.hermes.bridge.protocol.MessageReactParams
@@ -78,6 +81,7 @@ import kotlin.time.Duration.Companion.seconds
  * [log] hears what the chat notes for diagnosis only, never shown: a drained queue item the core put in its own queue
  * (/architect #5); it must not throw.
  * [clock] is the wall clock (epoch ms) a message's time and a turn's length are read from; tests fix it.
+ * [openModels] opens this chat's model picker, its search set to the words after `/model` (P6; D11, D13).
  */
 class ChatSession(private val core: CoreGateway, private val turns: TurnHost, private val scope: CoroutineScope,
                   private val keepSecret: suspend (name: String, value: ByteArray) -> Unit,
@@ -87,7 +91,8 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
                   private val queues: QueueStore = QueueStore.inMemory(),
                   private val providerFailed: suspend () -> Unit = {},
                   private val exporter: suspend (StoredSessionId) -> ExportFile = { throw SetupRefusal(NOTHING_TO_EXPORT) },
-                  private val log: (String) -> Unit = {}, private val clock: () -> Long = System::currentTimeMillis) {
+                  private val log: (String) -> Unit = {}, private val clock: () -> Long = System::currentTimeMillis,
+                  private val openModels: suspend (search: String) -> Unit = {}) {
     companion object {
         /** The session's source, which is also the agent's platform; "android" keeps the CLI toolsets. */
         const val SOURCE = "android"
@@ -126,6 +131,18 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         /** How often an edit that met 4009 is sent again after a second interrupt, and how far apart (D4, `utils.ts:279-280`). */
         const val BUSY_RESENDS = 40
         val BUSY_RESEND_GAP = 150.milliseconds
+        /** Said for a command the core lists that only `slash.exec` runs (chat-21; Desktop's words, `slash.ts:289`; D4). */
+        const val NOT_ON_PHONE = "%s is not available in the Android app."
+        /** Said before why the core's slash catalog could not be read: the `/` line is not sent (D12). */
+        const val SLASH_UNREAD = "Commands could not be read"
+        /** Said when `/retry` finds no answered prompt to send again. */
+        const val NOTHING_TO_RETRY = "There is nothing to retry now."
+        /** `/steer` without words, in the core's words (`methods_tools.py:875`). */
+        const val STEER_USAGE = "usage: /steer <prompt>"
+        /** `/queue` without words, in the core's words (`methods_tools.py:756`). */
+        const val QUEUE_USAGE = "usage: /queue <prompt>"
+        /** A send directive with nothing to send (Desktop's words, `slash.ts:362-366`). */
+        const val EMPTY_MESSAGE = "empty message"
     }
 
     /**
@@ -155,7 +172,9 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         fun draining(at: Long): Pair<Live, String?> {
             if (chat.busy || chat.compressing || chat.runOwned) return this to null
             val (item, rest) = queue.next() ?: return this to null
-            return copy(chat = chat.sent(item.text, at), queue = rest) to item.text
+            // A slash head gets its bubble once the catalog says what it is (D9): a dispatch shows the core's display.
+            val shown = if (item.text.startsWith("/")) chat.copy(submitted = true) else chat.sent(item.text, at)
+            return copy(chat = shown, queue = rest) to item.text
         }
 
         /**
@@ -186,6 +205,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     }
 
     private val lock = Any()
+    private var catalog: Pair<RuntimeSessionId, SlashCatalog>? = null  // guarded by lock: one per session (D5)
     private val holds = AtomicLong()  // one TurnHost key per compression (improve #2, V8)
     private var live = Live()  // guarded by lock
     private val shown = MutableStateFlow(Chat())
@@ -217,7 +237,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
             Triple(before, live, recordQueue(before, live))
         }
         if (toSave) scope.launch { flush() }
-        drained?.let { text -> after.ref?.runtime?.let { session -> scope.launch { submit(session, text, queued = true) } } }
+        drained?.let { text -> after.ref?.runtime?.let { session -> scope.launch { deliver(session, text) } } }
         return before to after
     }
 
@@ -596,6 +616,33 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         change { now -> if (now.chat.offer == taken) now.copy(chat = now.chat.copy(offer = null)) else now }
     }
 
+    /** The composer took [taken], the core's prefill, as its draft: it leaves, unless a newer one replaced it (as [offerTaken]). */
+    fun prefillTaken(taken: String) {
+        change { now -> if (now.chat.prefill == taken) now.copy(chat = now.chat.copy(prefill = null)) else now }
+    }
+
+    /**
+     * The slash menu for [draft] (chat-20, §3.3): none unless it [opensMenu] in an open chat. The bare `/` reads the
+     * core's catalog afresh (D5: how a skills change shows); after it, the cached catalog narrowed by the core's
+     * `complete.slash`, or by name when that fails. A catalog that cannot be read is thrown: no menu.
+     */
+    suspend fun slashItems(draft: String): List<SlashItem> {
+        if (!opensMenu(draft)) return emptyList()
+        val session = openSessionId ?: return emptyList()
+        if (draft == "/") return catalogOf(session, fresh = true).browse()
+        val catalog = catalogOf(session)
+        val completed = orElse(null) { core.call(Methods.COMPLETE_SLASH, CompleteSlashParams(text = draft, sessionId = session.value)) }
+        return completed?.let { catalog.narrowed(draft, it) } ?: catalog.prefixed(draft)
+    }
+
+    /** [session]'s slash catalog: the one kept for it unless [fresh], else the core's, kept for it. Throws the core's failure. */
+    private suspend fun catalogOf(session: RuntimeSessionId, fresh: Boolean = false): SlashCatalog {
+        if (!fresh) synchronized(lock) { catalog?.takeIf { it.first == session }?.second }?.let { return it }
+        val read = SlashCatalog.of(core.call(Methods.COMMANDS_CATALOG, CommandsCatalogParams(sessionId = session.value)))
+        synchronized(lock) { catalog = session to read }
+        return read
+    }
+
     /** The user dismissed the billing wall: it leaves the chat, and nothing is sent (inv. 5). */
     fun dismissWall() {
         change { now -> now.copy(chat = now.chat.withoutWall()) }
@@ -605,8 +652,23 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
      * Sends [text] to the chat's session; refused while the session compresses. While a turn runs, the core's busy
      * mode says how ([Chat.busySend]): the words redirect or steer the turn, which never hard-interrupts it (inv. 1);
      * in queue mode they go into the chat's queue; nothing goes out before the turn started or while a question waits.
+     * A `/` line never reaches the model as typed (invariant 4, chat-20): one the core's catalog names runs through
+     * the app's own controls (`/new`, `/model`, `/compress`, `/retry`, `/steer`, `/queue`, at once, busy or not, under
+     * their own rules: D3) or through `command.dispatch`; one only `slash.exec` runs is refused ([NOT_ON_PHONE]); an
+     * unreadable catalog sends nothing ([SLASH_UNREAD]); only a `/` the catalog does not know (a path) is text. A
+     * dispatched line typed while a turn runs waits in the queue as typed and is dispatched at the drain (invariant 5).
      */
     suspend fun send(text: String) {
+        if (text.startsWith("/")) {
+            val at = checkNotNull(openSessionId) { "open() the chat first" }
+            val catalog = try {
+                catalogOf(at)
+            } catch (failed: Exception) {
+                return say("$SLASH_UNREAD: ${forUser(failed)}")  // a cancellation goes on
+            }
+            catalog.line(text)?.let { return runSlash(at, Typed(it, text)) }
+            catalog.unavailable(text)?.let { return say(NOT_ON_PHONE.format(it)) }
+        }
         var session: RuntimeSessionId? = null
         var correction: Pair<Long, BusyMode>? = null  // the bubble's id and the mode it goes out by
         change { now ->  // the session and the bubble decided in one change (EJ-78)
@@ -627,6 +689,155 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         val to = session ?: return  // V5: a second tap before the turn started
         correction?.let { (id, mode) -> return correct(to, id, text, mode) }
         submit(to, text)
+    }
+
+    /**
+     * A slash line on its way: the [line] it runs, the [text] the user typed, whether it came from the [queued] drain,
+     * and whether it is already an alias's target ([aliased]: one hop only, D2).
+     */
+    private data class Typed(val line: SlashLine, val text: String, val queued: Boolean = false, val aliased: Boolean = false)
+
+    /**
+     * [typed] in [session]: the app's own run at once; a dispatched one is decided in one change: refused while
+     * compressing, said in a job's run, queued as typed while busy (invariant 5, DC-P13: never a correction, whatever
+     * the busy mode), else the chat busy from here until its turn starts or the dispatch ends without one (V5).
+     */
+    private suspend fun runSlash(session: RuntimeSessionId, typed: Typed) {
+        if (typed.line.runs == Runner.APP) return runApp(typed.line)
+        var go = false
+        change { now ->
+            if (now.ref?.runtime != session) return@change now
+            if (now.chat.compressing) throw SetupRefusal(STILL_COMPRESSING)  // invariant 6, as send
+            when {
+                now.chat.runOwned -> now.copy(chat = now.chat.notice(RUN_STILL_OWNED))
+                now.chat.busy -> if (now.chat.queueable) now.queued(typed.text) else now
+                else -> { go = true; now.copy(chat = now.chat.copy(submitted = true)) }
+            }
+        }
+        if (go) dispatched(session, typed)
+    }
+
+    /**
+     * `command.dispatch` of [typed] in [session], and the core's directive acted on: a send's message to the model with
+     * the bubble showing its display, else the typed line, never the message (D6); a prefill into the composer over the
+     * core's transcript, re-read (D7); words as a notice; an alias's target run once (D2). A failure says why in the
+     * core's words, after the command's name.
+     */
+    private suspend fun dispatched(session: RuntimeSessionId, typed: Typed) {
+        val line = typed.line
+        val answer = try {
+            core.call(Methods.COMMAND_DISPATCH, CommandDispatchParams(name = line.name, arg = line.arg.ifBlank { null }, sessionId = session.value))
+        } catch (failed: Exception) {
+            return unsent(session, "/${line.name}: ${forUser(failed)}")  // a cancellation goes on
+        }
+        when (val directive = Dispatch.of(answer)) {
+            is Dispatch.Send -> {
+                if (directive.message.isBlank()) return unsent(session, "/${line.name}: $EMPTY_MESSAGE")
+                var still = false
+                change { now ->
+                    if (now.ref?.runtime != session) now
+                    else {
+                        still = true
+                        val told = directive.notice?.let(now.chat::notice) ?: now.chat
+                        now.copy(chat = told.sent(directive.display ?: typed.text, clock()))
+                    }
+                }
+                if (still) submit(session, directive.message, typed.queued)  // the model gets the message, never shown
+            }
+            is Dispatch.Prefill -> {
+                val messages = orElse(null) { core.call(Methods.SESSION_HISTORY, SessionHistoryParams(sessionId = session.value)).messages }
+                change { now ->
+                    if (now.ref?.runtime != session) now
+                    else {
+                        val kept = (messages?.let(now.chat::restored) ?: now.chat).unsent()
+                        now.copy(chat = (directive.notice?.let(kept::notice) ?: kept).copy(prefill = directive.text.ifBlank { null }))
+                    }
+                }
+            }
+            is Dispatch.Said -> unsent(session, directive.words)
+            is Dispatch.Alias -> {
+                val target = orElse(null) { catalogOf(session).line("/${directive.target} ${line.arg}".trim()) }
+                when {
+                    target == null || typed.aliased -> unsent(session, NOT_ON_PHONE.format("/${directive.target}"))
+                    target.runs == Runner.APP -> { idle(session); runApp(target) }
+                    else -> dispatched(session, typed.copy(line = target, aliased = true))
+                }
+            }
+        }
+    }
+
+    /**
+     * A queue head the drain let go (invariant 5): plain words as ever; a `/` line as Send runs it, its bubble painted
+     * only once the catalog says what it is (D9). An unreadable catalog sends nothing, and the queue pauses.
+     */
+    private suspend fun deliver(session: RuntimeSessionId, text: String) {
+        if (!text.startsWith("/")) return submit(session, text, queued = true)
+        val catalog = try {
+            catalogOf(session)
+        } catch (failed: Exception) {
+            return unsent(session, "$SLASH_UNREAD: ${forUser(failed)}")
+        }
+        val line = catalog.line(text)
+        when {
+            line?.runs == Runner.DISPATCH -> dispatched(session, Typed(line, text, queued = true))
+            line != null -> { idle(session); runApp(line) }  // a line the Queue button queued
+            else -> catalog.unavailable(text)?.let { unsent(session, NOT_ON_PHONE.format(it)) } ?: run {
+                change { now -> if (now.ref?.runtime == session) now.copy(chat = now.chat.sent(text, clock())) else now }
+                submit(session, text, queued = true)  // text after all: a path
+            }
+        }
+    }
+
+    /** [session]'s chat, held busy for a slash line, is idle again: nothing went out. */
+    private fun idle(session: RuntimeSessionId) {
+        change { now -> if (now.ref?.runtime == session) now.copy(chat = now.chat.unsent()) else now }
+    }
+
+    /**
+     * The app's own command [line], through the app's own controls, at once, busy or not (D3): each control keeps its
+     * rules and says its refusals; every failure but a cancellation is said.
+     */
+    private suspend fun runApp(line: SlashLine) {
+        try {
+            when (line.name) {
+                "new" -> open()
+                "model" -> openModels(line.arg)
+                "compress" -> say(compress(line.arg.ifBlank { null }))
+                "retry" -> if (synchronized(lock) { live.chat.retryTarget() } == null) say(NOTHING_TO_RETRY) else retry()
+                "steer" -> steerLine(line.arg)
+                "queue" -> when {
+                    line.arg.isBlank() -> say(QUEUE_USAGE)
+                    synchronized(lock) { live.chat.queueable } -> queue(line.arg)
+                    else -> send(line.arg)  // the core's `_cmd_queue` sends it when nothing runs
+                }
+            }
+        } catch (failed: Exception) {
+            say(forUser(failed))  // a cancellation goes on
+        }
+    }
+
+    /**
+     * `/steer [words]`: steers a turn a correction can land on (running, no question waiting, not compressing, not a
+     * job's run: [Chat.steerMode]'s conditions); busy otherwise, the next turn's message ([queue]; the core's
+     * `methods_tools.py:886`); idle, a plain message (the core's "No agent running; sent as next turn", `:879-880`).
+     */
+    private suspend fun steerLine(words: String) {
+        if (words.isBlank()) return say(STEER_USAGE)
+        var steer: Pair<RuntimeSessionId, Long>? = null
+        var busy = false
+        change { now ->
+            val ref = now.ref ?: return@change now
+            val c = now.chat
+            when {
+                c.running && c.prompts.isEmpty() && !c.compressing && !c.runOwned -> {
+                    steer = ref.runtime to c.nextId
+                    now.copy(chat = c.correcting(words, BusyMode.STEER, clock()))
+                }
+                else -> { busy = c.busy; now }
+            }
+        }
+        steer?.let { (session, id) -> return correct(session, id, words, BusyMode.STEER) }
+        if (busy) queue(words) else send(words)
     }
 
     /**
@@ -982,7 +1193,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
             val queue = step(now.queue) ?: return@change now
             now.copy(queue = queue).draining(clock()).let { (next, text) -> text?.let { drained = ref.runtime to it }; next }
         }
-        drained?.let { (session, text) -> scope.launch { submit(session, text, queued = true) } }
+        drained?.let { (session, text) -> scope.launch { deliver(session, text) } }
     }
 
     /**
@@ -1066,7 +1277,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         val resent = before.resend?.takeIf { after.resend == null && after.chat.submitted }
         resent?.let { id -> (after.chat.entries.firstOrNull { it.stableId == id } as? Entry.User)?.text }
             ?.let { text -> scope.launch { submit(session, text) } }
-        drained?.let { text -> scope.launch { submit(session, text, queued = true) } }
+        drained?.let { text -> scope.launch { deliver(session, text) } }
         if (before.chat.running != after.chat.running) syncTurn()
         if (before.chat.running && !after.chat.running) notifier.turnFinished(reply)
         // Withdrawn by the core: the turn no longer waits for them.

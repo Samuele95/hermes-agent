@@ -85,6 +85,12 @@ class ChatSessionTest {
     private var redirect: (JsonObject) -> String = { p -> """{"status":"redirected","text":${p.getValue("text")}}""" }
     /** The core's `message.react`: by default it stores nothing and answers no reactions. */
     private var react: (JsonObject) -> String = { p -> """{"row_id":${p.getValue("row_id")},"reactions":[]}""" }
+    /** The core's `commands.catalog`, `complete.slash` and `command.dispatch` (chat-20): by default [CATALOG], no completion, a skill. */
+    private var catalog: () -> String = { CATALOG }
+    private var completion: (JsonObject) -> String = { """{"items":[],"replace_from":1}""" }
+    private var dispatch: (JsonObject) -> String = { p -> skillOf(p) }
+    /** What the chat's `/model` asked its picker to search, in order (P6, D11). */
+    private val searched = mutableListOf<String>()
     private val core = FakeCoreGateway { method, params ->
         when (method) {
             "session.create" -> { created(); """{"session_id":"s${++sessions}","stored_session_id":"db$sessions","message_count":0,"messages":[],"info":{$contract}}""" }
@@ -105,6 +111,9 @@ class ChatSessionTest {
             "session.title" -> title(params)
             "session.status" -> statusReply
             "message.react" -> react(params)
+            "commands.catalog" -> catalog()
+            "complete.slash" -> completion(params)
+            "command.dispatch" -> dispatch(params)
             else -> error("unexpected $method")
         }
     }
@@ -161,7 +170,7 @@ class ChatSessionTest {
         ChatSession(core, host, backgroundScope, keepSecret = { name, value -> keepSecret(name, value) }, notifier = notifier,
                     gatewaySeen = { observed++; seen() }, runOwned = { ownedAsked += it.value; owned(it) },
                     queues = QueueStore.inMemory(savedQueues), providerFailed = { failures++ },
-                    exporter = { exported += it; exportFile }, log = { logged += it }, clock = { clockMs })
+                    exporter = { exported += it; exportFile }, log = { logged += it }, clock = { clockMs }, openModels = { searched += it })
 
     /** The agent schedules a job in [session] ([action] of the job tool, answered `success`), the core's own warning included. */
     private suspend fun scheduled(session: String, id: String, action: String = "create") {
@@ -2235,6 +2244,8 @@ class ChatSessionTest {
         const val RUN2 = "cron_ab12cd34ef56_20261113_110000"
         /** The core's summary of a job-tool row. */
         const val SCHEDULED = "Scheduled the job"
+        /** A skill's expanded body, as `command.dispatch` answers it: model-facing, never shown (chat-20). */
+        const val BODY = "[Skill: github] Use the gh CLI."
         const val BREAKDOWN = """{"categories":[{"color":"var(--context-usage-system)","id":"system_prompt","label":"System prompt","tokens":4000}],
             "context_max":32000,"context_used":4000,"context_percent":13,"estimated_total":4000,"context_estimated":false,
             "context_source":"provider_usage","model":"m"}"""
@@ -3335,5 +3346,254 @@ class ChatSessionTest {
         assertTrue(core.calls.none { it.first == "message.react" })
         assertEquals(emptyList<Reaction>(), chat.reactionsOn(id))
         assertTrue(chat.state.value.entries.none { it is Entry.Notice })
+    }
+
+    // The slash menu (chat-20, bet 9): a `/` line the catalog knows runs through command.dispatch or the app's own
+    // controls, never reaching the model as typed; while a turn runs it waits in the queue as typed (DC-P12, DC-P13).
+
+    /** The core's skill directive for a dispatch of [p]: the body for the model, the invocation for the bubble. */
+    private fun skillOf(p: JsonObject): String {
+        val arg = p["arg"]?.jsonPrimitive?.content.orEmpty()
+        return buildJsonObject {
+            put("type", "skill"); put("message", "$BODY $arg"); put("name", "github"); put("display", "/github $arg")
+        }.toString()
+    }
+
+    /** Each `command.dispatch` the chat made: the name and the arg it sent (null: left out). */
+    private fun dispatches() = core.calls.filter { it.first == "command.dispatch" }
+        .map { it.second.getValue("name").jsonPrimitive.content to it.second["arg"]?.jsonPrimitive?.content }
+
+    /** The `prompt.submit` texts that start with a slash: a line sent as typed (invariant 4). */
+    private fun slashSubmits() = submits().map { it.second.getValue("text").jsonPrimitive.content }.filter { it.startsWith("/") }
+
+    private fun ChatSession.lastNotice() = (state.value.entries.last() as Entry.Notice).text
+
+    @Test
+    fun aSkillLineIsDispatchedTheModelGetsItsBodyAndTheBubbleShowsTheInvocation() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        val mark = core.calls.size
+
+        chat.send("/github fix it")
+
+        assertEquals(listOf("commands.catalog", "command.dispatch", "prompt.submit"), callsAfter(mark).map { it.first })
+        assertEquals(Json.parseToJsonElement("""{"name":"github","arg":"fix it","session_id":"s1"}"""), lastOf("command.dispatch"))
+        assertEquals(Json.parseToJsonElement("""{"session_id":"s1","text":"$BODY fix it"}"""), lastSubmit())
+        assertEquals(emptyList<String>(), slashSubmits())
+        assertEquals(Entry.User("/github fix it", stableId = 0), chat.state.value.entries.last().untimed())
+        assertTrue(chat.state.value.submitted)
+    }
+
+    @Test
+    fun aPrefillFillsTheDraftWithTheCoresTranscriptAndSendsNothing() = runTest(UnconfinedTestDispatcher()) {
+        dispatch = { """{"type":"prefill","message":"earlier words","notice":"↶ Undid 1 turn (2 message(s))."}""" }
+        history = { """{"count":2,"messages":[{"role":"user","text":"first"},{"role":"assistant","text":"one"}]}""" }
+        val chat = openChat().apply { open() }
+
+        chat.send("/undo")
+
+        assertEquals(emptyList<Any>(), submits())
+        assertEquals(1, core.calls.count { it.first == "session.history" })
+        val entries = chat.state.value.entries
+        assertEquals(3, entries.size)
+        assertEquals("first", (entries[0] as Entry.User).text)
+        assertEquals("one", (entries[1] as Entry.Reply).text)
+        assertEquals("↶ Undid 1 turn (2 message(s)).", (entries[2] as Entry.Notice).text)
+        assertEquals("earlier words", chat.state.value.prefill)
+        assertFalse(chat.state.value.busy)
+
+        chat.prefillTaken("earlier words")
+        assertNull(chat.state.value.prefill)
+
+        dispatch = { """{"type":"prefill","message":"newer words"}""" }
+        chat.send("/undo")
+        chat.prefillTaken("other")
+        assertEquals("a newer prefill stays", "newer words", chat.state.value.prefill)
+    }
+
+    @Test
+    fun outputIsANoticeAndARefusalSaysWhyInTheCoresWords() = runTest(UnconfinedTestDispatcher()) {
+        dispatch = { """{"type":"exec","output":"No pending memory writes."}""" }
+        val chat = openChat().apply { open() }
+
+        chat.send("/memory pending")
+
+        assertEquals("No pending memory writes.", chat.lastNotice())
+        assertEquals(listOf("memory" to "pending"), dispatches())
+        assertFalse(chat.state.value.busy)
+        assertTrue(chat.state.value.entries.none { it is Entry.User })
+
+        dispatch = { throw CoreError(4004, "usage: /goal [text | …]") }
+        chat.send("/goal")
+        assertEquals("/goal: usage: /goal [text | …]", chat.lastNotice())
+        assertEquals("a blank arg is left out", "goal" to null, dispatches().last())
+        assertFalse(chat.state.value.busy)
+
+        dispatch = { """{"type":"send","message":"  "}""" }
+        chat.send("/goal")
+        assertEquals("/goal: empty message", chat.lastNotice())
+        assertFalse(chat.state.value.busy)
+        assertEquals(emptyList<Any>(), submits())
+    }
+
+    @Test
+    fun anAliasRunsItsTargetOnceAndNeverLoops() = runTest(UnconfinedTestDispatcher()) {
+        dispatch = { p -> if (p.getValue("name").jsonPrimitive.content == "hi") """{"type":"alias","target":"github"}""" else skillOf(p) }
+        val chat = openChat().apply { open() }
+
+        chat.send("/hi fix it")
+
+        assertEquals(listOf("hi" to "fix it", "github" to "fix it"), dispatches())
+        assertEquals(listOf("$BODY fix it"), submits().map { it.second.getValue("text").jsonPrimitive.content })
+        turn()
+
+        dispatch = { """{"type":"alias","target":"github"}""" }
+        chat.send("/hi x")
+
+        assertEquals(4, dispatches().size)  // /hi, then /github once: no third hop
+        assertEquals("/github is not available in the Android app.", chat.lastNotice())
+        assertFalse(chat.state.value.busy)
+        assertEquals(1, submits().size)
+    }
+
+    @Test
+    fun theAppsOwnCommandsCallTheAppsControlsAndNeverDispatch() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+
+        chat.send("/retry")
+        assertEquals(ChatSession.NOTHING_TO_RETRY, chat.lastNotice())
+
+        chat.send("/new")
+        assertEquals(2, core.calls.count { it.first == "session.create" })
+        assertEquals(runtime("s2"), chat.sessionId)
+
+        chat.send("/compress keep the plan")
+        assertEquals("keep the plan", lastOf("session.compress").getValue("focus_topic").jsonPrimitive.content)
+        assertEquals("Nothing to compress.", chat.lastNotice())
+
+        chat.send("hi")
+        turn("s2")
+        chat.send("/retry")
+        assertEquals("hi", lastSubmit().getValue("text").jsonPrimitive.content)
+        assertEquals(2, submits().size)
+
+        chat.send("/model kimi")
+        assertEquals(listOf("kimi"), searched)
+
+        assertEquals(emptyList<Any>(), dispatches())
+        assertEquals(emptyList<String>(), slashSubmits())
+    }
+
+    @Test
+    fun steerAndQueueAreTheBusyTimeSends() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        chat.send("hi")
+        core.emit("message.start", "s1")
+
+        chat.send("/steer go left")
+        assertEquals("go left", lastOf("session.steer").getValue("text").jsonPrimitive.content)
+        val steered = chat.state.value.entries.last() as Entry.User
+        assertEquals("go left" to BusyMode.STEER, steered.text to steered.mode)
+
+        chat.send("/queue later")
+        assertEquals(listOf("later"), chat.items())
+        assertEquals(1, submits().size)
+
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")  // "later" goes out
+        turn()
+        chat.send("/queue now")
+        assertEquals(Json.parseToJsonElement("""{"session_id":"s1","text":"now"}"""), lastSubmit())
+
+        turn()
+        chat.send("/steer x")
+        assertEquals(Json.parseToJsonElement("""{"session_id":"s1","text":"x"}"""), lastSubmit())
+
+        chat.send("/steer")
+        assertEquals(ChatSession.STEER_USAGE, chat.lastNotice())
+        chat.send("/queue")
+        assertEquals(ChatSession.QUEUE_USAGE, chat.lastNotice())
+        assertEquals(emptyList<Any>(), dispatches())
+    }
+
+    @Test
+    fun aSlashLineTypedWhileATurnRunsWaitsInTheQueueAsTypedAndIsDispatchedAtItsEnd() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }  // busy mode interrupt: a plain busy send would redirect
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        val mark = core.calls.size
+        val shown = chat.state.value.entries
+
+        chat.send("/github fix it")
+
+        assertEquals(listOf("commands.catalog"), callsAfter(mark).map { it.first })  // no session.redirect, no command.dispatch
+        assertEquals(listOf("/github fix it"), chat.items())
+        assertEquals(shown, chat.state.value.entries)
+
+        chat.send("/status")
+        assertEquals("/status is not available in the Android app.", chat.lastNotice())
+        assertEquals(listOf("/github fix it"), chat.items())
+
+        core.emit("message.complete", "s1", """{"text":"Done.","status":"complete"}""")
+
+        assertEquals(listOf("commands.catalog", "command.dispatch", "prompt.submit"), callsAfter(mark).map { it.first })
+        assertEquals(Json.parseToJsonElement("""{"session_id":"s1","text":"$BODY fix it","queued":true}"""), lastSubmit())
+        assertEquals("/github fix it", (chat.state.value.entries.last { it is Entry.User } as Entry.User).text)
+        assertEquals(emptyList<String>(), chat.items())
+        assertEquals(emptyList<String>(), slashSubmits())
+    }
+
+    @Test
+    fun anUnknownSlashIsTextAndAnUnreadableCatalogSendsNothing() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        val mark = core.calls.size
+
+        chat.send("/sdcard/notes.txt sum it up")
+
+        assertEquals(listOf("commands.catalog", "prompt.submit"), callsAfter(mark).map { it.first })
+        assertEquals("/sdcard/notes.txt sum it up", lastSubmit().getValue("text").jsonPrimitive.content)
+        turn()
+        chat.send("/tmp x")
+        assertEquals(1, core.calls.count { it.first == "commands.catalog" })  // one per session
+        assertEquals("/tmp x", lastSubmit().getValue("text").jsonPrimitive.content)
+        turn()
+
+        catalog = { throw CoreError(5020, "skill discovery unavailable") }
+        chat.open()  // a new session: its own catalog
+        val sent = submits().size
+
+        chat.send("/github x")
+
+        assertEquals(sent, submits().size)
+        assertEquals("Commands could not be read: skill discovery unavailable", chat.lastNotice())
+        assertFalse(chat.state.value.busy)
+    }
+
+    @Test
+    fun theMenuReadsTheCatalogAtEachOpeningAndNarrowsWithCompleteSlash() = runTest(UnconfinedTestDispatcher()) {
+        assertEquals("no session, no menu", emptyList<SlashItem>(), openChat().slashItems("/"))
+        val chat = openChat().apply { open() }
+        val mark = core.calls.size
+
+        val menu = chat.slashItems("/")
+
+        assertEquals(listOf("commands.catalog" to "s1"), callsAfter(mark))
+        assertEquals(Json.parseToJsonElement("""{"session_id":"s1"}"""), lastOf("commands.catalog"))
+        assertEquals(listOf("/new", "/model", "/compress", "/retry", "/steer", "/queue", "/undo", "/goal", "/memory", "/hi", "/plug",
+                            "/worktree-kickoff", "/github"), menu.map { it.name })
+
+        completion = { """{"items":[{"text":"github","kind":"skill"}],"replace_from":1}""" }
+        assertEquals(listOf("/github "), chat.slashItems("/gi").map { it.fill })
+        assertEquals(Json.parseToJsonElement("""{"text":"/gi","session_id":"s1"}"""), lastOf("complete.slash"))
+        assertEquals(1, core.calls.count { it.first == "commands.catalog" })
+
+        chat.slashItems("/")
+        assertEquals("each opening reads it again (D5)", 2, core.calls.count { it.first == "commands.catalog" })
+
+        completion = { throw CoreError(5020, "prompt_toolkit unavailable") }
+        assertEquals(listOf("/github"), chat.slashItems("/git").map { it.name })
+
+        val before = core.calls.size
+        assertEquals(emptyList<SlashItem>(), chat.slashItems("hi"))
+        assertEquals(emptyList<SlashItem>(), chat.slashItems("/a\nb"))
+        assertEquals(before, core.calls.size)
     }
 }
