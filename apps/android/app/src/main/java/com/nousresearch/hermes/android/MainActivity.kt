@@ -75,6 +75,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import com.nousresearch.hermes.android.settings.HubActions
+import com.nousresearch.hermes.android.settings.HubItemActions
 import com.nousresearch.hermes.android.settings.HubScreen
 import com.nousresearch.hermes.android.settings.SettingsActions
 import com.nousresearch.hermes.android.settings.SettingsControl
@@ -132,7 +133,12 @@ class MainActivity : ComponentActivity() {
                             }
                             hub?.let {  // above Skills, which stays open beneath: Back returns to it
                                 HubScreen(it, HubActions(query = state.pages.hub::query, search = { q -> app.hub { search(q) } },
-                                                         browse = { p -> app.hub { browse(p) } }, close = state.pages.hub::close))
+                                                         browse = { p -> app.hub { browse(p) } }, close = state.pages.hub::close,
+                                                         item = state.pages.hub.let { h ->
+                                                             HubItemActions(preview = { k -> app.hub { preview(k) } }, closePreview = h::closePreview,
+                                                                            scan = { id -> app.hub { scan(id) } },
+                                                                            install = { id -> app.hub { install(id) } })
+                                                         }))
                                 return@Surface
                             }
                             skills?.let {  // above Settings, which stays open beneath: Back returns to it (D4)

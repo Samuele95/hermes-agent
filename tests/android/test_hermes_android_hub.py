@@ -198,3 +198,23 @@ def test_an_offline_hub_search_answers_only_official_skills_and_no_error(offline
     names = [hit["name"] for hit in hits]
     assert "blackbox" in names
     assert set(names) <= official, set(names) - official  # every other source failed silently (D13)
+
+
+def test_an_official_skill_previews_and_installs_offline_and_then_lists_as_a_hub_skill(offline, no_github_login):
+    identifier = "official/autonomous-ai-agents/blackbox"
+
+    info = _manage({"action": "inspect", "query": identifier})["result"]["info"]
+
+    assert info["identifier"] == identifier
+    assert info["skill_md_preview"].startswith("---")
+
+    assert _manage({"action": "install", "query": identifier}) == {
+        "jsonrpc": "2.0", "id": 1, "result": {"installed": True, "name": identifier}}
+    from agent.skill_commands import reload_skills
+
+    reload_skills()
+    listed = {row["name"]: row for row in ask("skills_list")["skills"]}
+    assert listed["blackbox"]["provenance"] == "hub"
+
+    again = _manage({"action": "install", "query": identifier})  # why the app offers no Install for an installed skill (D8)
+    assert again["error"]["code"] == 5031, again

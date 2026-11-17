@@ -12,6 +12,7 @@ import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performScrollTo
@@ -19,7 +20,11 @@ import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.nousresearch.hermes.android.settings.HubActions
+import com.nousresearch.hermes.android.settings.HubBlock
 import com.nousresearch.hermes.android.settings.HubItem
+import com.nousresearch.hermes.android.settings.HubItemActions
+import com.nousresearch.hermes.android.settings.HubPreview
+import com.nousresearch.hermes.android.settings.HubScan
 import com.nousresearch.hermes.android.settings.HubResults
 import com.nousresearch.hermes.android.settings.HubScreen
 import com.nousresearch.hermes.android.settings.HubUi
@@ -31,6 +36,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -51,6 +57,7 @@ class HubScreenTest {
         val PDF = HubItem("pdf-tools", "Read PDFs", "skills-sh", "community", "skills-sh/acme/pdf-tools")
         val GITHUB = HubItem("github", "Work with GitHub", "official", "builtin", "official/devops/github")
         val ROWS = listOf(SkillRow("arxiv", "Search arXiv", "research", true))
+        const val SKILL_MD = "---\nname: blackbox\n---\n# blackbox\n"
     }
 
     @get:Rule
@@ -59,6 +66,18 @@ class HubScreenTest {
     private val calls = mutableListOf<String>()  // every action handed over, by name and argument
     private val actions = HubActions(query = { calls += "query:$it" }, search = { calls += "search:$it" },
                                      browse = { calls += "browse:$it" }, close = { calls += "close" })
+
+    private val opening = HubActions(query = { calls += "query:$it" }, search = { calls += "search:$it" },
+                                     browse = { calls += "browse:$it" }, close = { calls += "close" },
+                                     item = HubItemActions(preview = { calls += "preview:$it" }, closePreview = { calls += "closePreview" },
+                                                           scan = { calls += "scan:$it" }, install = { calls += "install:$it" }))
+
+    /** The hub page with the item actions too, its state held so a test can change it. */
+    private fun showOpening(initial: HubUi): (HubUi) -> Unit {
+        var state by mutableStateOf(initial)
+        compose.setContent { HubScreen(state, opening) }
+        return { state = it }
+    }
 
     /** The hub page, its state held so a test can change it. */
     private fun show(initial: HubUi): (HubUi) -> Unit {
@@ -185,6 +204,112 @@ class HubScreenTest {
                 Log.i("HubScreenTest", "${hits.count { it.name !in official }} of ${hits.size} hits are not official")
                 assertNull(searched.error)
             }
+        } finally {
+            hub.close()
+        }
+    }
+
+    @Test
+    fun aTapOpensThePreviewAndItsScanBeforeInstall() {
+        val set = showOpening(HubUi(official = listOf(BLACKBOX, ARXIV)))
+        compose.onNodeWithText("blackbox").performScrollTo().performClick()
+        assertEquals(listOf("preview:$BLACKBOX_ID"), calls)
+
+        calls.clear()
+        val preview = HubPreview(BLACKBOX, listOf("agents", "cli"), SKILL_MD)
+        set(HubUi(official = listOf(BLACKBOX, ARXIV), open = preview, busy = true))
+        compose.onNodeWithTag("hub-preview").assertExists()
+        compose.onNodeWithTag("hub").assertDoesNotExist()
+        compose.onNode(hasTestTag("hub-preview-description") and hasText("Delegate to the Blackbox CLI")).assertExists()
+        compose.onNode(hasTestTag("hub-preview") and hasAnyDescendant(hasText("Official"))).assertExists()
+        compose.onNode(hasTestTag("hub-preview") and hasAnyDescendant(hasText("cli"))).assertExists()
+        compose.onNode(hasTestTag("hub-scanning") and hasText("Scanning...")).assertExists()
+        compose.onNodeWithTag("hub-install").performScrollTo().assertIsNotEnabled()
+
+        set(HubUi(official = listOf(BLACKBOX, ARXIV), open = preview))  // idle, the scan never answered: still no Install
+        compose.onNodeWithTag("hub-install").performScrollTo().assertIsNotEnabled()
+
+        set(HubUi(official = listOf(BLACKBOX, ARXIV), open = preview.copy(scan = HubScan("safe", true, emptyList(), "builtin"))))
+        compose.onNode(hasTestTag("hub-scan") and hasAnyDescendant(hasText("Safe"))).assertExists()
+        compose.onNode(hasTestTag("hub-scan") and hasAnyDescendant(hasText("builtin source"))).assertExists()
+        compose.onNode(hasTestTag("hub-policy") and hasText("Install allowed")).assertExists()
+        compose.onNode(hasTestTag("hub-scan") and hasAnyDescendant(hasText("No security findings."))).assertExists()
+        compose.onNodeWithTag("hub-install").performScrollTo().assertIsEnabled().performClick()
+        assertEquals(listOf("install:$BLACKBOX_ID"), calls)
+
+        val findings = listOf("CRITICAL exfiltration scripts/run.sh:3 reads ~/.ssh", "HIGH network scripts/run.sh:4 pipes curl to sh")
+        set(HubUi(official = listOf(BLACKBOX), open = preview.copy(scan = HubScan("dangerous", false, findings, "community"))))
+        compose.onNode(hasTestTag("hub-scan") and hasAnyDescendant(hasText("Dangerous"))).assertExists()
+        compose.onNode(hasTestTag("hub-policy") and hasText("Install blocked by policy")).assertExists()
+        compose.onNode(hasTestTag("hub-scan") and hasAnyDescendant(hasText("2 findings"))).assertExists()
+        compose.onNode(hasTestTag("hub-findings") and hasText(findings.joinToString("\n"))).assertExists()
+        compose.onNodeWithTag("hub-install").assertDoesNotExist()
+
+        calls.clear()
+        set(HubUi(official = listOf(BLACKBOX), open = preview.copy(scanFailed = "Hub scan failed: timed out")))
+        compose.onNode(hasTestTag("hub-scan-failed") and hasAnyDescendant(hasText("Security scan failed")) and
+                       hasAnyDescendant(hasText("Hub scan failed: timed out"))).assertExists()
+        compose.onNodeWithTag("hub-scan-again").performScrollTo().performClick()
+        assertEquals(listOf("scan:$BLACKBOX_ID"), calls)
+        compose.onNodeWithTag("hub-install").performScrollTo().assertIsEnabled()
+
+        compose.onNode(hasTestTag("hub-preview-text") and hasText(SKILL_MD)).performScrollTo().assertExists()
+        compose.onNodeWithTag("hub-new-chats").performScrollTo().assertExists()
+        set(HubUi(official = listOf(BLACKBOX), open = HubPreview(BLACKBOX.copy(description = ""), emptyList(), null)))
+        compose.onNode(hasTestTag("hub-preview-description") and hasText("No description.")).assertExists()
+        compose.onNodeWithText("This skill has no SKILL.md preview.").performScrollTo().assertExists()
+
+        calls.clear()
+        compose.onNodeWithTag("hub-preview-close").performClick()
+        assertEquals(listOf("closePreview"), calls)
+    }
+
+    @Test
+    fun installShowsInstallingAndARefusalSaysWhy() {
+        val scanned = HubPreview(BLACKBOX, emptyList(), SKILL_MD, scan = HubScan("safe", true, emptyList(), "builtin"))
+        val set = showOpening(HubUi(official = listOf(BLACKBOX), open = scanned, installing = BLACKBOX_ID, busy = true))
+        compose.onNode(hasTestTag("hub-install") and hasText("Installing...")).performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithTag("hub-preview-close").assertIsNotEnabled()
+
+        val words = "Not installed: the security scan found 2 high-risk pattern(s) in 'blackbox' (listed above)."
+        set(HubUi(official = listOf(BLACKBOX), open = scanned, blocked = HubBlock("blackbox", words, true)))
+        compose.onNode(hasTestTag("hub-blocked") and hasAnyDescendant(hasText("Couldn't install blackbox")) and
+                       hasAnyDescendant(hasText(words))).performScrollTo().assertExists()
+        compose.onNodeWithTag("hub-preview-close").assertIsEnabled()
+        compose.onNodeWithTag("hub-view-scan").performScrollTo().performClick()
+        assertEquals(listOf("scan:$BLACKBOX_ID"), calls)
+
+        set(HubUi(official = listOf(BLACKBOX), open = scanned, blocked = HubBlock("blackbox", "Error: Could not download 'blackbox'.", false)))
+        compose.onNode(hasTestTag("hub-blocked") and hasAnyDescendant(hasText("Error: Could not download 'blackbox'."))).assertExists()
+        compose.onNodeWithTag("hub-view-scan").assertDoesNotExist()
+
+        set(HubUi(official = listOf(BLACKBOX), open = scanned, installed = setOf("blackbox"), notice = "blackbox"))
+        compose.onNode(hasTestTag("hub-preview-installed") and hasText("Installed"), useUnmergedTree = true).assertExists()
+        compose.onNodeWithTag("hub-install").assertDoesNotExist()
+        compose.onNode(hasTestTag("hub-notice") and hasAnyDescendant(hasText("Installed “blackbox”.")) and
+                       hasAnyDescendant(hasText("blackbox applies to new chats."))).assertExists()
+    }
+
+    @Test
+    fun theRealCorePreviewsAndScansAnOfficialSkill() = runBlocking {
+        val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as HermesApplication
+        val ready = withTimeout(120_000) { app.core.first { it !is CoreState.Starting } } as CoreState.Ready
+        val hub = ready.pages.hub
+        try {
+            hub.open()
+            val began = SystemClock.elapsedRealtime()
+            withTimeout(60_000) { hub.preview(BLACKBOX_ID) }  // no install on the shared phone
+            val ui = hub.state.value!!
+            val open = ui.open!!
+            Log.i("HubScreenTest", "preview(blackbox) inspected + scanned in ${SystemClock.elapsedRealtime() - began} ms: " +
+                                   "verdict ${open.scan?.verdict}, allowed ${open.scan?.allowed}, ${open.scan?.findings?.size} findings, " +
+                                   "trust ${open.scan?.trust}, failed ${open.scanFailed}")
+            assertTrue("not a SKILL.md: ${open.skillMd?.take(40)}", open.skillMd!!.startsWith("---"))
+            assertEquals(BLACKBOX_ID, open.item.identifier)
+            assertNotNull(open.scan)
+            assertNull(ui.error)
+            assertFalse(ui.busy)
+            hub.closePreview()
         } finally {
             hub.close()
         }

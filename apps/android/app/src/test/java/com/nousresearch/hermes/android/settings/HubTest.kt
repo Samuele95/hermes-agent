@@ -53,4 +53,27 @@ class HubTest {
         assertEquals(emptyList<HubItem>(), ui.copy(query = "zzz").available())
         assertNull(HubUi().available())
     }
+
+    @Test
+    fun theCoresConsoleMarkupIsNotShown() {
+        assertEquals("Not installed: the security scan found 2 high-risk pattern(s) in 'x' (listed above).",
+                     plain("[bold red]Not installed:[/] the security scan found 2 high-risk pattern(s) in 'x' (listed above)."))
+        assertEquals("Resolving 'x'...", plain("[dim]Resolving 'x'...[/]"))
+        assertEquals("hermes skills search x", plain("[bold]hermes skills search x[/]"))
+        assertEquals("Warning: 'x' is already installed", plain(" [yellow]Warning:[/yellow] 'x' is already installed "))
+        assertEquals("step [1/3] of [skill]", plain("step [1/3] of [skill]"))
+    }
+
+    @Test
+    fun onlyAScanBlockedRefusalOffersTheScan() {
+        val scanned = HubBlock.of("x", "[bold red]Not installed:[/] the security scan\nfound 2 high-risk pattern(s) in 'x' (listed above). " +
+                                       "Hermes never installs unverified skills with high-risk findings, even with --force.")
+        assertEquals(HubBlock("x", "Not installed: the security scan\nfound 2 high-risk pattern(s) in 'x' (listed above). " +
+                                   "Hermes never installs unverified skills with high-risk findings, even with --force.", true), scanned)
+        listOf("[bold red]Error:[/] Could not download 'x'.", "Use the full identifier to install a specific one.",
+               "Use --force to reinstall.").forEach {
+            assertFalse(it, HubBlock.of("x", it).byScan)
+        }
+        assertEquals("Error: Could not download 'x'.", HubBlock.of("x", "[bold red]Error:[/] Could not download 'x'.").words)
+    }
 }

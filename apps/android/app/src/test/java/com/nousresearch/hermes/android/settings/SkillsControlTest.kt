@@ -554,4 +554,18 @@ class SkillsControlTest {
 
         assertEquals(1, bridgeCalls.count { it.first == "skills_restore" })
     }
+
+    @Test
+    fun rowsTheHubListedReplaceTheShownRowsAndSendNothing() = runTest {
+        skills.listed(KINDS)  // a closed page stays closed
+        assertNull(skills.state.value)
+        skills.open()
+        order.clear()
+
+        skills.listed(KINDS)
+
+        assertEquals(KINDS, skills.state.value!!.rows)
+        assertEquals(emptyList<String>(), order)
+    }
 }
+

@@ -68,6 +68,14 @@ class SkillsControl(private val core: CoreGateway, private val bridge: AppBridge
         }
     }
 
+    /**
+     * The core's list as the Skills Hub just read it after an install (D9): on an open, idle page it replaces the shown
+     * rows. Nothing is sent: the hub already reloaded the core's skills for the open chat.
+     */
+    fun listed(rows: List<SkillRow>) {
+        screen.update { if (it == null || it.busy) it else it.copy(rows = rows) }
+    }
+
     /** Narrows the shown rows to [text] ([SkillsUi.shown]); the core is not asked. */
     fun query(text: String) {
         screen.update { it?.copy(query = text) }

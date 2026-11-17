@@ -117,10 +117,11 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps
     // Last, and launched: the probe shares the GIL with every start-up call (K1b) and may take its 4 s budget; Ready never waits (F6).
     scope.launch { setup.followReadiness() }
     scope.launch { setup.checkReadiness() }
+    val skills = SkillsControl(gateway, bridge, session = { chat.openSessionId?.value })
     return CoreState.Ready(gateway, chat, setup,
                            Pages(settings,
-                                 SkillsControl(gateway, bridge, session = { chat.openSessionId?.value }), JobsControl(gateway, bridge, deps.seen, continueInChat = chat::resume),
+                                 skills, JobsControl(gateway, bridge, deps.seen, continueInChat = chat::resume),
                                  TelegramSetup(deps.secrets, bridge, deps.seen), SshSetup(deps.secrets, bridge), history, context,
-                                 export, status, models, HubControl(gateway, bridge, session = { chat.openSessionId?.value })),
+                                 export, status, models, HubControl(gateway, bridge, session = { chat.openSessionId?.value }, listed = skills::listed)),
                            "Python ${facts.python} · SQLite ${facts.sqlite} $fts")
 }
