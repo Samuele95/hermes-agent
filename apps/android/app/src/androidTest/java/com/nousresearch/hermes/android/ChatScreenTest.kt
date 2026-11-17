@@ -8,6 +8,7 @@ import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextClearance
+import androidx.compose.ui.test.performTextReplacement
 import androidx.test.platform.app.InstrumentationRegistry
 import com.nousresearch.hermes.android.chat.ChatPlaces
 import com.nousresearch.hermes.android.entry.IncomingText
@@ -61,6 +62,8 @@ import com.nousresearch.hermes.android.chat.Correction
 import com.nousresearch.hermes.android.chat.ChatScreen
 import com.nousresearch.hermes.android.chat.ChatSession
 import com.nousresearch.hermes.android.chat.NoticeShortcut
+import com.nousresearch.hermes.android.chat.Retry
+import com.nousresearch.hermes.android.chat.Rewind
 import com.nousresearch.hermes.android.chat.Entry
 import com.nousresearch.hermes.android.chat.ContextMeter
 import com.nousresearch.hermes.android.chat.Todo
@@ -867,6 +870,91 @@ class ChatScreenTest {
 
         assertEquals(listOf("ls -la ~/notes"), copies)
         compose.onNodeWithTag("copy-message").assertDoesNotExist()
+    }
+
+    @Test
+    fun aLongPressOffersEditAndSendsTheNewWords() {
+        val sent = mutableListOf<Rewind>()
+        compose.setContent {
+            ChatScreen(Chat(listOf(Entry.User("hi", 1, 0), Entry.Reply("Hello", TurnStatus.COMPLETE, stableId = 1))), onSend = {},
+                       onEdit = { sent += it }, onCopy = {})
+        }
+
+        compose.onNodeWithText("hi").performTouchInput { longClick() }
+        compose.onNodeWithTag("copy-message").assertExists()
+        compose.onNodeWithTag("edit-message").performClick()
+
+        compose.onNodeWithTag("edit-field").assertTextEquals("hi")
+        compose.onNodeWithContentDescription("Send edited message").assertIsNotEnabled()  // the words did not change (D7)
+        compose.onNodeWithTag("edit-field").performTextReplacement("hello")
+        compose.onNodeWithTag("edit-send").performClick()
+
+        assertEquals(listOf(Rewind(Retry(0, "hi", 1), "hello", false)), sent)
+        compose.onNodeWithTag("edit-field").assertDoesNotExist()
+        compose.onNodeWithTag("restore-dialog").assertDoesNotExist()
+
+        compose.onNodeWithText("hi").performTouchInput { longClick() }
+        compose.onNodeWithTag("edit-message").performClick()
+        compose.onNodeWithTag("edit-cancel").performClick()
+
+        compose.onNodeWithText("hi").assertExists()
+        compose.onNodeWithTag("edit-field").assertDoesNotExist()
+        assertEquals(1, sent.size)
+    }
+
+    @Test
+    fun editingAnOlderMessageAsksToRestoreTheCheckpointFirst() {
+        val sent = mutableListOf<Rewind>()
+        compose.setContent {
+            ChatScreen(Chat(listOf(Entry.User("a", 1, 0), Entry.Reply("A", TurnStatus.COMPLETE, stableId = 1),
+                                   Entry.User("b", 3, 2), Entry.Reply("B", TurnStatus.COMPLETE, stableId = 3))),
+                       onSend = {}, onEdit = { sent += it }, onCopy = {})
+        }
+
+        compose.onNodeWithText("a").performTouchInput { longClick() }
+        compose.onNodeWithTag("edit-message").performClick()
+        compose.onNodeWithTag("edit-field").performTextReplacement("a2")
+        compose.onNodeWithTag("edit-send").performClick()
+
+        compose.onNodeWithText("Restore to this checkpoint?").assertExists()
+        compose.onNodeWithText("Everything after this prompt is removed from the conversation, and the prompt runs again from here.").assertExists()
+        assertEquals(emptyList<Rewind>(), sent)
+
+        compose.onNodeWithTag("restore-cancel").performClick()
+        compose.onNodeWithTag("restore-dialog").assertDoesNotExist()
+        assertEquals(emptyList<Rewind>(), sent)
+        compose.onNodeWithTag("edit-field").assertTextEquals("a2")  // Cancel keeps the editor and its words
+
+        compose.onNodeWithTag("edit-send").performClick()
+        compose.onNodeWithTag("restore-confirm").performClick()  // "Restore & rerun"
+
+        assertEquals(listOf(Rewind(Retry(0, "a", 1), "a2", true)), sent)
+        compose.onNodeWithTag("edit-field").assertDoesNotExist()
+    }
+
+    @Test
+    fun editIsOfferedOnSentPromptsWhileATurnRunsButNotInAJobsRunWhileCompressingOrWithoutAHandler() {
+        val running = Chat(listOf(Entry.User("hi", 1, 0)), streaming = "He")
+        var chat by mutableStateOf(running)
+        var onEdit by mutableStateOf<((Rewind) -> Unit)?>({})
+        compose.setContent { ChatScreen(chat, onSend = {}, onEdit = onEdit, onCopy = {}) }
+        fun offered(bubble: String): Boolean {
+            compose.onNodeWithText(bubble).performTouchInput { longClick() }
+            val shown = compose.onAllNodesWithTag("edit-message").fetchSemanticsNodes().isNotEmpty()
+            compose.onNodeWithTag("copy-message").performClick()  // closes the menu
+            return shown
+        }
+
+        assertTrue("a turn runs: the edit stops it first (inv. 2)", offered("hi"))
+        chat = running.copy(runOwned = true)
+        assertFalse("a job's run", offered("hi"))
+        chat = running.copy(compressing = true)
+        assertFalse("compressing", offered("hi"))
+        chat = running.copy(entries = running.entries + Entry.User("steer it", stableId = 1, mode = BusyMode.STEER))
+        assertFalse("a correction", offered("steer it"))
+        chat = running
+        onEdit = null
+        assertFalse("no handler", offered("hi"))
     }
 
     private val kotlinReply = Entry.Reply("Run:\n\n```kotlin\nval x = \"hi\" // note\n```", TurnStatus.COMPLETE, stableId = 0)

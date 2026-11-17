@@ -169,6 +169,7 @@ class MainActivity : ComponentActivity() {
                                                             delete = { id -> app.chat { deleteQueued(id) } }, resume = { app.chat { resumeQueue() } })
                             ChatScreen(chat, about = state.about, answers = answers, places = places, onStop = { app.chat { cancel() } },
                                        onRetry = { app.chat { retry() } }, onCopy = { copy("Hermes", it) },
+                                       onEdit = { rewind -> app.chat { resend(rewind) } },
                                        // The drawer's sessions load as it opens; a tap continues one.
                                        sessions = history, onSessions = { open -> if (open) app.history { open() } else state.pages.history.close() },
                                        onPickSession = { id -> app.history { pick(id) } },

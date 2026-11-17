@@ -9,8 +9,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -46,6 +50,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Surface
@@ -67,10 +72,13 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringArrayResource
 import androidx.compose.ui.res.stringResource
@@ -79,6 +87,8 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -119,7 +129,9 @@ class ModelActions(val open: () -> Unit, val close: () -> Unit, val query: (Stri
 /**
  * A chat in the desktop's shape: the transcript is the page, replies flat across it and the user's words in
  * bubbles, the composer at the bottom naming the model, and a drawer with the sessions and the app's other places.
- * It holds only the draft; [onSend] gets the trimmed text, [onRetry] runs the last prompt again. [onSessions] hears the drawer open (load the sessions)
+ * It holds only the draft; [onSend] gets the trimmed text, [onRetry] runs the last prompt again. [onEdit] sends an edited
+ * prompt again from its place (chat-12): a long press on a sent prompt offers Edit message; a cut that archives later
+ * turns asks first. [onSessions] hears the drawer open (load the sessions)
  * and close; [sessionActions] is the rows' menu (rename, delete). [contextActions] opens the context sheet from the meter,
  * compresses and closes it; [context] is that sheet while it is open. [places] are where the drawer, the top bar, the
  * model pill and a notice's shortcut lead. The transcript follows a streaming reply only while the reader is at its end;
@@ -141,7 +153,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
                sessions: HistoryUi? = null, onSessions: (open: Boolean) -> Unit = {}, onPickSession: (StoredSessionId) -> Unit = {},
                sessionActions: SessionActions? = null, context: ContextUi? = null, contextActions: ContextActions? = null,
                places: ChatPlaces? = null, onStop: () -> Unit = {}, onRetry: (() -> Unit)? = null,
-               onCopy: ((String) -> Unit)? = null, about: String? = null, queue: QueueUi = QueueUi(),
+               onEdit: ((Rewind) -> Unit)? = null, onCopy: ((String) -> Unit)? = null, about: String? = null, queue: QueueUi = QueueUi(),
                queueActions: QueueActions? = null, onOfferTaken: (IncomingText) -> Unit = {}, readiness: Readiness? = null,
                onCheckReadiness: (() -> Unit)? = null, onOpenUrl: ((String) -> Unit)? = null, onDismissWall: () -> Unit = {},
                exportUi: ExportUi = ExportUi(), exportActions: ExportActions? = null, status: StatusUi? = null,
@@ -176,7 +188,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
                    exportActions?.export, exporting = exportUi.busy)
             if (exportUi.busy) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp).testTag("export-busy"))
             if (chat.entries.isEmpty() && !chat.running && chat.prompts.isEmpty()) Intro(Modifier.weight(1f))
-            else Transcript(chat, onRetry, onCopy, picked, places?.gateway, now, Modifier.weight(1f))
+            else Transcript(chat, onRetry, onEdit, onCopy, picked, places?.gateway, now, Modifier.weight(1f))
             // The billing wall tops the stack above the composer: a blocker outranks the rest (D7); the composer stays usable.
             chat.wall?.let { BillingBanner(it, onOpenUrl, places?.setup, onDismissWall) }
             // One question at a time, the oldest first: the turn waits on it.
@@ -254,14 +266,19 @@ private fun Intro(modifier: Modifier) {
 }
 
 @Composable
-private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, onCopy: ((String) -> Unit)?, picked: Int, onGateway: (() -> Unit)?,
-                       now: () -> Long, modifier: Modifier) {
+private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, onEdit: ((Rewind) -> Unit)?, onCopy: ((String) -> Unit)?, picked: Int,
+                       onGateway: (() -> Unit)?, now: () -> Long, modifier: Modifier) {
     val list = rememberLazyListState()
     val h24 = android.text.format.DateFormat.is24HourFormat(LocalContext.current)  // the phone's own clock setting (D3)
     // chat-17 (F9, DC-B16): whether the list follows its newest row belongs to the view, never to the conversation.
     var following by rememberSaveable { mutableStateOf(true) }
     val dragged by list.interactionSource.collectIsDraggedAsState()  // the reader's finger only, never a scroll of ours
     val retry = onRetry?.takeIf { chat.retryTarget() != null }
+    var editing by rememberSaveable { mutableStateOf<Long?>(null) }  // the prompt being edited, by its entry's id: the view's own
+    val target = editing?.let(chat::editTarget)
+    LaunchedEffect(target == null) { if (target == null) editing = null }  // gone, compressing, a job's run: the editor closes
+    var restoring by remember { mutableStateOf<Rewind?>(null) }  // an edit that waits for "Restore & rerun"
+    fun send(rewind: Rewind) { if (chat.laterTurns(rewind.target) > 0) restoring = rewind else { onEdit?.invoke(rewind); editing = null } }
     // Only the reader moves the follow: dragging back stops it, and reaching the end starts it again (Follow.kt, V1).
     LaunchedEffect(list) {
         snapshotFlow { Triple(dragged, list.lastScrolledBackward, list.canScrollForward) }
@@ -283,7 +300,12 @@ private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, onCopy: ((String) -> 
             // Each row's state (the reasoning fold, the bubble's menu) is kept by its entry's id, not its place: a rewind or a
             // re-read transcript never hands it to another row (/improve 20261113T221531Z #8).
             itemsIndexed(chat.entries, key = { _, entry -> entry.stableId }) { i, entry ->
-                EntryRow(entry, onCopy, retry.takeIf { i == chat.entries.lastIndex && entry is Entry.Reply }, onGateway, now, h24)
+                if (entry is Entry.User && editing == entry.stableId && target != null) {
+                    EditBubble(entry, onSend = { words -> send(Rewind(target, words, deep = false)) }, onCancel = { editing = null })
+                } else {
+                    val edit = onEdit?.takeIf { chat.editTarget(entry.stableId) != null }?.let { { editing = entry.stableId } }
+                    EntryRow(entry, onCopy, edit, retry.takeIf { i == chat.entries.lastIndex && entry is Entry.Reply }, onGateway, now, h24)
+                }
             }
             retry?.takeIf { chat.entries.last() !is Entry.Reply }?.let { item { RetryAction(failed = true, it) } }
             chat.reasoning?.takeIf { chat.running && it.isNotBlank() }?.let { text -> item { Reasoning(text, Modifier.testTag("reasoning-streaming")) } }
@@ -302,6 +324,51 @@ private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, onCopy: ((String) -> 
         }
         if (!following) JumpToLatest(Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp)) { following = true }
     }
+    // Cancel keeps the editor and its words; Restore & rerun sends the edit with the user's consent to the deep cut.
+    restoring?.let { r ->
+        RestoreDialog(onConfirm = { onEdit?.invoke(r.copy(deep = true)); restoring = null; editing = null }, onDismiss = { restoring = null })
+    }
+}
+
+/**
+ * A sent prompt being edited, in its bubble's place: its words in a focused field, Cancel (or Back) and the send
+ * "Send edited message", off while the words are empty or unchanged (D7).
+ */
+@Composable
+private fun EditBubble(user: Entry.User, onSend: (String) -> Unit, onCancel: () -> Unit) {
+    var draft by rememberSaveable(user.stableId, stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue(user.text, TextRange(user.text.length)))
+    }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(user.stableId) { focus.requestFocus() }
+    // The keyboard opens after the focus and shrinks the transcript: the editor and its send are brought back into view
+    // as it does, so a prompt near the end is not edited under the keyboard.
+    val shown = remember { BringIntoViewRequester() }
+    val keyboard = WindowInsets.ime.getBottom(LocalDensity.current)
+    LaunchedEffect(keyboard) { if (keyboard > 0) shown.bringIntoView() }
+    BackHandler(onBack = onCancel)
+    val ok = draft.text.isNotBlank() && draft.text.trim() != user.text.trim()
+    Column(Modifier.fillMaxWidth().bringIntoViewRequester(shown), horizontalAlignment = Alignment.End) {
+        OutlinedTextField(draft, { draft = it }, Modifier.fillMaxWidth().focusRequester(focus).testTag("edit-field"), maxLines = 6)
+        Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onCancel, Modifier.testTag("edit-cancel")) { Text(stringResource(R.string.chat_edit_cancel)) }
+            Spacer(Modifier.width(8.dp))
+            FilledIconButton({ onSend(draft.text.trim()) }, Modifier.size(36.dp).testTag("edit-send"), enabled = ok) {
+                Icon(HermesIcons.Send, stringResource(R.string.chat_send_edited), Modifier.size(18.dp))
+            }
+        }
+    }
+}
+
+/** Asks before an edit cuts the turns after its prompt, in the desktop's words (`rewind.ts:546-555`). */
+@Composable
+private fun RestoreDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(onDismissRequest = onDismiss, modifier = Modifier.testTag("restore-dialog"),
+                containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                title = { Text(stringResource(R.string.chat_restore_title)) },
+                text = { Text(stringResource(R.string.chat_restore_body)) },
+                confirmButton = { PrimaryButton(stringResource(R.string.chat_restore_confirm), onConfirm, Modifier.testTag("restore-confirm")) },
+                dismissButton = { SecondaryButton(stringResource(R.string.chat_edit_cancel), onDismiss, Modifier.testTag("restore-cancel")) })
 }
 
 /**
@@ -399,10 +466,10 @@ private fun JumpToLatest(modifier: Modifier, onClick: () -> Unit) {
 }
 
 @Composable
-private fun EntryRow(entry: Entry, onCopy: ((String) -> Unit)?, retry: (() -> Unit)?, onGateway: (() -> Unit)?, now: () -> Long,
-                     h24: Boolean) {
+private fun EntryRow(entry: Entry, onCopy: ((String) -> Unit)?, onEdit: (() -> Unit)?, retry: (() -> Unit)?, onGateway: (() -> Unit)?,
+                     now: () -> Long, h24: Boolean) {
     when (entry) {
-        is Entry.User -> UserBubble(entry, onCopy, now, h24)
+        is Entry.User -> UserBubble(entry, onCopy, onEdit, now, h24)
         is Entry.Reply -> {
             var timeShown by rememberSaveable { mutableStateOf(false) }  // the time a tap showed: this view's own state
             val label = stringResource(if (timeShown) R.string.chat_hide_time else R.string.chat_show_time)
@@ -463,21 +530,22 @@ private fun Reasoning(text: String, modifier: Modifier = Modifier) {
 }
 
 /**
- * The user's words in a bubble; a tap shows when it was sent (chat-15, DC-P18), a long press offers Copy (V6: the drawer
- * row's menu, a phone has no hover bar). A correction sent while a turn ran says beneath it what the core did with it,
+ * The user's words in a bubble; a tap shows when it was sent (chat-15, DC-P18), a long press offers Copy and, with
+ * [onEdit], Edit message (V6, DC-P8: the drawer row's menu, a phone has no hover bar). A correction sent while a turn ran says beneath it what the core did with it,
  * once the core answered.
  */
 @Composable
-private fun UserBubble(user: Entry.User, onCopy: ((String) -> Unit)?, now: () -> Long, h24: Boolean) {
+private fun UserBubble(user: Entry.User, onCopy: ((String) -> Unit)?, onEdit: (() -> Unit)?, now: () -> Long, h24: Boolean) {
     val text = user.text
     val shape = RoundedCornerShape(14.dp)
     var menu by remember { mutableStateOf(false) }
     var shown by rememberSaveable { mutableStateOf(false) }  // the time a tap showed: this view's own state
     val timeLabel = user.at?.let { stringResource(if (shown) R.string.chat_hide_time else R.string.chat_show_time) }
-    val menuLabel = onCopy?.let { stringResource(R.string.chat_message_actions) }
-    val press = if (onCopy != null || user.at != null) {
+    val hasMenu = onCopy != null || onEdit != null
+    val menuLabel = if (hasMenu) stringResource(R.string.chat_message_actions) else null
+    val press = if (hasMenu || user.at != null) {
         Modifier.combinedClickable(onClick = { if (user.at != null) shown = !shown }, onClickLabel = timeLabel,
-                                   onLongClick = onCopy?.let { { menu = true } }, onLongClickLabel = menuLabel)
+                                   onLongClick = if (hasMenu) ({ menu = true }) else null, onLongClickLabel = menuLabel)
     } else Modifier
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
         Box {
@@ -485,8 +553,14 @@ private fun UserBubble(user: Entry.User, onCopy: ((String) -> Unit)?, now: () ->
                      .border(1.dp, Hermes.colors.userBubbleBorder, shape).padding(horizontal = 14.dp, vertical = 10.dp),
                  style = MaterialTheme.typography.bodyLarge)
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                DropdownMenuItem(text = { Text(stringResource(R.string.chat_copy)) }, onClick = { menu = false; onCopy?.invoke(text) },
-                                 Modifier.testTag("copy-message"), leadingIcon = { Icon(HermesIcons.Copy, null, Modifier.size(16.dp)) })
+                onCopy?.let {
+                    DropdownMenuItem(text = { Text(stringResource(R.string.chat_copy)) }, onClick = { menu = false; it(text) },
+                                     Modifier.testTag("copy-message"), leadingIcon = { Icon(HermesIcons.Copy, null, Modifier.size(16.dp)) })
+                }
+                onEdit?.let {
+                    DropdownMenuItem(text = { Text(stringResource(R.string.chat_edit_message)) }, onClick = { menu = false; it() },
+                                     Modifier.testTag("edit-message"), leadingIcon = { Icon(HermesIcons.Pencil, null, Modifier.size(16.dp)) })
+                }
             }
         }
         user.at?.let { timeText(it, shown, now, h24) }?.let {
