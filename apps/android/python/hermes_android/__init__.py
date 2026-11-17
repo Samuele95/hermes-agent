@@ -475,6 +475,12 @@ def backup_create(arg: str) -> str:
     return backup.create(arg)
 
 
+def backup_inspect(arg: str) -> str:
+    from hermes_android import backup
+
+    return backup.inspect(arg)
+
+
 def backup_restore(arg: str) -> str:
     from hermes_android import backup
 

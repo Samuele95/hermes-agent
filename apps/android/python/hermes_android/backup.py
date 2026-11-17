@@ -22,6 +22,11 @@ the open file (``_import_db_member``: the inode is kept, open handles see the re
 published atomically. Members the archive lacks are not deleted (the core's import semantics). A picked copy in
 ``TMPDIR/imports/`` is deleted afterwards. The core is importable only after ``prepare()``, so its imports sit inside
 the functions; the core's helpers are private and may move at an upstream sync (F3). Nothing of the data is logged.
+
+``inspect``, the third call (P15 D1), answers what a picked archive would restore (its parts, the members a restore
+skips, the sessions its database holds) so the app's confirm can show it before anything is replaced. It runs the
+restore's own classification, ``_classify``, so :func:`part_of` stays the one rule and no Kotlin copy of it can drift;
+it writes nothing, takes no backup slot, is never refused for a running turn or gateway, and never deletes the file.
 """
 
 from __future__ import annotations
@@ -243,6 +248,34 @@ def _restore(path: Path) -> dict:
 
 
 def _restore_from(zf: zipfile.ZipFile) -> dict:
+    c = _classify(zf)
+    if "error" in c:
+        return c
+    written = _write(zf, c["mapped"], c["archived"])
+    if isinstance(written, str):
+        return {"error": written}
+    return {"restored": [p for p in PARTS if p in written], "skipped": c["skipped"], "sessions": c["sessions"]}
+
+
+def inspect(arg: str) -> str:
+    """What ``{"path"}``'s zip would restore, writing nothing: ``{"parts", "skipped", "sessions"}``, or the refusal
+    :func:`restore` gives the same file. No backup slot, no turn or gateway check, and the file is never deleted."""
+    path = Path(json.loads(arg)["path"])
+    try:
+        zf = zipfile.ZipFile(path)
+    except (zipfile.BadZipFile, OSError):
+        return json.dumps({"error": NOT_ZIP})
+    with zf:
+        c = _classify(zf)
+    if "error" in c:
+        return json.dumps(c)
+    held = {part for *_, part in c["mapped"]}
+    return json.dumps({"parts": [p for p in PARTS if p in held], "skipped": c["skipped"], "sessions": c["sessions"]})
+
+
+def _classify(zf: zipfile.ZipFile) -> dict:
+    """The archive's members a restore takes, by :func:`part_of`, with every refusal a restore gives before its first
+    write: ``{"error"}``, or ``{"mapped", "skipped", "archived", "sessions"}``."""
     from hermes_cli.archive_safe import normalize_archive_parts
     from hermes_cli.backup_restore import _detect_prefix, _validate_backup_zip
 
@@ -270,10 +303,7 @@ def _restore_from(zf: zipfile.ZipFile) -> dict:
     sessions = _archived_sessions(zf, database) if database else 0
     if sessions is None:
         return {"error": BAD_SESSIONS}
-    written = _write(zf, mapped, archived)
-    if isinstance(written, str):
-        return {"error": written}
-    return {"restored": [p for p in PARTS if p in written], "skipped": skipped, "sessions": sessions}
+    return {"mapped": mapped, "skipped": skipped, "archived": archived, "sessions": sessions}
 
 
 def _archived_config(zf: zipfile.ZipFile, member: str) -> dict | None:

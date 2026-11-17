@@ -49,7 +49,7 @@ def test_only_calls_that_wait_on_the_network_or_on_local_files_are_declared_bloc
     # a backup or a restore runs for seconds over local files (F15, DC-P30: one flag, one meaning).
     assert {name for name, c in CONTRACT["calls"].items() if c.get("blocking")} == {
         "probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check", "hub_scan",
-        "backup_create", "backup_restore"}
+        "backup_create", "backup_inspect", "backup_restore"}
     assert "network or run for seconds on local files" in CONTRACT["$comment"]
     assert all(isinstance(c["blocking"], bool) for c in CONTRACT["calls"].values() if "blocking" in c)
 

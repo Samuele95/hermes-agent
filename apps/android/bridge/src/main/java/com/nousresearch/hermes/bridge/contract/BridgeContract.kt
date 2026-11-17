@@ -495,6 +495,18 @@ data class BackupCreateReply(
 )
 
 @Serializable
+data class BackupInspectParams(
+    val path: String,
+)
+
+@Serializable
+data class BackupInspectReply(
+    val parts: List<BackupPart>,
+    val skipped: Long,
+    val sessions: Long,
+)
+
+@Serializable
 data class BackupRestoreParams(
     val path: String,
 )
@@ -588,11 +600,13 @@ object BridgeCalls {
     val TOOLSETS_KEYS = BridgeCall("toolsets_keys", NoParams.serializer(), ToolsetsKeysReply.serializer())
     /** Zips exactly five parts of the Hermes home into the app's cache (TMPDIR/exports/hermes-backup-<UTC>.zip, replacing only the previous backup): sessions (state.db, a SQLite backup-API snapshot), memories, skills (with the archive), config.yaml with every key field blanked, and cron without its lock and pid files; never .env, auth.json, vault files, mcp-tokens or a keystore secret (D49). Answers the file and the parts it holds. */
     val BACKUP_CREATE = BridgeCall("backup_create", NoParams.serializer(), BackupCreateReply.serializer(), blocking = true)
+    /** Reads what a Hermes backup zip (the app's or `hermes backup`'s) would restore, writing nothing: the parts it holds, the members a restore would skip and the sessions its database holds. Refused in words, as backup_restore refuses a file that is no zip, no Hermes backup or holds nothing to restore; never refused for a running turn or gateway (it writes nothing). The file is never deleted. */
+    val BACKUP_INSPECT = BridgeCall("backup_inspect", BackupInspectParams.serializer(), BackupInspectReply.serializer(), blocking = true)
     /** Restores only those five parts from a Hermes backup zip (the app's or `hermes backup`'s), with config.yaml's key fields blanked and state.db written page by page into the open file; every other member is skipped and counted. Refused in words, before anything is written, while a turn runs, while the always-on gateway runs, or when the file holds nothing to restore. Answers the parts restored, the members skipped and the sessions the restored database holds. */
     val BACKUP_RESTORE = BridgeCall("backup_restore", BackupRestoreParams.serializer(), BackupRestoreReply.serializer(), blocking = true)
 
     /** The calls that may wait on the network or run for seconds on local files (`blocking` in the contract): EmbeddedPython runs them on their own thread. */
-    val BLOCKING: Set<String> = setOf("probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check", "hub_scan", "backup_create", "backup_restore")
+    val BLOCKING: Set<String> = setOf("probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check", "hub_scan", "backup_create", "backup_inspect", "backup_restore")
 }
 
 /** One state change of the :gateway process's gateway host, as a JSON line through native.emit; reason only for failed. */

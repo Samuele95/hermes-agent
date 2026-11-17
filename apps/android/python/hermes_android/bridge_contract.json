@@ -482,6 +482,18 @@
         "parts": "[BackupPart]"
       }
     },
+    "backup_inspect": {
+      "summary": "Reads what a Hermes backup zip (the app's or `hermes backup`'s) would restore, writing nothing: the parts it holds, the members a restore would skip and the sessions its database holds. Refused in words, as backup_restore refuses a file that is no zip, no Hermes backup or holds nothing to restore; never refused for a running turn or gateway (it writes nothing). The file is never deleted.",
+      "blocking": true,
+      "params": {
+        "path": "string"
+      },
+      "reply": {
+        "parts": "[BackupPart]",
+        "skipped": "integer",
+        "sessions": "integer"
+      }
+    },
     "backup_restore": {
       "summary": "Restores only those five parts from a Hermes backup zip (the app's or `hermes backup`'s), with config.yaml's key fields blanked and state.db written page by page into the open file; every other member is skipped and counted. Refused in words, before anything is written, while a turn runs, while the always-on gateway runs, or when the file holds nothing to restore. Answers the parts restored, the members skipped and the sessions the restored database holds.",
       "blocking": true,

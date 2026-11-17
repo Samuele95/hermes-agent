@@ -627,3 +627,67 @@ def test_an_io_error_while_writing_is_answered_in_words(target, monkeypatch):
 
     assert restore(archive) == {"error": "The backup could not be restored: disk full"}
 
+
+
+# --- backup_inspect ---
+
+def inspect(path: Path) -> dict:
+    return json.loads(hermes_android.call("backup_inspect", json.dumps({"path": str(path)})))
+
+
+@pytest.mark.parametrize("prefix", ["", ".hermes/"])
+def test_inspect_answers_what_a_restore_takes_and_writes_nothing(home, cache, tmp_path, monkeypatch, prefix):
+    archive = _desktop_archive(home, tmp_path / "desktop.zip")
+    if prefix:
+        archive = _prefixed(archive, tmp_path / "prefixed.zip", prefix)
+    copy = cache / "imports" / "picked-1.zip"  # the app's picked copy, which only a restore deletes
+    copy.parent.mkdir()
+    copy.write_bytes(archive.read_bytes())
+    b = _switch(monkeypatch, tmp_path / "home_b")
+    (b / "memories").mkdir()
+    (b / "memories" / "MEMORY.md").write_text("B's own memory.\n", encoding="utf-8")
+    (b / "config.yaml").write_text("model:\n  default: b-model\n", encoding="utf-8")
+    _sessions_db(b / "state.db", ["20261116_100000_eeeeee"])
+    before = _tree(b)
+
+    held = inspect(copy)
+
+    assert set(held) == {"parts", "skipped", "sessions"}
+    assert {"sessions", "config", "memories", "skills", "jobs"} <= set(held["parts"])
+    assert held["parts"] == [p for p in PARTS if p in held["parts"]]  # the contract's order
+    assert held["skipped"] >= 6
+    assert held["sessions"] == 4
+    assert _tree(b) == before
+    assert copy.is_file()
+    assert sorted(p.name for p in copy.parent.iterdir()) == ["picked-1.zip"]  # no temporary copy is left
+
+    restored = restore(copy)
+
+    assert restored == {"restored": held["parts"], "skipped": held["skipped"], "sessions": held["sessions"]}
+    assert not copy.exists()
+
+
+def test_inspect_refuses_what_restore_refuses_but_never_a_running_turn_or_gateway(target, cache, tmp_path,
+                                                                                    turn_running, gateway_running):
+    archive, b = target
+    imports = cache / "imports"
+    imports.mkdir(exist_ok=True)
+    before = _tree(b)
+    assert restore(archive) == {"error": BUSY}  # what inspect never answers
+
+    assert inspect(archive) == {"parts": PARTS, "skipped": 0, "sessions": 4}
+    assert _tree(b) == before
+    assert archive.is_file()
+
+    text = imports / "picked-text.zip"
+    text.write_text("not a zip at all\n", encoding="utf-8")
+    cases = [
+        (text, NOT_ZIP),
+        (_zip(imports / "picked-notes.zip", {"notes.txt": "hi"}), NOT_HERMES),
+        (_zip(imports / "picked-secrets.zip", {".env": "OPENAI_API_KEY=canary-env-1\n", "auth.json": "{}"}), NOTHING),
+        (_zip(imports / "picked-config.zip", {"config.yaml": "- a\n- b\n"}), BAD_CONFIG),
+    ]
+    for picked, words in cases:
+        assert inspect(picked) == {"error": words}, picked.name
+    assert _tree(b) == before
+    assert sorted(p.name for p in imports.iterdir()) == sorted(p.name for p, _ in cases)  # nothing deleted
