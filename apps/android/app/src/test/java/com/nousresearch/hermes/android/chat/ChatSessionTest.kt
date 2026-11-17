@@ -3665,4 +3665,31 @@ class ChatSessionTest {
         assertEquals(listOf("later"), saved("db1"))
         assertEquals(emptyList<String>(), chat.items())
     }
+
+    @Test
+    fun aQueuedSlashLineNeverSteersTheTurnAsWords() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }  // busy mode interrupt: Steer now would redirect
+        chat.send("hi")
+        core.emit("message.start", "s1")
+        chat.send("/github fix it")  // waits in the queue as typed (invariant 5)
+        chat.queue("/q later")  // the Queue button: an app command, by its alias
+        chat.queue("/status")  // listed by the core, not run on the phone
+        chat.queue("/sdcard/notes.txt sum it up")  // a path: words after all
+        val mark = core.calls.size
+
+        chat.steerNow(chat.idOf("/github fix it"))
+        assertEquals("/github is a command and cannot steer the turn; it stays in the queue.", chat.lastNotice())
+        chat.steerNow(chat.idOf("/q later"))
+        assertEquals("/queue is a command and cannot steer the turn; it stays in the queue.", chat.lastNotice())
+        chat.steerNow(chat.idOf("/status"))
+        assertEquals("/status is a command and cannot steer the turn; it stays in the queue.", chat.lastNotice())
+
+        assertEquals(emptyList<Pair<String, String?>>(), callsAfter(mark))  // no session.redirect, no session.steer
+        assertEquals(listOf("/github fix it", "/q later", "/status", "/sdcard/notes.txt sum it up"), chat.items())
+
+        chat.steerNow(chat.idOf("/sdcard/notes.txt sum it up"))
+        assertEquals(listOf("session.redirect" to "s1"), callsAfter(mark))
+        assertEquals("/sdcard/notes.txt sum it up", lastOf("session.redirect").getValue("text").jsonPrimitive.content)
+        assertEquals(listOf("/github fix it", "/q later", "/status"), chat.items())
+    }
 }

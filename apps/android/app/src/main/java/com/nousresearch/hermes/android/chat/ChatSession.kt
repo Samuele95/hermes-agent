@@ -143,6 +143,8 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
         const val QUEUE_USAGE = "usage: /queue <prompt>"
         /** A send directive with nothing to send (Desktop's words, `slash.ts:362-366`). */
         const val EMPTY_MESSAGE = "empty message"
+        /** Steer now on a queued `/` line the catalog knows: a command is never words for the model (invariant 4; fix round 1). */
+        const val NOT_STEERED = "%s is a command and cannot steer the turn; it stays in the queue."
     }
 
     /**
@@ -1215,15 +1217,27 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     /**
      * Queued item [id] corrects the running turn now, as a busy Send does ([Chat.steerMode]: steered in the core's steer
      * mode, else redirected, D3): it leaves the queue and becomes the correction's bubble. Only where a correction can
-     * land, and not the item being edited; otherwise nothing (D9: a `rejected` answer follows M2's rule).
+     * land, and not the item being edited; otherwise nothing (D9: a `rejected` answer follows M2's rule). A `/` line
+     * the catalog knows is a command, never words to steer with: it stays in the queue and the chat says so
+     * ([NOT_STEERED]; invariant 4); one it cannot read sends nothing ([SLASH_UNREAD], D12); a `/` it does not know is words.
      */
     suspend fun steerNow(id: Long) {
+        val (at, text) = synchronized(lock) { live.ref?.runtime to live.queue.items.firstOrNull { it.id == id }?.text }
+        if (at != null && text != null && text.startsWith("/")) {
+            val catalog = try {
+                catalogOf(at)
+            } catch (failed: Exception) {
+                return say("$SLASH_UNREAD: ${forUser(failed)}")  // a cancellation goes on
+            }
+            (catalog.line(text)?.let { "/${it.name}" } ?: catalog.unavailable(text))?.let { return say(NOT_STEERED.format(it)) }
+        }
         var steer: Triple<RuntimeSessionId, Long, Pair<String, BusyMode>>? = null  // the session, the bubble, the words and mode
         change { now ->
             val ref = now.ref
             val item = now.queue.items.firstOrNull { it.id == id }
             val mode = now.chat.steerMode
-            if (ref == null || item == null || now.queue.editing == id || mode == null) now
+            // An item whose words changed since they were read (an edit saved meanwhile) is not the one checked: nothing.
+            if (ref == null || item == null || item.text != text || now.queue.editing == id || mode == null) now
             else {
                 steer = Triple(ref.runtime, now.chat.nextId, item.text to mode)
                 now.copy(chat = now.chat.correcting(item.text, mode, clock()), queue = now.queue.removed(id).copy(paused = false))
