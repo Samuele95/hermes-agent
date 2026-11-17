@@ -350,3 +350,25 @@ def test_a_restore_runs_as_the_user_and_the_actor_is_reset_after_a_raise(skills_
 
     assert seen == ["user"]
     assert skill_ledger._actor_override.get() is None
+
+
+# --- Refresh (batch-4 F10, row capabilities-02 with protocol-34, §8 risk a: skills.reload, then skills_list) ---
+
+def _description(name: str) -> str:
+    return next(row["description"] for row in _listing() if row["name"] == name)
+
+
+def test_skills_reload_refreshes_the_listing_the_skills_page_reads(skills_tree):
+    """The page's Refresh is ``skills.reload`` (``agent.skill_commands.reload_skills``, what the method runs) then
+    ``skills_list``: the reload empties the catalog cache the listing reads, which an in-place SKILL.md edit inside a
+    category does not invalidate for up to its 30 s TTL. So no change to ``skills_list`` is needed."""
+    from agent.skill_commands import reload_skills
+
+    assert _description("arxiv") == "Search arXiv"
+    (skills_tree / "skills" / "research" / "arxiv" / "SKILL.md").write_text(
+        "---\nname: arxiv\ndescription: Find papers\n---\n\n# arxiv\n", encoding="utf-8")
+    assert _description("arxiv") == "Search arXiv"  # the cache has not seen the in-place edit
+
+    reload_skills()
+
+    assert _description("arxiv") == "Find papers"

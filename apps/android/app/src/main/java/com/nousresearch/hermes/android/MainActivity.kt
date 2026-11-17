@@ -78,6 +78,7 @@ import com.nousresearch.hermes.android.settings.SettingsActions
 import com.nousresearch.hermes.android.settings.SettingsControl
 import com.nousresearch.hermes.android.settings.SettingsScreen
 import com.nousresearch.hermes.android.settings.SettingsUi
+import com.nousresearch.hermes.android.settings.SkillsActions
 import com.nousresearch.hermes.android.settings.SkillsScreen
 import com.nousresearch.hermes.android.setup.SetupScreen
 import com.nousresearch.hermes.android.setup.SshScreen
@@ -126,7 +127,10 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                             skills?.let {  // above Settings, which stays open beneath: Back returns to it (D4)
-                                SkillsScreen(it, onEnable = { names, on -> app.skills { enable(names, on) } }, onClose = state.pages.skills::close)
+                                SkillsScreen(it, onEnable = { names, on -> app.skills { enable(names, on) } }, onClose = state.pages.skills::close,
+                                             actions = SkillsActions(query = state.pages.skills::query, refresh = { app.skills { refresh() } },
+                                                                     read = { name -> app.skills { read(name) } },
+                                                                     closeSkill = state.pages.skills::closeSkill))
                                 return@Surface
                             }
                             val settings by state.pages.settings.state.collectAsState()

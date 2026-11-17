@@ -389,6 +389,15 @@
     <string name="skills_none">No skills installed.</string>
     <string name="skills_general">General</string>
     <string name="skills_category_switch">All %1$s skills</string>
+    <string name="skills_search">Search skills...</string>
+    <string name="skills_no_match">Nothing matches “%1$s”.</string>
+    <string name="skills_menu">Skills options</string>
+    <string name="skills_refresh">Refresh skills</string>
+    <string name="skills_learned">Learned</string>
+    <string name="skills_hub">Hub</string>
+    <string name="skills_uses">×%1$d</string>
+    <string name="skill_used">used %1$d×</string>
+    <string name="skill_no_description">No description.</string>
     <string name="about_title">About</string>
     <string name="about_explain">Include these in a bug report.</string>
     <string name="about_app">App version</string>

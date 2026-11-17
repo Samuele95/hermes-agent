@@ -1,5 +1,7 @@
 package com.nousresearch.hermes.android.settings
 
+import com.nousresearch.hermes.android.chat.FakeCoreGateway
+import com.nousresearch.hermes.bridge.CoreError
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
@@ -31,6 +33,10 @@ class SkillsControlTest {
         val LIST = list(ROWS)
         const val REFUSED = "Skill 'hermes-agent' is essential to Hermes (the agent's own operating manual referenced by " +
                             "the system prompt) and cannot be disabled."
+
+        const val RELOADED = """{"output":"No new skills detected. 4 skill(s) available.","result":{"total":4,"commands":4}}"""
+        const val SKILL_MD = "---\nname: arxiv\n---\n# arxiv\n"
+        const val DETAIL = """{"ok":true,"kind":"skill","id":"arxiv","label":"arxiv","content":"---\nname: arxiv\n---\n# arxiv\n"}"""
     }
 
     private var listReply = LIST
@@ -38,14 +44,27 @@ class SkillsControlTest {
     private var enableAnswer = LIST
     private var enableGate: CompletableDeferred<Unit>? = null  // a change that suspends until completed
     private val bridgeCalls = mutableListOf<Pair<String, String>>()
-    private val skills = SkillsControl { function, arg ->
+    private var sessionId: String? = "s1"
+    private val order = mutableListOf<String>()  // every call, core and bridge, in the order sent
+    private var reloadFails: CoreError? = null
+    private var detailReply = DETAIL
+    private val core = FakeCoreGateway { method, _ ->
+        order += method
+        when (method) {
+            "skills.reload" -> { reloadFails?.let { throw it }; RELOADED }
+            "learning.detail" -> detailReply
+            else -> error("unexpected $method")
+        }
+    }
+    private val skills = SkillsControl(core, { function, arg ->
         bridgeCalls += function to arg
+        order += function
         when (function) {
             "skills_list" -> { listGate?.await(); listReply }
             "skills_enable" -> { enableGate?.await(); enableAnswer }
             else -> error("unexpected $function")
         }
-    }
+    }) { sessionId }
 
     private fun enables() = bridgeCalls.filter { it.first == "skills_enable" }.map { Json.parseToJsonElement(it.second) }
     private fun json(text: String) = Json.parseToJsonElement(text)
@@ -159,5 +178,112 @@ class SkillsControlTest {
 
         assertTrue(enables().isEmpty())
         assertNull(skills.state.value)
+    }
+    @Test
+    fun aQueryNarrowsWhatIsShownAndSendsNothing() = runTest {
+        skills.open()
+        order.clear()
+
+        skills.query("arx")
+
+        assertEquals("arx", skills.state.value?.query)
+        assertEquals(listOf(ROWS.last()), skills.state.value?.shown())
+        assertEquals(emptyList<String>(), order)
+
+        skills.open()
+
+        assertEquals("", skills.state.value?.query)
+        assertEquals(ROWS, skills.state.value?.shown())
+    }
+
+    @Test
+    fun refreshReloadsTheChatsSkillsThenShowsTheList() = runTest {
+        skills.open()
+        order.clear()
+        val fresh = ROWS.take(2)
+        listReply = list(fresh)
+
+        skills.refresh()
+
+        assertEquals(listOf("skills.reload", "skills_list"), order)
+        assertEquals(listOf("skills.reload" to json("""{"session_id":"s1"}""")), core.calls)
+        assertEquals(fresh, skills.state.value?.rows)
+        assertEquals(false, skills.state.value?.busy)
+        assertNull(skills.state.value?.error)
+    }
+
+    @Test
+    fun refreshWithNoOpenChatReloadsWithoutASession() = runTest {
+        sessionId = null
+        skills.open()
+
+        skills.refresh()
+
+        assertEquals(listOf("skills.reload" to json("{}")), core.calls)
+    }
+
+    @Test
+    fun aFailedReloadKeepsTheRowsAndSaysTheCoresWords() = runTest {
+        skills.open()
+        order.clear()
+        listReply = list(ROWS.take(1))
+        reloadFails = CoreError(5025, "skills.reload failed: disk gone")
+
+        skills.refresh()
+
+        assertEquals(listOf("skills.reload"), order)  // no list read after a failed reload
+        assertEquals(ROWS, skills.state.value?.rows)
+        assertEquals("skills.reload failed: disk gone", skills.state.value?.error)
+        assertEquals(false, skills.state.value?.busy)
+    }
+
+    @Test
+    fun readingASkillShowsItsSkillMdAsTheCoreHoldsIt() = runTest {
+        skills.open()
+
+        skills.read("arxiv")
+
+        assertEquals(listOf("learning.detail" to json("""{"id":"arxiv"}""")), core.calls)
+        assertEquals(SkillText("arxiv", SKILL_MD), skills.state.value?.open)
+        assertEquals(false, skills.state.value?.busy)
+        assertNull(skills.state.value?.error)
+
+        skills.closeSkill()
+
+        assertNull(skills.state.value?.open)
+    }
+
+    @Test
+    fun aSkillTheCoreCannotFindStaysClosedAndSaysSo() = runTest {
+        skills.open()
+        detailReply = """{"ok":false,"message":"skill 'arxiv' not found"}"""
+
+        skills.read("arxiv")
+
+        assertNull(skills.state.value?.open)
+        assertEquals("skill 'arxiv' not found", skills.state.value?.error)
+        assertEquals(false, skills.state.value?.busy)
+    }
+
+    @Test
+    fun aReadWhileAChangeRunsSendsNothing() = runTest {
+        skills.open()
+        val gate = CompletableDeferred<Unit>().also { enableGate = it }
+        val change = launch { skills.enable(listOf("arxiv"), false) }
+        runCurrent()
+
+        skills.read("arxiv")
+        gate.complete(Unit)
+        change.join()
+        skills.read("nope")  // not listed
+
+        assertTrue(core.calls.isEmpty())
+        assertNull(skills.state.value?.open)
+
+        skills.read("arxiv")  // idle and listed: read
+        skills.read("codex")  // a skill already open: nothing
+
+        assertEquals(listOf("learning.detail" to json("""{"id":"arxiv"}""")), core.calls)
+        assertEquals("arxiv", skills.state.value?.open?.name)
     }
 }

@@ -11,6 +11,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.doubleOrNull
 import com.nousresearch.hermes.bridge.contract.Personality as WirePersonality
+import com.nousresearch.hermes.bridge.contract.Provenance as WireProvenance
 
 /** The core's `approvals.mode`: who approves a command the agent wants to run that the core flags as risky. */
 enum class ApprovalMode(val wire: String) {
@@ -135,12 +136,46 @@ fun messageReactionsOf(config: JsonObject?): Boolean =
         }
     }
 
-/** One skill as the core lists it (`skills_list`): [enabled] is the global `skills.disabled` list's answer (D7). */
-data class SkillRow(val name: String, val description: String, val category: String?, val enabled: Boolean) {
+/**
+ * Where a skill came from, as the core classifies it (`skills_list`'s `provenance`, F10): installed from the hub,
+ * bundled with Hermes, mounted from `skills.external_dirs`, or written by the agent. A closed vocabulary (EJ-34): the
+ * actions a skill offers follow from it alone.
+ */
+enum class Provenance {
+    HUB, BUNDLED, EXTERNAL, AGENT;
+
+    companion object {
+        /** The bridge's [wire] value (§5: no screen reads the wire type). Total. */
+        fun of(wire: WireProvenance): Provenance = when (wire) {
+            WireProvenance.HUB -> HUB
+            WireProvenance.BUNDLED -> BUNDLED
+            WireProvenance.EXTERNAL -> EXTERNAL
+            WireProvenance.AGENT -> AGENT
+        }
+    }
+}
+
+/**
+ * One skill as the core lists it (`skills_list`): [enabled] is the global `skills.disabled` list's answer (D7);
+ * [provenance] where it came from and [uses] how often it ran, the core's usage counts (F10). The new fields default
+ * to a bundled skill never used (D11), which offers no write.
+ */
+data class SkillRow(val name: String, val description: String, val category: String?, val enabled: Boolean,
+                    val provenance: Provenance = Provenance.BUNDLED, val uses: Long = 0) {
     companion object {
         /** The bridge's [entry], field for field (§5: no screen reads the wire type). Total. */
-        fun of(entry: SkillEntry): SkillRow = SkillRow(entry.name, entry.description, entry.category, entry.enabled)
+        fun of(entry: SkillEntry): SkillRow =
+            SkillRow(entry.name, entry.description, entry.category, entry.enabled, Provenance.of(entry.provenance), entry.uses)
     }
+}
+
+/**
+ * Whether a search for [query] finds this skill (Desktop's `filteredSkills`): the trimmed, case-folded query in its
+ * name, description or category (none has no category to match); a blank query finds every skill. Pure and total.
+ */
+fun SkillRow.matches(query: String): Boolean {
+    val wanted = query.trim().lowercase()
+    return wanted.isEmpty() || listOfNotNull(name, description, category).any { it.lowercase().contains(wanted) }
 }
 
 /** One category's skills, in the core's order; [category] null for skills with none (D9). */
@@ -158,7 +193,24 @@ data class SkillGroup(val category: String?, val rows: List<SkillRow>) {
 }
 
 /**
- * The skills page: [rows] the core's last answer, null while read or when it could not be read (D3); [busy] while one
- * change is written; [error] the core's words.
+ * One skill opened for reading (F10, capabilities-03): its [content], the whole SKILL.md as the core holds it
+ * (`learning.detail`), and [editing] the user's draft while the editor is open. The core owns the file (§2.5).
  */
-data class SkillsUi(val rows: List<SkillRow>? = null, val busy: Boolean = false, val error: String? = null)
+data class SkillText(val name: String, val content: String, val editing: String? = null)
+
+/** What the core just did to the skill [name], said at the page's top (D2): updated, archived or restored. */
+data class SkillsNotice(val kind: Kind, val name: String) {
+    enum class Kind { UPDATED, ARCHIVED, RESTORED }
+}
+
+/**
+ * The skills page: [rows] the core's last answer, null while read or when it could not be read (D3); [busy] while one
+ * change is written; [error] the core's words; [query] the search typed, which only narrows what is shown; [open] the
+ * skill being read; [notice] what the last change did (D2). The core owns every skill (§2.5); no screen reads the
+ * wire type (§5).
+ */
+data class SkillsUi(val rows: List<SkillRow>? = null, val busy: Boolean = false, val error: String? = null,
+                    val query: String = "", val open: SkillText? = null, val notice: SkillsNotice? = null)
+
+/** The rows the page shows: the core's, narrowed by the [SkillsUi.query]; null while none are read. Pure. */
+fun SkillsUi.shown(): List<SkillRow>? = rows?.filter { it.matches(query) }

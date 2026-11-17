@@ -19,16 +19,21 @@ import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.nousresearch.hermes.android.settings.Provenance
 import com.nousresearch.hermes.android.settings.SkillRow
+import com.nousresearch.hermes.android.settings.SkillText
+import com.nousresearch.hermes.android.settings.SkillsActions
 import com.nousresearch.hermes.android.settings.SkillsScreen
 import com.nousresearch.hermes.android.settings.SkillsUi
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -47,6 +52,20 @@ class SkillsScreenTest {
 
     private fun show(state: SkillsUi) =
         compose.setContent { SkillsScreen(state, onEnable = { names, on -> enables += names to on }, onClose = {}) }
+
+    private val queries = mutableListOf<String>()
+    private val reads = mutableListOf<String>()
+    private var refreshes = 0
+    private var closes = 0
+    private val actions = SkillsActions(query = { queries += it }, refresh = { refreshes++ }, read = { reads += it },
+                                        closeSkill = { closes++ })
+
+    /** The page with the actions, its state held so a test can change it. */
+    private fun showWithActions(initial: SkillsUi): (SkillsUi) -> Unit {
+        var state by mutableStateOf(initial)
+        compose.setContent { SkillsScreen(state, onEnable = { names, on -> enables += names to on }, onClose = {}, actions = actions) }
+        return { state = it }
+    }
 
     /** A node whose test tag starts with [prefix]. */
     private fun tagged(prefix: String) =
@@ -139,7 +158,118 @@ class SkillsScreenTest {
         }
     }
 
+    @Test
+    fun theSearchFieldNarrowsTheListAndSaysWhenNothingMatches() {
+        var state by mutableStateOf(SkillsUi(ROWS))
+        var with by mutableStateOf<SkillsActions?>(actions)
+        compose.setContent { SkillsScreen(state, onEnable = { _, _ -> }, onClose = {}, actions = with) }
+
+        compose.onNodeWithTag("skills-search").performTextInput("ar")
+        assertEquals(listOf("ar"), queries)
+
+        state = SkillsUi(ROWS, query = "arx")
+        compose.onNodeWithTag("skill-arxiv").assertExists()
+        listOf("plain", "codex", "hermes-agent").forEach { compose.onNodeWithTag("skill-$it").assertDoesNotExist() }
+        assertTrue(compose.onAllNodes(tagged("skills-category-switch-")).fetchSemanticsNodes().isEmpty())
+        compose.onNodeWithTag("skill-switch-arxiv").assertExists()
+
+        state = SkillsUi(ROWS, query = "zzz")
+        compose.onNode(hasTestTag("skills-no-match") and hasText("Nothing matches “zzz”.")).assertExists()
+
+        state = SkillsUi(ROWS)
+        with = null  // M11's page: no search, no menu, no tap to open
+        compose.onNodeWithTag("skills-search").assertDoesNotExist()
+        compose.onNodeWithTag("skills-menu").assertDoesNotExist()
+        assertTrue(compose.onAllNodes(tagged("skill-open-")).fetchSemanticsNodes().isEmpty())
+    }
+
+    @Test
+    fun eachRowSaysWhereItCameFromAndHowOftenItRan() {
+        showWithActions(SkillsUi(KINDS))
+
+        // The badge and the count sit inside the row's clickable text, which merges them: find them unmerged.
+        compose.onNode(hasTestTag("skill-badge-mine") and hasText("Learned"), useUnmergedTree = true).assertExists()
+        compose.onNode(hasTestTag("skill-badge-hubbed") and hasText("Hub"), useUnmergedTree = true).assertExists()
+        compose.onNodeWithTag("skill-badge-arxiv", useUnmergedTree = true).assertDoesNotExist()
+        compose.onNodeWithTag("skill-badge-ext", useUnmergedTree = true).assertDoesNotExist()
+        compose.onNode(hasTestTag("skill-uses-mine") and hasText("×12"), useUnmergedTree = true).assertExists()
+        compose.onNodeWithTag("skill-uses-arxiv", useUnmergedTree = true).assertDoesNotExist()
+        compose.onNodeWithTag("skill-uses-hubbed", useUnmergedTree = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun theMenuRefreshesAndATapOpensTheSkill() {
+        val set = showWithActions(SkillsUi(ROWS))
+
+        compose.onNodeWithTag("skills-menu").performClick()
+        compose.onNodeWithTag("skills-refresh").performClick()
+        assertEquals(1, refreshes)
+
+        compose.onNodeWithTag("skill-open-arxiv").performScrollTo().performClick()
+        assertEquals(listOf("arxiv"), reads)
+        compose.onNodeWithTag("skill-switch-arxiv").performScrollTo().performClick()
+        assertEquals(listOf("arxiv"), reads)
+        assertEquals(listOf(listOf("arxiv") to false), enables)
+
+        set(SkillsUi(ROWS, busy = true))
+        ROWS.forEach { compose.onNodeWithTag("skill-open-${it.name}").assertIsNotEnabled() }
+    }
+
+    @Test
+    fun anOpenSkillShowsItsHeaderAndSkillMd() {
+        val arxiv = ROWS.last().copy(uses = 3)
+        val set = showWithActions(SkillsUi(ROWS.dropLast(1) + arxiv, open = SkillText("arxiv", SKILL_MD)))
+
+        compose.onNodeWithTag("skill").assertExists()
+        compose.onNodeWithTag("skills").assertDoesNotExist()
+        compose.onNode(hasTestTag("skill-text") and hasText(SKILL_MD)).assertExists()
+        compose.onNode(hasTestTag("skill-description") and hasText("Search arXiv")).assertExists()
+        compose.onNode(hasTestTag("skill") and hasAnyDescendant(hasText("Research"))).assertExists()
+        compose.onNode(hasTestTag("skill") and hasAnyDescendant(hasText("used 3×"))).assertExists()
+        compose.onNodeWithTag("skill-close").performClick()
+        assertEquals(1, closes)
+
+        set(SkillsUi(ROWS.dropLast(1) + arxiv.copy(description = "", uses = 0), open = SkillText("arxiv", SKILL_MD)))
+        compose.onNode(hasTestTag("skill-description") and hasText("No description.")).assertExists()
+        compose.onNode(hasTestTag("skill") and hasAnyDescendant(hasText("used 0×"))).assertDoesNotExist()
+    }
+
+    @Test
+    fun theRealCoreRefreshesAndReadsABundledSkill() = runBlocking {
+        val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as HermesApplication
+        val ready = withTimeout(120_000) { app.core.first { it !is CoreState.Starting } } as CoreState.Ready
+        val skills = ready.pages.skills
+        try {
+            skills.open()
+            val began = SystemClock.elapsedRealtime()
+            skills.refresh()
+            Log.i("SkillsScreenTest", "refresh() ran skills.reload + skills_list in ${SystemClock.elapsedRealtime() - began} ms")
+            val rows = skills.state.value!!.rows!!
+            Log.i("SkillsScreenTest", "provenance: " + rows.groupingBy { it.provenance }.eachCount())
+            assertEquals(Provenance.BUNDLED, rows.single { it.name == "hermes-agent" }.provenance)
+            assertNull(skills.state.value!!.error)
+
+            skills.read("hermes-agent")
+
+            val ui = skills.state.value!!
+            val text = ui.open!!.content
+            assertTrue("not a SKILL.md: ${text.take(40)}", text.startsWith("---") && text.contains("name:"))
+            assertNull(ui.error)
+            assertFalse(ui.busy)
+        } finally {
+            skills.close()
+        }
+    }
+
     private companion object {
+        const val SKILL_MD = "---\nname: arxiv\ndescription: Search arXiv\n---\n\n# arxiv\n"
+
+        /** One skill of each provenance. */
+        val KINDS = listOf(SkillRow("mine", "Made by the agent", null, true, Provenance.AGENT, 12),
+                           SkillRow("hubbed", "From the hub", null, true, Provenance.HUB),
+                           SkillRow("arxiv", "Search arXiv", "research", true, Provenance.BUNDLED),
+                           SkillRow("ext", "Mounted", "research", true, Provenance.EXTERNAL))
+
         const val REFUSED = "Skill 'hermes-agent' is essential to Hermes (the agent's own operating manual referenced by " +
                             "the system prompt) and cannot be disabled."
 
