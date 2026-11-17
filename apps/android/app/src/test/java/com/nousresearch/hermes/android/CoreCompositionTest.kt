@@ -93,6 +93,7 @@ class CoreCompositionTest {
                 "skills_list" -> """{"skills":[{"name":"arxiv","description":"Search arXiv.","category":"research","enabled":true,"provenance":"bundled","uses":0}]}"""
                 "session_export" -> """{"path":"/data/app-files/cache/exports/session-db1.json","name":"session-db1.json","bytes":42}"""
                 "toolsets_keys" -> ToolsetsControlTest.KEYS
+                "backup_create" -> """{"path":"/data/app-files/cache/exports/hermes-backup-x.zip","name":"hermes-backup-x.zip","bytes":42,"parts":["sessions","config"]}"""
                 else -> "{}"
             }
         }
@@ -392,6 +393,19 @@ class CoreCompositionTest {
 
         assertEquals("the entry is pid 7's, the gateway given is pid 8", PlatformState.PENDING_RESTART,
                      other.pages.telegram.state.value?.live?.state)
+    }
+
+    @Test
+    fun theBackupPageBacksUpThroughTheComposedBridge() = runTest(UnconfinedTestDispatcher()) {
+        val ready = composeCore(runtime, paths, deps, backgroundScope)
+        val backup = ready.pages.backup
+
+        assertNull(backup.state.value)
+        backup.open()
+        backup.create()
+
+        assertTrue(bridgeCalls.toString(), "backup_create" in bridgeCalls)
+        assertEquals("hermes-backup-x.zip", backup.state.value?.file?.name)
     }
 
     @Test

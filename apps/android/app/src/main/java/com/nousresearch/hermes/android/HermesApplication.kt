@@ -26,6 +26,7 @@ import com.nousresearch.hermes.android.gateway.observeGateway
 import com.nousresearch.hermes.android.gateway.watchGateway
 import com.nousresearch.hermes.android.jobs.JobsControl
 import com.nousresearch.hermes.android.settings.AppPackage
+import com.nousresearch.hermes.android.settings.BackupControl
 import com.nousresearch.hermes.android.settings.HubControl
 import com.nousresearch.hermes.android.settings.SettingsControl
 import com.nousresearch.hermes.android.settings.SkillsControl
@@ -67,7 +68,8 @@ sealed interface CoreState {
 /** The pages the chat opens, each a controller with nullable state (F12): one holder, not ten positional fields. */
 data class Pages(val settings: SettingsControl, val skills: SkillsControl, val jobs: JobsControl, val telegram: TelegramSetup,
                  val ssh: SshSetup, val history: SessionHistory, val context: ContextPanel, val export: SessionExport,
-                 val status: StatusPanel, val models: ModelSwitch, val hub: HubControl, val toolsets: ToolsetsControl)
+                 val status: StatusPanel, val models: ModelSwitch, val hub: HubControl, val toolsets: ToolsetsControl,
+                 val backup: BackupControl)
 
 /**
  * Owns the embedded core for the whole process. Activities come and go (rotation, the task being
@@ -265,6 +267,11 @@ class HermesApplication : Application() {
     /** Runs one Toolsets-page action on the app's scope, so it outlives the activity that asked for it. */
     fun toolsets(action: suspend ToolsetsControl.() -> Unit) {
         scope.launch { (state.value as? CoreState.Ready)?.pages?.toolsets?.action() }
+    }
+
+    /** Runs one Backup-page action on the app's scope, so it outlives the activity that asked for it. */
+    fun backup(action: suspend BackupControl.() -> Unit) {
+        scope.launch { (state.value as? CoreState.Ready)?.pages?.backup?.action() }
     }
 
     /** Runs one Telegram setup action on the app's scope, so it outlives the activity that asked for it. */

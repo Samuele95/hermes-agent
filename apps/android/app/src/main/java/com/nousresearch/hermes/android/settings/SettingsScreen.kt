@@ -52,13 +52,15 @@ import androidx.compose.material3.HorizontalDivider
 class SettingsActions(val approvals: (ApprovalMode) -> Unit, val personality: (String) -> Unit, val edit: (SettingsEdit) -> Unit,
                       val askRemove: (String?) -> Unit, val confirmRemove: () -> Unit, val restartGateway: () -> Unit,
                       val askRemoveProvider: (String?) -> Unit, val confirmRemoveProvider: () -> Unit, val openSkills: () -> Unit,
-                      val copy: (String) -> Unit, val reactions: (Boolean) -> Unit, val openToolsets: (() -> Unit)? = null)
+                      val copy: (String) -> Unit, val reactions: (Boolean) -> Unit, val openToolsets: (() -> Unit)? = null,
+                      val openBackup: (() -> Unit)? = null)
 
 /**
  * The app's settings kept in the core's config, in the order of §4: Chat (the personality and Message Reactions), Command approvals (the
  * mode, the timeout, the always-allowed commands), Memory, Providers (each connected one with Remove, which asks
  * first), Skills (a row that opens the skills page), Tools (with [SettingsActions.openToolsets], a row that opens the
- * Toolsets page), and About (the build, with Copy details). It shows only what the core last answered: a part the
+ * Toolsets page), Backup (with [SettingsActions.openBackup], a row that opens the Backup page), and About (the build,
+ * with Copy details). It shows only what the core last answered: a part the
  * core could not read is absent (the mode keeps "none selected, still choosable"), and while one write runs every
  * control is off. A write saved but not confirmed says so apart from a refusal.
  */
@@ -120,6 +122,11 @@ fun SettingsScreen(state: SettingsUi, actions: SettingsActions, onClose: () -> U
         actions.openToolsets?.let {
             SectionCaption(stringResource(R.string.toolsets_title))
             ListRow(stringResource(R.string.settings_toolsets_open), Modifier.testTag("settings-toolsets"), enabled = enabled,
+                    trailing = { Chevron() }) { it() }
+        }
+        actions.openBackup?.let {
+            SectionCaption(stringResource(R.string.backup_title))
+            ListRow(stringResource(R.string.settings_backup_open), Modifier.testTag("settings-backup"), enabled = enabled,
                     trailing = { Chevron() }) { it() }
         }
         state.about?.let { AboutSection(it, enabled, actions.copy) }

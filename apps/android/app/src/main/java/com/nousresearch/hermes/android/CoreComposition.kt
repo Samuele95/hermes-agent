@@ -16,6 +16,7 @@ import com.nousresearch.hermes.android.gateway.TelegramSetup
 import com.nousresearch.hermes.android.jobs.JobsControl
 import com.nousresearch.hermes.android.jobs.runOwnership
 import com.nousresearch.hermes.android.settings.About
+import com.nousresearch.hermes.android.settings.BackupControl
 import com.nousresearch.hermes.android.settings.AppPackage
 import com.nousresearch.hermes.android.settings.HubControl
 import com.nousresearch.hermes.android.settings.ProviderAccess
@@ -124,6 +125,6 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps
                                  skills, JobsControl(gateway, bridge, deps.seen, continueInChat = chat::resume),
                                  TelegramSetup(deps.secrets, bridge, deps.seen), SshSetup(deps.secrets, bridge), history, context,
                                  export, status, models, HubControl(gateway, bridge, session = { chat.openSessionId?.value }, listed = skills::listed),
-                                 ToolsetsControl(gateway, bridge)),
+                                 ToolsetsControl(gateway, bridge), BackupControl(bridge)),
                            "Python ${facts.python} · SQLite ${facts.sqlite} $fts")
 }

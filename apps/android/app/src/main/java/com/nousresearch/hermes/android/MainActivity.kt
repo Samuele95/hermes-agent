@@ -74,6 +74,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
+import com.nousresearch.hermes.android.settings.BackupActions
+import com.nousresearch.hermes.android.settings.BackupScreen
 import com.nousresearch.hermes.android.settings.HubActions
 import com.nousresearch.hermes.android.settings.HubItemActions
 import com.nousresearch.hermes.android.settings.HubScreen
@@ -118,6 +120,7 @@ class MainActivity : ComponentActivity() {
                             val hub by state.pages.hub.state.collectAsState()
                             val toolsets by state.pages.toolsets.state.collectAsState()
                             val exported by state.pages.export.state.collectAsState()
+                            val backup by state.pages.backup.state.collectAsState()
                             val status by state.pages.status.state.collectAsState()
                             val models by state.pages.models.state.collectAsState()
                             // The core's Message Reactions switch, known before Settings opens (D4): React shows only while it is on.
@@ -133,6 +136,14 @@ class MainActivity : ComponentActivity() {
                                 waiting ?: return@LaunchedEffect
                                 lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
                                     state.pages.export.handOff(waiting) { shareExport(it, failed = state.pages.export::unshareable) }
+                                }
+                            }
+                            // The same for a finished backup zip, whichever page shows (N6, N15).
+                            val waitingBackup = backup?.file
+                            LaunchedEffect(waitingBackup) {
+                                waitingBackup ?: return@LaunchedEffect
+                                lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                                    state.pages.backup.handOff(waitingBackup) { shareBackup(it, failed = state.pages.backup::unshareable) }
                                 }
                             }
                             hub?.let {  // above Skills, which stays open beneath: Back returns to it
@@ -172,6 +183,10 @@ class MainActivity : ComponentActivity() {
                                                                                                 state.pages.settings.close()
                                                                                                 app.setup { open() }
                                                                                             })))
+                                return@Surface
+                            }
+                            backup?.let {  // above Settings, which stays open beneath: Back returns to it
+                                BackupScreen(it, BackupActions(create = { app.backup { create() } }, close = state.pages.backup::close))
                                 return@Surface
                             }
                             val settings by state.pages.settings.state.collectAsState()
@@ -375,7 +390,8 @@ class MainActivity : ComponentActivity() {
                                            confirmRemoveProvider = { app.settings { confirmRemoveProvider() } },
                                            openSkills = { app.skills { open() } }, copy = { text -> copy("Hermes version", text) },
                                            reactions = { on -> app.settings { reactions(on) } },
-                                           openToolsets = { app.toolsets { open() } }),
+                                           openToolsets = { app.toolsets { open() } },
+                                           openBackup = { app.backup { open() } }),
                        onClose = settings::close)
     }
 
