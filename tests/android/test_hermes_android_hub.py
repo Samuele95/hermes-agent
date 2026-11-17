@@ -165,3 +165,36 @@ def test_a_failed_scan_still_removes_the_quarantine(resolved, monkeypatch, offli
 
     assert ask("hub_scan", {"identifier": "someone/skills/evil-helper"}) == {"error": "Hub scan failed: scanner broke"}
     assert len(quarantined) == 1 and not quarantined[0].exists()
+
+
+@pytest.fixture
+def no_github_login(monkeypatch):
+    """The hub's GitHub client never reads the developer's own ``gh`` login or token."""
+    from hermes_cli import git_credentials
+
+    monkeypatch.setattr(git_credentials, "_gh_cli_token", lambda: None)
+    for name in ("GITHUB_TOKEN", "GH_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _manage(params: dict) -> dict:
+    """``skills.manage`` as the app sends it (P13): the core's handler, called as the gateway calls it."""
+    import tui_gateway.server as srv
+
+    return srv._methods["skills.manage"](1, params)
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError,
+                   reason="core bug (P13 FOUND): tui_gateway/methods_tools.py:1451 _skills_search calls SkillMeta.describe(), "
+                          "which SkillMeta has no such method (since 9bcbe7b5df), so every search with a hit answers 5024; "
+                          "with the description read instead, this passes")
+def test_an_offline_hub_search_answers_only_official_skills_and_no_error(offline, no_github_login):
+    official = {row["name"] for row in ask("hub_official")["skills"]}
+
+    reply = _manage({"action": "search", "query": "blackbox"})
+
+    assert "error" not in reply, reply
+    hits = reply["result"]["results"]
+    names = [hit["name"] for hit in hits]
+    assert "blackbox" in names
+    assert set(names) <= official, set(names) - official  # every other source failed silently (D13)

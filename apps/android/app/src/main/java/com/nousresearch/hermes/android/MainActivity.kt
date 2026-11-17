@@ -74,6 +74,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
+import com.nousresearch.hermes.android.settings.HubActions
+import com.nousresearch.hermes.android.settings.HubScreen
 import com.nousresearch.hermes.android.settings.SettingsActions
 import com.nousresearch.hermes.android.settings.SettingsControl
 import com.nousresearch.hermes.android.settings.SettingsScreen
@@ -109,6 +111,7 @@ class MainActivity : ComponentActivity() {
                             val context by state.pages.context.state.collectAsState()
                             val queue by state.chat.queueState.collectAsState()
                             val skills by state.pages.skills.state.collectAsState()
+                            val hub by state.pages.hub.state.collectAsState()
                             val exported by state.pages.export.state.collectAsState()
                             val status by state.pages.status.state.collectAsState()
                             val models by state.pages.models.state.collectAsState()
@@ -127,6 +130,11 @@ class MainActivity : ComponentActivity() {
                                     state.pages.export.handOff(waiting) { shareExport(it, failed = state.pages.export::unshareable) }
                                 }
                             }
+                            hub?.let {  // above Skills, which stays open beneath: Back returns to it
+                                HubScreen(it, HubActions(query = state.pages.hub::query, search = { q -> app.hub { search(q) } },
+                                                         browse = { p -> app.hub { browse(p) } }, close = state.pages.hub::close))
+                                return@Surface
+                            }
                             skills?.let {  // above Settings, which stays open beneath: Back returns to it (D4)
                                 SkillsScreen(it, onEnable = { names, on -> app.skills { enable(names, on) } }, onClose = state.pages.skills::close,
                                              actions = SkillsActions(query = state.pages.skills::query, refresh = { app.skills { refresh() } },
@@ -139,7 +147,8 @@ class MainActivity : ComponentActivity() {
                                                                                            showArchived = { app.skills { showArchived() } },
                                                                                            hideArchived = s::hideArchived,
                                                                                            restore = { name -> app.skills { restore(name) } })
-                                                                     }))
+                                                                     },
+                                                                     hub = { app.hub { open() } }))
                                 return@Surface
                             }
                             val settings by state.pages.settings.state.collectAsState()

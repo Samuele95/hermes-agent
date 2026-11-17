@@ -17,6 +17,7 @@ import com.nousresearch.hermes.android.jobs.JobsControl
 import com.nousresearch.hermes.android.jobs.runOwnership
 import com.nousresearch.hermes.android.settings.About
 import com.nousresearch.hermes.android.settings.AppPackage
+import com.nousresearch.hermes.android.settings.HubControl
 import com.nousresearch.hermes.android.settings.ProviderAccess
 import com.nousresearch.hermes.android.settings.SettingsControl
 import com.nousresearch.hermes.android.settings.SkillsControl
@@ -120,6 +121,6 @@ suspend fun composeCore(runtime: CoreRuntime, paths: HermesPaths, deps: CoreDeps
                            Pages(settings,
                                  SkillsControl(gateway, bridge, session = { chat.openSessionId?.value }), JobsControl(gateway, bridge, deps.seen, continueInChat = chat::resume),
                                  TelegramSetup(deps.secrets, bridge, deps.seen), SshSetup(deps.secrets, bridge), history, context,
-                                 export, status, models),
+                                 export, status, models, HubControl(gateway, bridge, session = { chat.openSessionId?.value })),
                            "Python ${facts.python} · SQLite ${facts.sqlite} $fts")
 }

@@ -43,11 +43,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nousresearch.hermes.android.R
 import com.nousresearch.hermes.android.ui.ButtonShape
+import com.nousresearch.hermes.android.ui.Chevron
 import com.nousresearch.hermes.android.ui.CodeBox
 import com.nousresearch.hermes.android.ui.CodeFont
 import com.nousresearch.hermes.android.ui.Hermes
 import com.nousresearch.hermes.android.ui.HermesIcons
 import com.nousresearch.hermes.android.ui.Hint
+import com.nousresearch.hermes.android.ui.ListRow
 import com.nousresearch.hermes.android.ui.Page
 import com.nousresearch.hermes.android.ui.PrimaryButton
 import com.nousresearch.hermes.android.ui.SecondaryButton
@@ -56,10 +58,10 @@ import com.nousresearch.hermes.android.ui.SectionLabel
 /**
  * What the page does beyond its switches (F10): [query] narrows the list, [refresh] rescans the core's skills, [read]
  * opens one skill and [closeSkill] returns to the list; with [write], an editable skill is edited and archived and the
- * archive restores.
+ * archive restores; with [hub], the Skills Hub opens (capabilities-08).
  */
 class SkillsActions(val query: (String) -> Unit, val refresh: () -> Unit, val read: (String) -> Unit, val closeSkill: () -> Unit,
-                    val write: SkillWriteActions? = null)
+                    val write: SkillWriteActions? = null, val hub: (() -> Unit)? = null)
 
 /**
  * The writes (capabilities-05, -06): the editor's [edit] / [draft] / [cancelEdit] / [save]; [askArchive] (null stops
@@ -93,6 +95,10 @@ fun SkillsScreen(state: SkillsUi, onEnable: (names: List<String>, on: Boolean) -
          action = actions?.let { a -> { SkillsMenu(state.busy, a) } }) {
         Hint(stringResource(R.string.skills_explain))
         Hint(stringResource(R.string.settings_new_chats), Modifier.padding(top = 8.dp).testTag("skills-new-chats"))
+        actions?.hub?.let { hub ->
+            ListRow(stringResource(R.string.hub_title), Modifier.padding(top = 8.dp).testTag("skills-hub-open"),
+                    detail = stringResource(R.string.hub_entry), enabled = !state.busy, trailing = { Chevron() }, onClick = hub)
+        }
         state.notice?.let { Notice(it) }
         state.error?.let { Hint(it, Modifier.padding(top = 12.dp).testTag("skills-error"), color = MaterialTheme.colorScheme.error) }
         if (actions != null) {
@@ -194,9 +200,9 @@ private fun badgeOf(provenance: Provenance): Int? = when (provenance) {
 private fun badgeColor(provenance: Provenance): Color =
     if (provenance == Provenance.HUB) Hermes.colors.textTertiary else MaterialTheme.colorScheme.primary
 
-/** A small rounded label on the widget surface. */
+/** A small rounded label on the widget surface (the hub's pills too, D15). */
 @Composable
-private fun Pill(text: String, tag: String, color: Color = Hermes.colors.textTertiary) {
+internal fun Pill(text: String, tag: String, color: Color = Hermes.colors.textTertiary) {
     val shape = RoundedCornerShape(6.dp)
     Text(text, Modifier.testTag(tag).background(Hermes.colors.widget, shape).border(1.dp, Hermes.colors.stroke, shape)
              .padding(horizontal = 6.dp, vertical = 1.dp),
@@ -314,8 +320,11 @@ private fun Notice(notice: SkillsNotice) {
     }
 }
 
-/** A category as the page heads it: none reads "General", a name Desktop's `prettyName` (`_` a space, each word capitalised; D9). */
+/**
+ * A category as the page heads it: none reads "General", a name Desktop's `prettyName` (`_` a space, each word
+ * capitalised; D9). The hub's category pills too (D15).
+ */
 @Composable
-private fun categoryLabel(category: String?): String =
+internal fun categoryLabel(category: String?): String =
     if (category == null) stringResource(R.string.skills_general)
     else Regex("""\b\w""").replace(category.replace('_', ' ')) { it.value.uppercase() }
