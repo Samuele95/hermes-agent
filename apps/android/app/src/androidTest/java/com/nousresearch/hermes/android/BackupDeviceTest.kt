@@ -11,6 +11,8 @@ import androidx.core.content.IntentCompat
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.nousresearch.hermes.android.chat.StoredSessionId
+import com.nousresearch.hermes.android.chat.exportSession
 import com.nousresearch.hermes.android.settings.BackupControl
 import com.nousresearch.hermes.android.settings.BackupFile
 import com.nousresearch.hermes.android.gateway.GatewaySeen
@@ -326,6 +328,43 @@ class BackupDeviceTest {
     }
 
     private fun exportsDir() = File(ctx.cacheDir, "exports")
+
+    @Test
+    fun aSessionExportLeavesTheBackupWaitingForTheShareSheet() = runBlocking<Unit> {
+        val lockWas = lock.exists()
+        val (created, _) = canarySession()
+        val backup = BackupControl(EmbeddedBridge, idle = { true }, seen = { observeGateway(ctx) }, restart = {})
+        var waiting: BackupFile? = null
+        var exportedPath: String? = null
+        try {
+            backup.open()
+            backup.create()
+            val file = checkNotNull(backup.state.value?.file) { "no backup: ${backup.state.value?.error}" }
+            waiting = file
+            val zip = File(file.path)
+            val before = sha(zip.readBytes())
+
+            val exported = EmbeddedBridge.exportSession(StoredSessionId(created.storedSessionId))  // before sharing the zip
+            exportedPath = exported.path
+
+            assertTrue("the backup zip is gone", zip.exists())
+            assertEquals(before, sha(zip.readBytes()))
+            assertEquals(file, backup.state.value?.file)  // still waiting for the share sheet
+            val served = ctx.contentResolver.openInputStream(exportUri(ctx, file.path))!!.use { it.readBytes() }
+            assertArrayEquals(zip.readBytes(), served)
+            assertEquals(exportsDir().canonicalFile, File(exported.path).canonicalFile.parentFile)
+            val names = exportsDir().list().orEmpty().toSet()
+            assertTrue("$names", file.name in names && exported.name in names)
+            Log.i(TAG, "backup bytes=${file.bytes} export bytes=${exported.bytes}")
+        } finally {
+            waiting?.let { backup.handOff(it) { true } }  // nothing left waiting
+            cleanUp(created)
+            waiting?.let { File(it.path).delete() }
+            exportedPath?.let { File(it).delete() }
+            if (!lockWas) lock.delete()
+            backup.close()
+        }
+    }
 
     @Test
     fun aPickedFileThatIsNoBackupIsRefusedAndRemoved() = runBlocking<Unit> {

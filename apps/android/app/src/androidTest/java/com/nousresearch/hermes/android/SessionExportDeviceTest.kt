@@ -358,7 +358,7 @@ class SessionExportDeviceTest {
 
             EmbeddedBridge.exportSession(StoredSessionId(stored))  // a second export replaces the first
 
-            assertEquals(1, exported().size)
+            assertEquals(listOf(file.name), exported().filter { it.endsWith(".json") })
         } finally {
             cleanUp(created)
             exports.listFiles()?.forEach { it.delete() }

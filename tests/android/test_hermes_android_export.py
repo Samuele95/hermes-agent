@@ -3,7 +3,7 @@
 ``session_export`` writes the session's file in the Python half, into the app's cache
 (``TMPDIR/exports/<title>-<id8>.json``), exactly as the core's ``GET /api/sessions/{id}/export`` route streams
 it: the stored row, then every message incl. inactive ones, read in keyset pages of 500. The previous export
-is deleted first, a session with no stored row is refused in the app's words with nothing written, and a read
+is deleted first (only the previous session export is deleted; a backup zip in the same folder stays), a session with no stored row is refused in the app's words with nothing written, and a read
 that fails leaves no file behind. Every test goes through ``hermes_android.call``, so the contract's
 declaration judges each reply, and runs against the real core store of the hermetic conftest's per-test home.
 """
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -139,6 +140,42 @@ def test_a_second_export_replaces_the_first(cache, db):
 
     assert first["name"] != second["name"]
     assert _exported(cache) == [second["name"]] == ["session-b2222222.json"]
+
+
+def test_an_export_deletes_only_the_previous_session_export_never_a_waiting_backup(cache, db):
+    folder = cache / "exports"
+    folder.mkdir()
+    backups = {
+        "hermes-backup-2026-11-20-101500.zip": b"PK zip waiting for the share sheet",
+        "hermes-backup-2026-11-20-101500.zip.part": b"a backup still being written",  # on hermes-python-net, at once
+    }
+    for name, data in backups.items():
+        (folder / name).write_bytes(data)
+    (folder / "older-a1111111.json").write_text("{}", encoding="utf-8")
+    (folder / "older-a1111111.json.part").write_text("{", encoding="utf-8")  # an export that was killed
+    (folder / "hermes-backup-notes-c3333333.json").write_text("{}", encoding="utf-8")  # titled 'Hermes backup notes'
+    db.create_session("b2222222_session", source="android")
+
+    reply = ask("session_export", {"session_id": "b2222222_session"})
+
+    assert reply["name"] == "session-b2222222.json"
+    assert _exported(cache) == sorted([reply["name"], *backups])
+    for name, data in backups.items():
+        assert (folder / name).read_bytes() == data, name
+
+
+def test_a_backup_made_by_the_app_survives_a_session_export(cache, db):
+    db.create_session("a1111111_session", source="android")
+    db.set_session_title("a1111111_session", "Trip")
+    made = ask("backup_create", {})
+    assert "error" not in made, made
+    zipped = Path(made["path"]).read_bytes()
+
+    ask("session_export", {"session_id": "a1111111_session"})
+
+    assert Path(made["path"]).read_bytes() == zipped
+    assert zipfile.is_zipfile(made["path"])
+    assert _exported(cache) == sorted([made["name"], "trip-a1111111.json"])
 
 
 def test_a_session_with_no_stored_row_is_refused_in_the_apps_words_and_nothing_is_written(cache, db):

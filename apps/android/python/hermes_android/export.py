@@ -5,8 +5,9 @@ file the core's own ``GET /api/sessions/{id}/export`` route streams (``hermes_cl
 the session's stored row, then every message incl. inactive ones, so a compressed history re-imports as
 archived. The rows are read where they live, in keyset pages of 500 over the shared state.db handle, and
 streamed to ``TMPDIR/exports/<title>-<id8>.json``; the bridge carries only the path, and the app hands it
-to the share sheet. The previous export is deleted first, so no old transcript lingers. A session with no
-stored row yet is refused in the app's words, and nothing is written. The core is importable only after
+to the share sheet. Only the previous session export (and a ``.part`` a killed export left) is deleted first,
+so no old transcript lingers; a backup zip waiting in the same folder for the share sheet (``backup.py``) stays,
+since each writer of ``exports/`` deletes only names of its own shape. A session with no stored row yet is refused in the app's words, and nothing is written. The core is importable only after
 ``prepare()``, so its imports sit inside the function. Nothing of the transcript is logged.
 """
 
@@ -19,6 +20,7 @@ from pathlib import Path
 
 PAGE = 500  # the route's page
 NOT_SAVED = "Nothing to export yet: Hermes has not saved this conversation."
+SUFFIX = ".json"  # every name file_name gives ends so; a backup zip never does
 
 
 def _compact(obj) -> str:
@@ -32,12 +34,14 @@ def _safe(value: str) -> str:
 
 def file_name(session_id: str, title: str | None) -> str:
     """Desktop's ``sessionExportFilename``: the title's safe form (or ``session``), then the safe id's start."""
-    return f"{_safe(title or '') or 'session'}-{_safe(session_id)[:8] or 'session'}.json"
+    return f"{_safe(title or '') or 'session'}-{_safe(session_id)[:8] or 'session'}{SUFFIX}"
 
 
 def export(arg: str) -> str:
     """Writes ``{"session_id"}``'s file and answers ``{"path", "name", "bytes"}``; a session with no stored
-    row is ``{"error"}`` and leaves the previous export in place. A read that fails leaves no file behind."""
+    row is ``{"error"}`` and leaves the previous export in place. Only the previous session export and its
+    ``.part`` are deleted first; a backup zip (or its ``.part``) in the same folder stays. A read that fails leaves
+    no file behind."""
     import hermes_state_registry
 
     sid = json.loads(arg)["session_id"]
@@ -48,8 +52,9 @@ def export(arg: str) -> str:
             return json.dumps({"error": NOT_SAVED})
         folder = Path(os.environ["TMPDIR"]) / "exports"
         folder.mkdir(parents=True, exist_ok=True)
-        for old in folder.iterdir():
-            old.unlink()
+        for old in folder.glob(f"*{SUFFIX}*"):
+            if old.name.endswith((SUFFIX, f"{SUFFIX}.part")):
+                old.unlink()
         target = folder / file_name(sid, session.get("title"))
         part = target.with_name(target.name + ".part")
         try:
