@@ -253,7 +253,7 @@ class MainActivity : ComponentActivity() {
                                                             delete = { id -> app.chat { deleteQueued(id) } }, resume = { app.chat { resumeQueue() } })
                             ChatScreen(chat, about = state.about, answers = answers, places = places, onStop = { app.chat { cancel() } },
                                        onRetry = { app.chat { retry() } }, onCopy = { copy("Hermes", it) },
-                                       onEdit = { rewind -> app.chat { resend(rewind) } },
+                                       onEdit = { rewind, settled -> app.chat { settled(resend(rewind)) } },
                                        onReact = { id: Long, emoji: String? -> app.chat { react(id, emoji) } }.takeIf { reactionsOn == true },
                                        // A failed answer's fixes run the controls the app already has (chat-16, D7); Compress
                                        // opens the context sheet first, so its outcome or refusal shows there.

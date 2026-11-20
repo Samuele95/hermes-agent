@@ -79,6 +79,7 @@ import com.nousresearch.hermes.android.chat.ChatSession
 import com.nousresearch.hermes.android.chat.NoticeShortcut
 import com.nousresearch.hermes.android.chat.Retry
 import com.nousresearch.hermes.android.chat.Rewind
+import com.nousresearch.hermes.android.chat.Resend
 import com.nousresearch.hermes.android.chat.Entry
 import com.nousresearch.hermes.android.chat.Author
 import com.nousresearch.hermes.android.chat.QUICK
@@ -923,7 +924,7 @@ class ChatScreenTest {
         val sent = mutableListOf<Rewind>()
         compose.setContent {
             ChatScreen(Chat(listOf(Entry.User("hi", 1, 0), Entry.Reply("Hello", TurnStatus.COMPLETE, stableId = 1))), onSend = {},
-                       onEdit = { sent += it }, onCopy = {})
+                       onEdit = { r, settled -> sent += r; settled(Resend.Taken) }, onCopy = {})
         }
 
         compose.onNodeWithText("hi").performTouchInput { longClick() }
@@ -954,7 +955,7 @@ class ChatScreenTest {
         compose.setContent {
             ChatScreen(Chat(listOf(Entry.User("a", 1, 0), Entry.Reply("A", TurnStatus.COMPLETE, stableId = 1),
                                    Entry.User("b", 3, 2), Entry.Reply("B", TurnStatus.COMPLETE, stableId = 3))),
-                       onSend = {}, onEdit = { sent += it }, onCopy = {})
+                       onSend = {}, onEdit = { r, settled -> sent += r; settled(Resend.Taken) }, onCopy = {})
         }
 
         compose.onNodeWithText("a").performTouchInput { longClick() }
@@ -978,11 +979,112 @@ class ChatScreenTest {
         compose.onNodeWithTag("edit-field").assertDoesNotExist()
     }
 
+    private val edited = Chat(listOf(Entry.User("hi", 1, 0), Entry.Reply("Hello", TurnStatus.COMPLETE, stableId = 1)))
+
+    /** Edits "hi" into [words] and sends it. */
+    private fun editHi(words: String = "hello") {
+        compose.onNodeWithText("hi").performTouchInput { longClick() }
+        compose.onNodeWithTag("edit-message").performClick()
+        compose.onNodeWithTag("edit-field").performTextReplacement(words)
+        compose.onNodeWithTag("edit-send").performClick()
+    }
+
+    @Test
+    fun aRefusedEditKeepsTheEditorOpenWithItsWordsAndWhy() {
+        val sent = mutableListOf<Rewind>()
+        var settled: ((Resend) -> Unit)? = null
+        compose.setContent { ChatScreen(edited, onSend = {}, onEdit = { r, s -> sent += r; settled = s }, onCopy = {}) }
+
+        editHi()
+
+        assertEquals(listOf(Rewind(Retry(0, "hi", 1), "hello", false)), sent)
+        compose.onNodeWithTag("edit-field").assertTextEquals("hello")  // on its way: the words stay
+        compose.onNodeWithTag("edit-send").assertIsNotEnabled()  // no double send
+        compose.onNodeWithTag("edit-cancel").assertExists()
+
+        compose.runOnIdle { settled!!(Resend.Refused("Edit failed: session busy")) }
+
+        compose.onNodeWithTag("edit-field").assertTextEquals("hello")
+        compose.onNodeWithTag("edit-refused").assertTextEquals("Edit failed: session busy")
+        compose.onNodeWithTag("edit-send").assertIsEnabled()
+
+        compose.onNodeWithTag("edit-send").performClick()
+        assertEquals(2, sent.size)
+        compose.runOnIdle { settled!!(Resend.Taken) }
+
+        compose.onNodeWithTag("edit-field").assertDoesNotExist()
+        compose.onNodeWithTag("edit-refused").assertDoesNotExist()
+    }
+
+    @Test
+    fun aRefusalAfterTheCutReopensTheEditorOnTheCoresCopyOfThePrompt() {
+        var chat by mutableStateOf(edited)
+        var settled: ((Resend) -> Unit)? = null
+        compose.setContent { ChatScreen(chat, onSend = {}, onEdit = { _, s -> settled = s }, onCopy = {}) }
+
+        editHi()
+        chat = Chat(listOf(Entry.User("hello", stableId = 2)))  // the cut painted
+        compose.onNodeWithTag("edit-field").assertDoesNotExist()
+        chat = Chat(listOf(Entry.User("hi", 41, 3), Entry.Reply("Hello", TurnStatus.COMPLETE, stableId = 4)))  // the core's, re-read
+        compose.runOnIdle { settled!!(Resend.Refused("Edit failed: ${ChatSession.EDIT_UNAVAILABLE}")) }
+
+        compose.onNodeWithTag("edit-field").assertTextEquals("hello")
+        compose.onNodeWithTag("edit-refused").assertTextEquals("Edit failed: ${ChatSession.EDIT_UNAVAILABLE}")
+        compose.onNodeWithText("hi").assertDoesNotExist()  // the core's copy is the one being edited
+        compose.onNodeWithText("Hello").assertExists()
+    }
+
+    @Test
+    fun aRefusedEditWhosePromptIsGoneLeavesItsWordsInTheDraft() {
+        var chat by mutableStateOf(edited)
+        var settled: ((Resend) -> Unit)? = null
+        val sends = mutableListOf<String>()
+        compose.setContent { ChatScreen(chat, onSend = { sends += it }, onEdit = { _, s -> settled = s }, onCopy = {}) }
+
+        editHi()
+        chat = Chat(listOf(Entry.User("PLAN: hi", 41, 3), Entry.Reply("Done.", TurnStatus.COMPLETE, stableId = 4)))
+        compose.runOnIdle { settled!!(Resend.Refused("Edit failed: ${ChatSession.EDIT_UNAVAILABLE}")) }
+
+        compose.onNodeWithTag("edit-field").assertDoesNotExist()
+        compose.onNodeWithTag("draft").assertTextEquals("hello")
+        assertEquals(emptyList<String>(), sends)
+
+        chat = edited
+        compose.onNodeWithTag("draft").performTextReplacement("draft words")
+        editHi()
+        chat = Chat(listOf(Entry.User("PLAN: hi", 41, 3), Entry.Reply("Done.", TurnStatus.COMPLETE, stableId = 4)))
+        compose.runOnIdle { settled!!(Resend.Refused("Edit failed: ${ChatSession.EDIT_UNAVAILABLE}")) }
+
+        compose.onNodeWithTag("draft").assertTextEquals("draft words\n\nhello")
+        assertEquals(emptyList<String>(), sends)
+    }
+
+    @Test
+    fun anEditCancelledOrLeftWhileOnItsWayReopensNothing() {
+        var settled: ((Resend) -> Unit)? = null
+        compose.setContent { ChatScreen(edited, onSend = {}, onEdit = { _, s -> settled = s }, onCopy = {}) }
+
+        editHi()
+        compose.onNodeWithTag("edit-cancel").performClick()
+        compose.runOnIdle { settled!!(Resend.Refused("Edit failed: session busy")) }
+
+        compose.onNodeWithTag("edit-field").assertDoesNotExist()
+        compose.onNodeWithTag("edit-refused").assertDoesNotExist()
+        compose.onNodeWithTag("draft").assert(!hasText("hello", substring = true))
+
+        editHi()
+        compose.runOnIdle { settled!!(Resend.Left) }
+
+        compose.onNodeWithTag("edit-field").assertDoesNotExist()
+        compose.onNodeWithTag("edit-refused").assertDoesNotExist()
+        compose.onNodeWithTag("draft").assert(!hasText("hello", substring = true))
+    }
+
     @Test
     fun editIsOfferedOnSentPromptsWhileATurnRunsButNotInAJobsRunWhileCompressingOrWithoutAHandler() {
         val running = Chat(listOf(Entry.User("hi", 1, 0)), streaming = "He")
         var chat by mutableStateOf(running)
-        var onEdit by mutableStateOf<((Rewind) -> Unit)?>({})
+        var onEdit by mutableStateOf<((Rewind, (Resend) -> Unit) -> Unit)?>({ _, _ -> })
         compose.setContent { ChatScreen(chat, onSend = {}, onEdit = onEdit, onCopy = {}) }
         fun offered(bubble: String): Boolean {
             compose.onNodeWithText(bubble).performTouchInput { longClick() }
@@ -1616,7 +1718,7 @@ class ChatScreenTest {
     fun eachFixRunsItsRoute() {
         val edited = mutableListOf<Rewind>()
         var chat by mutableStateOf(failedWith(Failure("provider", "context_overflow", false)))
-        compose.setContent { ChatScreen(chat, onSend = {}, onRetry = {}, onEdit = { edited += it }, recovery = recorded) }
+        compose.setContent { ChatScreen(chat, onSend = {}, onRetry = {}, onEdit = { r, settled -> edited += r; settled(Resend.Taken) }, recovery = recorded) }
 
         compose.onNodeWithTag("recovery-main").assertTextEquals(words(R.string.recovery_compress)).performClick()
         assertEquals("compress", did.last())

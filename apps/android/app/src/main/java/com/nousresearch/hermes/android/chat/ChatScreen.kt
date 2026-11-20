@@ -74,6 +74,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -140,8 +141,10 @@ class ModelActions(val open: () -> Unit, val close: () -> Unit, val query: (Stri
  * A chat in the desktop's shape: the transcript is the page, replies flat across it and the user's words in
  * bubbles, the composer at the bottom naming the model, and a drawer with the sessions and the app's other places.
  * It holds only the draft; [onSend] gets the trimmed text, [onRetry] runs the last prompt again. [onEdit] sends an edited
- * prompt again from its place (chat-12): a long press on a sent prompt offers Edit message; a cut that archives later
- * turns asks first. [recovery] is where a failed answer's card sends its fixes (chat-16): the newest failed answer, while
+ * prompt again from its place (chat-12) and hands what became of it to its callback: a long press on a sent prompt offers
+ * Edit message; a cut that archives later turns asks first. The editor keeps the typed words until the edit is taken
+ * (Q7): a refusal reopens it with them and why, on the prompt or the core's copy of it; with no such prompt left they
+ * join the draft, never sent. [recovery] is where a failed answer's card sends its fixes (chat-16): the newest failed answer, while
  * nothing runs, offers one main fix and at most one second; every failed answer opens its details. Without it a failed
  * answer shows its words and Retry, as before. [onSessions] hears the drawer open (load the sessions)
  * and close; [sessionActions] is the rows' menu (rename, delete). [contextActions] opens the context sheet from the meter,
@@ -172,7 +175,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
                sessions: HistoryUi? = null, onSessions: (open: Boolean) -> Unit = {}, onPickSession: (StoredSessionId) -> Unit = {},
                sessionActions: SessionActions? = null, context: ContextUi? = null, contextActions: ContextActions? = null,
                places: ChatPlaces? = null, onStop: () -> Unit = {}, onRetry: (() -> Unit)? = null,
-               onEdit: ((Rewind) -> Unit)? = null, recovery: RecoveryRoutes? = null, onCopy: ((String) -> Unit)? = null, about: String? = null, queue: QueueUi = QueueUi(),
+               onEdit: ((Rewind, (Resend) -> Unit) -> Unit)? = null, recovery: RecoveryRoutes? = null, onCopy: ((String) -> Unit)? = null, about: String? = null, queue: QueueUi = QueueUi(),
                queueActions: QueueActions? = null, onOfferTaken: (IncomingText) -> Unit = {}, readiness: Readiness? = null,
                onCheckReadiness: (() -> Unit)? = null, onOpenUrl: ((String) -> Unit)? = null, onDismissWall: () -> Unit = {},
                exportUi: ExportUi = ExportUi(), exportActions: ExportActions? = null, status: StatusUi? = null,
@@ -183,6 +186,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var picked by remember { mutableIntStateOf(0) }  // a conversation picked in the drawer is shown from its end (V5)
+    var kept by remember { mutableStateOf<String?>(null) }  // a refused edit's words with no prompt left to edit, for the draft (Q7)
     LaunchedEffect(drawer) { snapshotFlow { drawer.isOpen }.distinctUntilChanged().drop(1).collect(onSessions) }
     // Back closes an open drawer before it leaves the app.
     BackHandler(enabled = drawer.isOpen) { scope.launch { drawer.close() } }
@@ -209,7 +213,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
                    exportActions?.export, exporting = exportUi.busy)
             if (exportUi.busy) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp).testTag("export-busy"))
             if (chat.entries.isEmpty() && !chat.running && chat.prompts.isEmpty()) Intro(Modifier.weight(1f))
-            else Transcript(chat, onRetry, onEdit, onCopy, recovery, picked, places?.gateway, now, onReact, Modifier.weight(1f))
+            else Transcript(chat, onRetry, onEdit, onCopy, recovery, picked, places?.gateway, now, onReact, { kept = it }, Modifier.weight(1f))
             // The billing wall tops the stack above the composer: a blocker outranks the rest (D7); the composer stays usable.
             chat.wall?.let { BillingBanner(it, onOpenUrl, places?.setup, onDismissWall) }
             // One question at a time, the oldest first: the turn waits on it.
@@ -219,7 +223,7 @@ fun ChatScreen(chat: Chat, onSend: (String) -> Unit, modifier: Modifier = Modifi
             // The messages that wait for a turn's end, in the order they go out (chat-19).
             queueActions?.takeIf { queue.items.isNotEmpty() }?.let { QueuePanel(queue, chat.busy, chat.steerMode != null, it) }
             Composer(chat, onSend, onStop, places?.setup, contextActions?.open, queueActions?.add, chat.offer, onOfferTaken, places?.newChat,
-                     readiness, onCheckReadiness, modelActions?.open, onSlash, onPrefillTaken, dictation)
+                     readiness, onCheckReadiness, modelActions?.open, onSlash, onPrefillTaken, dictation, kept) { kept = null }
             context?.let { ContextSheet(it, running = chat.busy, compressing = chat.compressing, onCompress = contextActions?.compress ?: {},
                                           onClose = contextActions?.close ?: {}) }
             status?.let { StatusSheet(it, onClose = statusActions?.close ?: {}) }
@@ -287,9 +291,10 @@ private fun Intro(modifier: Modifier) {
 }
 
 @Composable
-private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, onEdit: ((Rewind) -> Unit)?, onCopy: ((String) -> Unit)?,
+private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, onEdit: ((Rewind, (Resend) -> Unit) -> Unit)?, onCopy: ((String) -> Unit)?,
                        recovery: RecoveryRoutes?, picked: Int,
-                       onGateway: (() -> Unit)?, now: () -> Long, onReact: ((Long, String?) -> Unit)?, modifier: Modifier) {
+                       onGateway: (() -> Unit)?, now: () -> Long, onReact: ((Long, String?) -> Unit)?, onKeep: (String) -> Unit,
+                       modifier: Modifier) {
     val list = rememberLazyListState()
     val h24 = android.text.format.DateFormat.is24HourFormat(LocalContext.current)  // the phone's own clock setting (D3)
     // chat-17 (F9, DC-B16): whether the list follows its newest row belongs to the view, never to the conversation.
@@ -300,7 +305,45 @@ private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, onEdit: ((Rewind) -> 
     val target = editing?.let(chat::editTarget)
     LaunchedEffect(target == null) { if (target == null) editing = null }  // gone, compressing, a job's run: the editor closes
     var restoring by remember { mutableStateOf<Rewind?>(null) }  // an edit that waits for "Restore & rerun"
-    fun send(rewind: Rewind) { if (chat.laterTurns(rewind.target) > 0) restoring = rewind else { onEdit?.invoke(rewind); editing = null } }
+    // The edit on its way and the refusal its editor shows (Q7). Neither is saved across an activity's recreation: a
+    // Rewind has no Saver, and the outcome goes to the old scope; after one the editor reopens from [editing] with its
+    // saved draft and Send on.
+    var pending by remember { mutableStateOf<PendingEdit?>(null) }
+    var refusal by remember { mutableStateOf<EditRefusal?>(null) }
+    val scope = rememberCoroutineScope()
+    val shown by rememberUpdatedState(chat)  // the transcript when an outcome arrives, not when its edit left
+    val keep by rememberUpdatedState(onKeep)
+    /** [p]'s outcome, unless a newer send or a Cancel replaced it: taken or left closes the editor; a refusal reopens it. */
+    fun settle(p: PendingEdit, outcome: Resend) {
+        if (pending !== p) return
+        pending = null
+        when (outcome) {
+            Resend.Taken, Resend.Left -> editing = null
+            is Resend.Refused -> {
+                val old = p.rewind.target
+                // The prompt itself when nothing was cut, else the core's re-read copy of it at its place (a new id, V4).
+                val id = p.id.takeIf { shown.editTarget(it)?.text == old.text }
+                    ?: (shown.entries.getOrNull(old.index) as? Entry.User)?.stableId?.takeIf { shown.editTarget(it)?.text == old.text }
+                if (id != null) {
+                    editing = id
+                    refusal = EditRefusal(id, p.rewind.text, outcome.why)
+                } else {  // no bubble left to edit: the words join the draft, never sent
+                    editing = null
+                    keep(p.rewind.text)
+                }
+            }
+        }
+    }
+    /** Sends [rewind] and keeps its editor open, its words in it, until the outcome (Q7). */
+    fun admit(rewind: Rewind) {
+        val edit = onEdit ?: return
+        val p = PendingEdit(rewind, editing ?: return)
+        pending = p
+        refusal = null
+        // The outcome comes on the app's scope; it is settled on the main thread, and dropped once this view is gone.
+        edit(rewind) { outcome -> scope.launch { settle(p, outcome) } }
+    }
+    fun send(rewind: Rewind) { if (chat.laterTurns(rewind.target) > 0) restoring = rewind else admit(rewind) }
     // The newest failed answer, while nothing runs, offers its fixes (D8: retry's own gate); an older one keeps its details.
     val fixing = recovery?.takeIf { chat.retryTarget() != null }
     val editable = onEdit?.let { chat.retryTarget() }?.let { chat.entries[it.index].stableId }?.takeIf { chat.editTarget(it) != null }
@@ -338,7 +381,10 @@ private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, onEdit: ((Rewind) -> 
             // re-read transcript never hands it to another row (/improve 20261113T221531Z #8).
             itemsIndexed(chat.entries, key = { _, entry -> entry.stableId }) { i, entry ->
                 if (entry is Entry.User && editing == entry.stableId && target != null) {
-                    EditBubble(entry, onSend = { words -> send(Rewind(target, words, deep = false)) }, onCancel = { editing = null })
+                    val refused = refusal?.takeIf { it.id == entry.stableId }
+                    EditBubble(entry, start = refused?.words ?: entry.text, why = refused?.why, waiting = pending != null,
+                               onSend = { words -> send(Rewind(target, words, deep = false)) },
+                               onCancel = { editing = null; pending = null; refusal = null })
                 } else {
                     val edit = onEdit?.takeIf { chat.editTarget(entry.stableId) != null }?.let { { editing = entry.stableId } }
                     val failure = (entry as? Entry.Reply)?.failure
@@ -375,18 +421,25 @@ private fun Transcript(chat: Chat, onRetry: (() -> Unit)?, onEdit: ((Rewind) -> 
     }
     // Cancel keeps the editor and its words; Restore & rerun sends the edit with the user's consent to the deep cut.
     restoring?.let { r ->
-        RestoreDialog(onConfirm = { onEdit?.invoke(r.copy(deep = true)); restoring = null; editing = null }, onDismiss = { restoring = null })
+        RestoreDialog(onConfirm = { admit(r.copy(deep = true)); restoring = null }, onDismiss = { restoring = null })
     }
 }
 
+/** An edit on its way: its [rewind] and the prompt [id] it was typed on. Equal only to itself: each send is its own. */
+private class PendingEdit(val rewind: Rewind, val id: Long)
+
+/** A refused edit's editor to show: on prompt [id], with the typed [words] and [why] it was refused. */
+private data class EditRefusal(val id: Long, val words: String, val why: String)
+
 /**
- * A sent prompt being edited, in its bubble's place: its words in a focused field, Cancel (or Back) and the send
- * "Send edited message", off while the words are empty or unchanged (D7).
+ * A sent prompt being edited, in its bubble's place: [start]'s words in a focused field, Cancel (or Back) and the send
+ * "Send edited message", off while the words are empty or unchanged (D7) and while the edit is on its way ([waiting]).
+ * [why] a refused edit was not taken, beneath the field (Q7).
  */
 @Composable
-private fun EditBubble(user: Entry.User, onSend: (String) -> Unit, onCancel: () -> Unit) {
+private fun EditBubble(user: Entry.User, start: String, why: String?, waiting: Boolean, onSend: (String) -> Unit, onCancel: () -> Unit) {
     var draft by rememberSaveable(user.stableId, stateSaver = TextFieldValue.Saver) {
-        mutableStateOf(TextFieldValue(user.text, TextRange(user.text.length)))
+        mutableStateOf(TextFieldValue(start, TextRange(start.length)))
     }
     val focus = remember { FocusRequester() }
     LaunchedEffect(user.stableId) { focus.requestFocus() }
@@ -399,10 +452,14 @@ private fun EditBubble(user: Entry.User, onSend: (String) -> Unit, onCancel: () 
     val ok = draft.text.isNotBlank() && draft.text.trim() != user.text.trim()
     Column(Modifier.fillMaxWidth().bringIntoViewRequester(shown), horizontalAlignment = Alignment.End) {
         OutlinedTextField(draft, { draft = it }, Modifier.fillMaxWidth().focusRequester(focus).testTag("edit-field"), maxLines = 6)
+        why?.let {
+            Text(it, Modifier.fillMaxWidth().padding(top = 4.dp).testTag("edit-refused"), color = MaterialTheme.colorScheme.error,
+                 style = MaterialTheme.typography.labelMedium, maxLines = 3, overflow = TextOverflow.Ellipsis)
+        }
         Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onCancel, Modifier.testTag("edit-cancel")) { Text(stringResource(R.string.chat_edit_cancel)) }
             Spacer(Modifier.width(8.dp))
-            FilledIconButton({ onSend(draft.text.trim()) }, Modifier.size(36.dp).testTag("edit-send"), enabled = ok) {
+            FilledIconButton({ onSend(draft.text.trim()) }, Modifier.size(36.dp).testTag("edit-send"), enabled = ok && !waiting) {
                 Icon(HermesIcons.Send, stringResource(R.string.chat_send_edited), Modifier.size(18.dp))
             }
         }
@@ -808,7 +865,8 @@ private fun SlashMenu(items: List<SlashItem>, modifier: Modifier, onPick: (Slash
 private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, onSetup: (() -> Unit)?, onContext: (() -> Unit)?,
                      onQueue: ((String) -> Unit)?, offer: IncomingText?, onOfferTaken: (IncomingText) -> Unit, onNewChat: (() -> Unit)?,
                      readiness: Readiness?, onCheckReadiness: (() -> Unit)?, onModels: (() -> Unit)?,
-                     onSlash: (suspend (String) -> List<SlashItem>)?, onPrefillTaken: (String) -> Unit, dictation: Intent?) {
+                     onSlash: (suspend (String) -> List<SlashItem>)?, onPrefillTaken: (String) -> Unit, dictation: Intent?,
+                     kept: String?, onKeptTaken: () -> Unit) {
     // A value, not a string: words set from outside (a pick, a prefill, an offer) leave the cursor at their end (D8).
     var draft by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
     var shared by rememberSaveable { mutableStateOf(false) }  // the draft holds words another app shared
@@ -821,6 +879,14 @@ private fun Composer(chat: Chat, onSend: (String) -> Unit, onStop: () -> Unit, o
             shared = true
             cut = it.cut
             onOfferTaken(it)
+        }
+    }
+    // A refused edit's words with no prompt left to edit (Q7): after the user's own, never sent, taken once as the offer is.
+    LaunchedEffect(kept) {
+        kept?.let {
+            val joined = if (draft.text.isBlank()) it else draft.text.trimEnd() + "\n\n" + it
+            draft = TextFieldValue(joined, TextRange(joined.length))
+            onKeptTaken()
         }
     }
     // The core's words for the composer (`/undo`), taken once, as the offer is.
