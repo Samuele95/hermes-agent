@@ -1,12 +1,14 @@
 package com.nousresearch.hermes.android.chat
 
 /**
- * This entry with no time: a prompt's or reply's [Entry.User.at], [Entry.Reply.at] and [Entry.Reply.tookMs] null, any
- * other entry as it is. For tests about other rules: the times the clock gave are pinned by their own tests (P3).
+ * This entry with no time: a prompt's or reply's [Entry.User.at], [Entry.Reply.at] and [Entry.Reply.tookMs] null, a
+ * notice's [Entry.Notice.tookMs] null (the length of a turn a bare `error` ended), any other entry as it is. For tests
+ * about other rules: the times the clock gave are pinned by their own tests (P3).
  */
 fun Entry.untimed(): Entry = when (this) {
     is Entry.User -> copy(at = null)
     is Entry.Reply -> copy(at = null, tookMs = null)
+    is Entry.Notice -> copy(tookMs = null)
     else -> this
 }
 

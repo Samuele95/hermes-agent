@@ -49,6 +49,8 @@ import androidx.compose.ui.unit.height
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.hasAnyDescendant
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -1668,6 +1670,23 @@ class ChatScreenTest {
 
         compose.onNodeWithText("Resumed.").performClick()
         compose.onNodeWithTag("message-time").assertExists()
+    }
+
+    @Test
+    fun aTurnEndedByAnErrorSaysHowLongItRan() {
+        val chat = Chat(listOf(Entry.User("weather?", stableId = 0),
+                               Entry.Notice("Context injection refused.", stableId = 1, tookMs = 64_000),
+                               Entry.Notice("session busy", stableId = 2)))
+        compose.setContent { ChatScreen(chat, onSend = {}, onRetry = {}, now = { nowMs }) }
+
+        compose.onAllNodesWithTag("turn-duration").assertCountEquals(1)  // the app's own notice is never timed
+        compose.onNodeWithTag("turn-duration").assertTextEquals("⏱ 1:04")
+        compose.onNodeWithContentDescription("This turn took 1:04").assertExists()
+        // Under the core's words, inside the notice the error ended its turn with.
+        val took = compose.onNode(hasTestTag("turn-duration") and hasAnyAncestor(hasTestTag("entry-notice")))
+        took.assertExists()
+        assertTrue(took.getUnclippedBoundsInRoot().top >= compose.onNodeWithText("Context injection refused.").getUnclippedBoundsInRoot().bottom)
+        compose.onAllNodesWithTag("retry").assertCountEquals(1)  // Retry still stands alone once after the notices
     }
 
     // A failed answer's recovery card (chat-16): the core's words, one main fix and at most one second, View error details.

@@ -524,14 +524,21 @@ private fun ReplyActions(reply: Entry.Reply, onCopy: ((String) -> Unit)?, onRetr
                  color = Hermes.colors.textTertiary)
         }
         // Only a turn this app saw start is timed (invariant 7): no length is ever derived from the entries' times.
-        reply.tookMs?.let {
-            val took = turnLength(it)
-            val said = stringResource(R.string.chat_turn_took, took)
-            Text(stringResource(R.string.chat_turn_length, took),
-                 Modifier.padding(horizontal = 4.dp).testTag("turn-duration").semantics { contentDescription = said },
-                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+        reply.tookMs?.let { TurnDuration(it) }
     }
+}
+
+/**
+ * How long a turn this app saw start ran, [tookMs] on its clock: "⏱ 1:04", read by TalkBack as "This turn took 1:04".
+ * The one presentation for every timed turn, an answer's and a bare `error`'s notice's (chat-15).
+ */
+@Composable
+private fun TurnDuration(tookMs: Long) {
+    val took = turnLength(tookMs)
+    val said = stringResource(R.string.chat_turn_took, took)
+    Text(stringResource(R.string.chat_turn_length, took),
+         Modifier.padding(horizontal = 4.dp).testTag("turn-duration").semantics { contentDescription = said },
+         style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 /**
@@ -663,6 +670,8 @@ private fun EntryRow(entry: Entry, onCopy: ((String) -> Unit)?, onEdit: (() -> U
         is Entry.Tool -> ToolRow(entry, onCopy)
         is Entry.Notice -> Column(Modifier.fillMaxWidth().testTag("entry-notice"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Problem(entry.text)
+            // How long the turn a bare `error` ended ran, at the row's end as an answer's (invariant 7: null when unseen).
+            entry.tookMs?.let { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { TurnDuration(it) } }
             // The way to turn the gateway on (D39 F11), when the chat has one; the words name the drawer path either way.
             if (entry.opens == NoticeShortcut.GATEWAY) onGateway?.let {
                 SecondaryButton(stringResource(R.string.jobs_turn_on), it, Modifier.testTag("notice-open-gateway"))

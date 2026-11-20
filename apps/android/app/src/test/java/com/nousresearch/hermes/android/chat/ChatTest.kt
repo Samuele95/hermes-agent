@@ -89,7 +89,7 @@ class ChatTest {
 
         assertFalse(failed.running)
         assertEquals(null, failed.activity)
-        assertEquals(Entry.Notice("Context injection refused.", stableId = 1), failed.entries.last())
+        assertEquals(Entry.Notice("Context injection refused.", stableId = 1), failed.entries.last().untimed())
     }
 
     @Test
@@ -787,6 +787,47 @@ class ChatTest {
         clockMs += 2_000
         val stopped = started.timed(event("message.complete", """{"text":"","status":"interrupted"}""")).entries.last() as Entry.Reply
         assertEquals("a stopped turn ran, so it is timed", 2_000L, stopped.tookMs)
+    }
+
+    @Test
+    fun aTurnEndedByABareErrorIsTimedFromTheStartTheChatSaw() {
+        // Sent 7 s before the start: a length measured from the prompt's time would read 71 s.
+        val started = Chat().sent("@file:/etc/x", at = clockMs - 7_000).timed(event("message.start"))
+        clockMs += 64_000
+
+        val failed = started.timed(event("error", """{"message":"Context injection refused."}"""))
+
+        assertEquals(Entry.Notice("Context injection refused.", stableId = 1, tookMs = 64_000), failed.entries.last())
+        assertNull(failed.turnStartedAt)
+        assertFalse(failed.running)
+        assertFalse(failed.submitted)
+    }
+
+    @Test
+    fun aBareErrorTimesOnlyATurnThisProcessSawStart() {
+        val boom = event("error", """{"message":"boom"}""")
+        fun Chat.lastTook(): Long? = (entries.last() as Entry.Notice).tookMs
+
+        assertNull("no start: a refused prompt, a cancel before the agent was ready",
+                   Chat().sent("hi", at = clockMs - 7_000).timed(boom).lastTook())
+        assertNull("a resumed turn in flight", Chat(streaming = "").timed(boom).lastTook())
+
+        val started = Chat().timed(event("message.start"))
+        clockMs += 2_000
+        val completed = started.timed(event("message.complete", """{"text":"","status":"error","error":"boom"}"""))
+        assertEquals(2_000L, (completed.entries.last() as Entry.Reply).tookMs)
+        clockMs += 3_000
+        assertNull("a trailing error after the completion", completed.timed(boom).lastTook())
+
+        assertNull("the app's own notice during a timed turn (invariant 3)",
+                   Chat().timed(event("message.start")).notice("session busy").lastTook())
+    }
+
+    @Test
+    fun aClockThatWentBackTimesAnErrorAsZeroAsAReplyIs() {
+        val started = Chat().timed(event("message.start"))
+        clockMs -= 5_000
+        assertEquals(0L, (started.timed(event("error", """{"message":"boom"}""")).entries.last() as Entry.Notice).tookMs)
     }
 
     @Test

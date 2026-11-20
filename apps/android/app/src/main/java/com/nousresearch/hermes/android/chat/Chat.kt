@@ -104,8 +104,13 @@ sealed interface Entry {
         }
     }
 
-    /** Something the chat tells the user; [opens] is a place it offers to go (none: words only). */
-    data class Notice(val text: String, val opens: NoticeShortcut? = null, override val stableId: Long) : Entry
+    /**
+     * Something the chat tells the user; [opens] is a place it offers to go (none: words only). [tookMs] is the length,
+     * on the app's clock, of the turn a bare `error` ended: set only for a turn whose `message.start` this process saw
+     * (invariant 7, bet 16), null for every other notice (the app's own included).
+     */
+    data class Notice(val text: String, val opens: NoticeShortcut? = null, override val stableId: Long,
+                      val tookMs: Long? = null) : Entry
 }
 
 /** A place a notice offers to open: the always-on gateway's page. */
@@ -157,7 +162,8 @@ sealed interface Resend {
  * [wall]: the out-of-credits wall the chat's last failed turn hit, as the core described it; set by a completion
  * carrying `billing`, gone with the next turn that completes, a session switch or Dismiss (inv. 5, DC-M12).
  * [turnStartedAt]: the app's clock at the `message.start` of the turn now running, as this process saw it; null: no
- * turn, or one whose start it did not see (a resumed turn), so its reply is not timed (invariant 7).
+ * turn, or one whose start it did not see (a resumed turn), so its reply, or the notice of an `error` that ended it,
+ * is not timed (invariant 7).
  * [prefill]: words the core handed back for the composer (`/undo`), taken into the draft once, like [offer]; the chat
  * never sends them (chat-20, D7).
  */
@@ -347,9 +353,12 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
             (info.model.takeIf { it.isNotBlank() }?.let { copy(model = it) } ?: this).measured(info.usage)
         }
         // The core may end a turn with `error` alone (a refused @-reference, an ownership refusal, a crash), and the
-        // TUI treats every `error` as the end of the turn: so does the chat, keeping the message as a notice.
-        Events.ERROR.name -> notice(event.decode(Events.ERROR)!!.message)
-            .copy(streaming = null, activity = null, reasoning = null, submitted = false, turnStartedAt = null)
+        // TUI treats every `error` as the end of the turn: so does the chat, keeping the message as a notice, timed as a
+        // reply is (Desktop's `failAssistantMessage`). The length is read before the turn's start is cleared.
+        Events.ERROR.name -> event.decode(Events.ERROR)!!.message.let { message ->
+            val tookMs = tookAt(clock())
+            adding { Entry.Notice(message, stableId = it, tookMs = tookMs) }
+        }.copy(streaming = null, activity = null, reasoning = null, submitted = false, turnStartedAt = null)
         // Its by-row leg only (D6): a payload for a user row or an unknown row changes nothing; the user's own only (D7).
         Events.MESSAGE_REACTION.name -> event.decode(Events.MESSAGE_REACTION)!!.let { p ->
             copy(entries = entries.map { if (it is Entry.Reply && it.rowId == p.rowId) it.copy(reactions = reactionsOf(p.reactions)) else it })
@@ -369,7 +378,7 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
         val status = done.status ?: TurnStatus.COMPLETE
         // A wall describes the last turn: a newer one replaces it, and a turn that completes takes it away; a stopped
         // or otherwise failed turn leaves it (inv. 5, D5).
-        val tookMs = turnStartedAt?.let { started -> (at - started).coerceAtLeast(0) }  // only a start this process saw (inv. 7)
+        val tookMs = tookAt(at)
         val rowId = done.persistedTurn?.finalAssistantRowId
         val ended = adding { Entry.Reply(text, status, done.error, thought, it, rowId = rowId, at = at, tookMs = tookMs,
                                              failure = Failure.of(done)) }
@@ -384,6 +393,12 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
 
     /** This chat with one more entry, made with the next id: the one way the reducer adds a row (/improve 20261113T221531Z #8). */
     private inline fun adding(entry: (id: Long) -> Entry): Chat = copy(entries = entries + entry(nextId), nextId = nextId + 1)
+
+    /**
+     * The length at [at] (epoch ms) of the turn now running, the one rule for a reply and a bare `error`'s notice; null
+     * when this process did not see the turn start, never below 0 if the clock went back.
+     */
+    private fun tookAt(at: Long): Long? = turnStartedAt?.let { started -> (at - started).coerceAtLeast(0) }  // only a start this process saw (inv. 7)
 
     /** The core's newer plan, when [next] is one (invariant 2); an unreadable or absent one changes nothing. */
     private fun planned(next: TodoList?): Chat = if (next == null) this else copy(todos = todos?.after(next) ?: next)
