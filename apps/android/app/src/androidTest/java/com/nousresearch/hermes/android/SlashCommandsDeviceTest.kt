@@ -6,9 +6,11 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.nousresearch.hermes.android.chat.ChatSession
 import com.nousresearch.hermes.android.chat.Dispatch
 import com.nousresearch.hermes.android.chat.Entry
+import com.nousresearch.hermes.android.chat.SlashCatalog
 import com.nousresearch.hermes.android.chat.SlashKind
 import com.nousresearch.hermes.android.turn.TurnHost
 import com.nousresearch.hermes.bridge.protocol.CommandDispatchParams
+import com.nousresearch.hermes.bridge.protocol.CommandsCatalogParams
 import com.nousresearch.hermes.bridge.protocol.Methods
 import com.nousresearch.hermes.bridge.protocol.SessionCloseParams
 import kotlinx.coroutines.CoroutineScope
@@ -21,6 +23,7 @@ import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -103,5 +106,26 @@ class SlashCommandsDeviceTest {
 
         assertEquals(users, after.entries.count { it is Entry.User })
         Log.i(TAG, "/memory pending: ${(after.entries.last() as Entry.Notice).text.lineSequence().first()}")
+    }
+
+    /**
+     * D6's premise on the shipped core (Q3): `/plan` is a command `command.dispatch` runs, whose send has no display, so
+     * its bubble is the typed line and an edit of it must dispatch again; a skill line is not one. `/goal` is not
+     * dispatched here: it writes goal state into the session.
+     */
+    @Test
+    fun aPlanLineIsADispatchedCommandWhoseSendShowsNoDisplay() = withChat { chat ->
+        val catalog = SlashCatalog.of(ready.gateway.call(Methods.COMMANDS_CATALOG, CommandsCatalogParams(sessionId = chat.sessionId.value)))
+
+        assertEquals("plan", catalog.dispatchedCommand("/plan probe")?.name)
+        assertNull("a skill is not a dispatched command", catalog.dispatchedCommand("/github probe"))
+
+        val directive = Dispatch.of(ready.gateway.call(Methods.COMMAND_DISPATCH,
+                                                       CommandDispatchParams(name = "plan", arg = "probe", sessionId = chat.sessionId.value)))
+        val send = directive as Dispatch.Send
+        assertNull("no display: the bubble is the typed line (D6)", send.display)
+        assertTrue(send.message.contains("probe"))
+        assertNotEquals("/plan probe", send.message)
+        Log.i(TAG, "/plan dispatch: display ${send.display}, notice ${send.notice}, message ${send.message.length} chars")
     }
 }

@@ -3699,6 +3699,8 @@ class ChatSessionTest {
             if (p.getValue("name").jsonPrimitive.content != "goal") skillOf(p)
             else buildJsonObject { put("type", "send"); put("message", "GOAL: ${p["arg"]?.jsonPrimitive?.content}"); put("notice", "⊙ Goal set") }.toString()
         }
+        var rows = 40L
+        submit = { """{"status":"streaming","user_row_id":${++rows}}""" }  // a bound row: a cut would be possible
         val chat = openChat().apply { open() }
         chat.send("/goal ship it")
         assertEquals("D6: no display, the typed line", "/goal ship it", (chat.state.value.entries.last() as Entry.User).text)
@@ -3706,6 +3708,7 @@ class ChatSessionTest {
 
         chat.send("/retry")
 
+        assertFalse("a retried command is never cut (B5-D1)", "truncate_before_row_id" in lastSubmit())
         assertEquals(listOf("goal" to "ship it", "goal" to "ship it"), dispatches())
         assertEquals(listOf("GOAL: ship it", "GOAL: ship it"), submitted())
         assertEquals("/goal ship it", (chat.state.value.entries.last { it is Entry.User } as Entry.User).text)
@@ -3726,12 +3729,15 @@ class ChatSessionTest {
             if (p.getValue("name").jsonPrimitive.content != "goal") skillOf(p)
             else buildJsonObject { put("type", "send"); put("message", "GOAL: ${p["arg"]?.jsonPrimitive?.content}") }.toString()
         }
+        var rows = 40L
+        submit = { """{"status":"streaming","user_row_id":${++rows}}""" }  // a bound row: a cut would be possible
         val chat = openChat().apply { open() }
         chat.send("/goal ship it")
         turn()
 
         chat.retry()  // the Retry button under the answer (MainActivity's onRetry)
 
+        assertFalse("a retried command is never cut (B5-D1)", "truncate_before_row_id" in lastSubmit())
         assertEquals(listOf("goal" to "ship it", "goal" to "ship it"), dispatches())
         assertEquals(listOf("GOAL: ship it", "GOAL: ship it"), submitted())
         assertEquals(emptyList<String>(), slashSubmits())
@@ -3741,6 +3747,7 @@ class ChatSessionTest {
         chat.send("/goal build it")
         turn(status = "error")
         chat.retry()
+        assertFalse("a retried command is never cut (B5-D1)", "truncate_before_row_id" in lastSubmit())
         assertEquals(listOf("goal" to "ship it", "goal" to "ship it", "goal" to "build it", "goal" to "build it"), dispatches())
         assertEquals("GOAL: build it", submitted().last())
         assertEquals(emptyList<String>(), slashSubmits())
@@ -3758,5 +3765,188 @@ class ChatSessionTest {
         chat.retry()
         assertEquals(5, dispatches().size)
         assertEquals("hi", submitted().last())
+    }
+
+    // An edited command prompt (architect #1, Q3): resend is the one admission for retry and edit, and the words that go
+    // in the prompt's place decide: a command `command.dispatch` runs is dispatched again there, never sent as typed
+    // (invariant 4), its message riding on the prompt.submit that cuts.
+
+    /** [CATALOG] with the core's `/plan` beside `/goal`, in `pairs` and the Session category. */
+    private val planCatalog = CATALOG.replace("""["/goal","Set a goal"]""", """["/goal","Set a goal"],["/plan","Plan first"]""")
+
+    /** The core's answer to `command.dispatch` of [p]: `/plan` and `/goal` send a prompt built from the arg (no display, D6); else a skill. */
+    private fun planOrGoal(p: JsonObject): String {
+        val arg = p["arg"]?.jsonPrimitive?.content
+        return when (p.getValue("name").jsonPrimitive.content) {
+            "plan" -> buildJsonObject { put("type", "send"); put("message", "PLAN: $arg") }.toString()
+            "goal" -> buildJsonObject { put("type", "send"); put("message", "GOAL: $arg") }.toString()
+            else -> skillOf(p)
+        }
+    }
+
+    /** A chat whose catalog lists `/plan` and whose core dispatches `/plan` and `/goal`. */
+    private suspend fun TestScope.planChat(): ChatSession {
+        catalog = { planCatalog }
+        dispatch = { p -> planOrGoal(p) }
+        return openChat().apply { open() }
+    }
+
+    @Test
+    fun anEditedPlanBubbleIsDispatchedInItsPlaceNeverSentAsTyped() = runTest(UnconfinedTestDispatcher()) {
+        val chat = planChat()
+        submit = { """{"status":"streaming","user_row_id":41}""" }
+        chat.send("/plan build it")
+        turn()
+        assertEquals("D6: the bubble is the typed line", "/plan build it", (chat.state.value.entries.first() as Entry.User).text)
+        submit = { """{"status":"streaming","user_row_id":52}""" }
+        val mark = core.calls.size
+
+        chat.resend(chat.edit(0, "/plan build it with tests"))
+
+        assertEquals("the catalog is cached", listOf("command.dispatch", "prompt.submit"), callsAfter(mark).map { it.first })
+        assertEquals("plan" to "build it with tests", dispatches().last())
+        val sent = lastSubmit()
+        assertEquals("PLAN: build it with tests", sent.getValue("text").jsonPrimitive.content)
+        assertEquals("41", sent.getValue("truncate_before_row_id").jsonPrimitive.content)
+        assertEquals("true", sent.getValue("confirm_truncate").jsonPrimitive.content)
+        assertEquals("true", sent.getValue("confirm_empty_truncate").jsonPrimitive.content)
+        assertFalse("not deep: nothing after it", "confirm_deep_truncate" in sent)
+        assertEquals("never literal (invariant 4)", emptyList<String>(), slashSubmits())
+        assertEquals("the old reply cut, the edited line shown (D6)", listOf(Entry.User("/plan build it with tests", 52, stableId = 2)),
+                     chat.state.value.entries.untimed())
+    }
+
+    @Test
+    fun aCommandBubbleEditedIntoPlainWordsIsAPlainEdit() = runTest(UnconfinedTestDispatcher()) {
+        val chat = planChat()
+        submit = { """{"status":"streaming","user_row_id":41}""" }
+        chat.send("/goal ship it")
+        turn()
+        submit = { """{"status":"streaming","user_row_id":52}""" }
+        val (mark, dispatched) = core.calls.size to dispatches().size
+
+        chat.resend(chat.edit(0, "just ship it"))
+
+        assertEquals(listOf("prompt.submit"), callsAfter(mark).map { it.first })
+        assertEquals("no new dispatch: the goal stays set in the core", dispatched, dispatches().size)
+        val sent = lastSubmit()
+        assertEquals("just ship it", sent.getValue("text").jsonPrimitive.content)
+        assertEquals("41", sent.getValue("truncate_before_row_id").jsonPrimitive.content)
+        assertEquals(listOf(Entry.User("just ship it", 52, stableId = 2)), chat.state.value.entries.untimed())
+    }
+
+    @Test
+    fun plainWordsEditedIntoAPlanLineAreDispatched() = runTest(UnconfinedTestDispatcher()) {
+        val chat = planChat()
+        answeredTurn(chat, "build it", 41, "ok")
+        submit = { """{"status":"streaming","user_row_id":52}""" }
+        val mark = core.calls.size
+
+        chat.resend(chat.edit(0, "/plan build it"))
+
+        assertEquals(listOf("commands.catalog", "command.dispatch", "prompt.submit"), callsAfter(mark).map { it.first })
+        assertEquals(listOf("plan" to "build it"), dispatches())
+        val sent = lastSubmit()
+        assertEquals("PLAN: build it", sent.getValue("text").jsonPrimitive.content)
+        assertEquals("41", sent.getValue("truncate_before_row_id").jsonPrimitive.content)
+        assertEquals(emptyList<String>(), slashSubmits())
+        assertEquals(listOf(Entry.User("/plan build it", 52, stableId = 2)), chat.state.value.entries.untimed())
+    }
+
+    @Test
+    fun aDispatchedEditKeepsTheEditRules() = runTest(UnconfinedTestDispatcher()) {
+        val chat = planChat()
+        submit = { """{"status":"streaming","user_row_id":41}""" }
+        chat.send("/plan a")
+        turn()
+        answeredTurn(chat, "b", 43, "B")
+        val (mark, shown) = core.calls.size to chat.state.value.entries
+
+        chat.resend(chat.edit(0, "/plan a2", deep = false))
+
+        assertEquals("no consent: nothing asked of the core, no dispatch either (inv. 1)", mark, core.calls.size)
+        assertEquals(shown, chat.state.value.entries)
+        assertFalse(chat.state.value.busy)
+
+        submit = { """{"status":"streaming","user_row_id":60}""" }
+        chat.resend(chat.edit(0, "/plan a2", deep = true))
+
+        assertEquals(listOf("command.dispatch", "prompt.submit"), callsAfter(mark).map { it.first })
+        val sent = lastSubmit()
+        assertEquals("PLAN: a2", sent.getValue("text").jsonPrimitive.content)
+        assertEquals("41", sent.getValue("truncate_before_row_id").jsonPrimitive.content)
+        assertEquals("true", sent.getValue("confirm_deep_truncate").jsonPrimitive.content)
+        assertEquals(listOf(Entry.User("/plan a2", 60, 4)), chat.state.value.entries.untimed())
+
+        // Busy: the turn is stopped before anything is dispatched (inv. 2, D3).
+        core.emit("message.start", "s1")
+        submit = { """{"status":"streaming","user_row_id":70}""" }
+        val busy = core.calls.size
+        val job = launch { chat.resend(chat.edit(4, "/plan a3")) }
+
+        assertEquals("stopped first, nothing dispatched yet", listOf("session.interrupt"), callsAfter(busy).map { it.first })
+        core.emit("message.complete", "s1", """{"text":"Pl","status":"interrupted"}""")
+        job.join()
+
+        assertEquals(listOf("session.interrupt", "command.dispatch", "prompt.submit"), callsAfter(busy).map { it.first })
+        assertEquals("PLAN: a3", lastSubmit().getValue("text").jsonPrimitive.content)
+        assertEquals("60", lastSubmit().getValue("truncate_before_row_id").jsonPrimitive.content)
+        assertEquals(emptyList<String>(), slashSubmits())
+    }
+
+    @Test
+    fun aDispatchedEditThatDoesNotSendCutsNothing() = runTest(UnconfinedTestDispatcher()) {
+        val chat = planChat()
+        answeredTurn(chat, "hello", 41, "hi")
+        val (mark, shown) = core.calls.size to chat.state.value.entries
+        dispatch = { """{"type":"exec","output":"No pending memory writes."}""" }
+
+        chat.resend(chat.edit(0, "/memory pending"))
+
+        assertEquals(listOf("commands.catalog", "command.dispatch"), callsAfter(mark).map { it.first })
+        assertEquals("No pending memory writes.", chat.lastNotice())
+        assertEquals("the old turn still shown", shown, chat.state.value.entries.filter { it !is Entry.Notice })
+        assertFalse(chat.state.value.busy)
+
+        dispatch = { throw CoreError(4004, "usage: /goal [text | …]") }
+        chat.resend(chat.edit(0, "/goal"))
+
+        assertEquals("/goal: usage: /goal [text | …]", chat.lastNotice())
+        assertEquals(shown, chat.state.value.entries.filter { it !is Entry.Notice })
+        assertFalse(chat.state.value.busy)
+        assertTrue(core.calls.drop(mark).none { it.first == "prompt.submit" })
+    }
+
+    @Test
+    fun aRefusedDispatchedEditShowsTheCoresTranscriptAndSaysEditFailed() = runTest(UnconfinedTestDispatcher()) {
+        val chat = planChat()
+        submit = { """{"status":"streaming","user_row_id":41}""" }
+        chat.send("/plan build it")
+        turn()
+        submit = { throw CoreError(4018, "target user message is no longer in session history") }
+        history = { """{"count":2,"messages":[{"role":"user","text":"PLAN: build it","row_id":41},{"role":"assistant","text":"Done.","row_id":42}]}""" }
+
+        chat.resend(chat.edit(0, "/plan build it with tests"))
+
+        assertEquals(listOf(Entry.User("PLAN: build it", 41, 3), Entry.Reply("Done.", TurnStatus.COMPLETE, stableId = 4, rowId = 42),
+                            Entry.Notice("Edit failed: This turn is no longer in server history (it may have been compressed away).", stableId = 5)),
+                     chat.state.value.entries.untimed())
+        assertFalse(chat.state.value.busy)
+        assertEquals("the refused submit carried the plan, never the line", "PLAN: build it with tests", submitted().last())
+    }
+
+    @Test
+    fun anEditIntoACommandWhoseCatalogCannotBeReadSendsNothing() = runTest(UnconfinedTestDispatcher()) {
+        catalog = { throw CoreError(5000, "skill discovery unavailable") }
+        val chat = openChat().apply { open() }
+        answeredTurn(chat, "hello", 41, "hi")
+        val (mark, shown) = core.calls.size to chat.state.value.entries
+
+        chat.resend(chat.edit(0, "/plan x"))
+
+        assertEquals(listOf("commands.catalog"), callsAfter(mark).map { it.first })
+        assertEquals("Edit failed: Commands could not be read: skill discovery unavailable", chat.lastNotice())
+        assertEquals("nothing cut", shown, chat.state.value.entries.dropLast(1))
+        assertFalse(chat.state.value.busy)
     }
 }
