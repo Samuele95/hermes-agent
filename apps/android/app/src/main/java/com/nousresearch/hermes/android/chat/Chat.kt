@@ -131,7 +131,8 @@ data class Rewind(val target: Retry, val text: String, val deep: Boolean) {
  * A chat's transcript. While a turn runs, [streaming] is the reply written since the turn began or since its last
  * sealed commentary, [reasoning] the model's reasoning so far (when the core shows it), [activity] what the agent is
  * doing, and [prompts] what it is waiting on the user for. [model] is the model the session runs, as the core last named it.
- * [todos] is the agent's plan and [meter] how full the context is, both as the core last sent them.
+ * [todos] is the agent's plan and [meter] how full the context is, both as the core last sent them; a cut drops the plan
+ * with the turns it came from, the meter stays until the core's next reading.
  * [submitted]: a prompt is on its way and its turn has not started yet (`prompt.submit` sent, no `message.start`).
  * [compressing]: the core is compressing the session at this chat's request; only `ChatSession.compress` sets and
  * clears it (invariant 6).
@@ -258,8 +259,12 @@ data class Chat(val entries: List<Entry> = emptyList(), val streaming: String? =
         return Retry(i, user.text, user.rowId).takeIf { i < entries.lastIndex && user.text.isNotBlank() }
     }
 
-    /** The transcript before [target]'s prompt: what the core keeps when it cuts before that row (its ids, and the counter, stay). */
-    fun rewound(target: Retry): Chat = copy(entries = entries.take(target.index))
+    /**
+     * The transcript before [target]'s prompt: what the core keeps when it cuts before that row (its ids, and the counter, stay).
+     * The cut drops the agent's plan with the turns it came from, its revision too, so the rerun's first plan shows whatever
+     * its number (Desktop's `clearSessionTodos`); the meter stays until the core's next reading.
+     */
+    fun rewound(target: Retry): Chat = copy(entries = entries.take(target.index), todos = null)
 
     /**
      * The prompt [id] as one to edit and send again: any prompt the user sent with words (not a correction), its row

@@ -521,6 +521,25 @@ class ChatScreenTest {
     }
 
     @Test
+    fun aRerunAfterACutShowsNoPlanFromTheTurnItCutAway() {
+        val plan = TodoList(listOf(Todo("1", "Boil", TodoStatus.COMPLETED), Todo("2", "Pour", TodoStatus.PENDING)), 4)
+        val before = Chat(listOf(Entry.User("tea", 41, 0), Entry.Reply("Half done.", TurnStatus.COMPLETE, stableId = 1)),
+                          todos = plan, meter = ContextMeter(53_800, 128_000, 42, true))
+        var chat by mutableStateOf(before.copy(streaming = ""))
+        compose.setContent { ChatScreen(chat, onSend = {}) }
+        compose.onNodeWithTag("todo-strip").assertExists()  // the control: this plan shows while a turn runs
+        compose.onNodeWithText("Tasks 1/2").assertExists()
+
+        chat = before.rewound(checkNotNull(before.retryTarget())).sent("tea").copy(streaming = "")  // the rerun runs
+        compose.onNodeWithTag("todo-strip").assertDoesNotExist()
+        compose.onNodeWithTag("context-meter").assert(hasText("~42%"))  // the meter stays until the core's next reading
+
+        chat = chat.copy(todos = TodoList(listOf(Todo("1", "Steep", TodoStatus.IN_PROGRESS)), 1))
+        compose.onNodeWithTag("todo-strip").assertExists()
+        compose.onNodeWithText("Steep").assertExists()
+    }
+
+    @Test
     fun theComposerShowsHowFullTheContextIs() {
         var chat by mutableStateOf(Chat(meter = ContextMeter(53_800, 128_000, 42, true)))
         compose.setContent { ChatScreen(chat, onSend = {}) }

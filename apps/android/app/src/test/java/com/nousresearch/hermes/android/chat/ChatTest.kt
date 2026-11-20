@@ -425,6 +425,41 @@ class ChatTest {
         assertEquals(Chat(listOf(Entry.User("a", 1, stableId = 0), reply), model = "kimi-k2", nextId = 4), chat.rewound(Retry(2, "b", 2)))
     }
 
+    @Test
+    fun aCutDropsTheAbandonedTurnsPlanAndKeepsTheMeter() {
+        val meter = ContextMeter(1000, 8000, 13, false)
+        val plan = TodoList(listOf(Todo("1", "Boil", TodoStatus.COMPLETED), Todo("2", "Pour", TodoStatus.PENDING)), 5)
+        val chat = Chat(listOf(Entry.User("a", 1, 0), Entry.Reply("A", TurnStatus.COMPLETE, stableId = 1), Entry.User("b", 2, 2),
+                               Entry.Reply("B", TurnStatus.COMPLETE, stableId = 3)),
+                        model = "kimi-k2", todos = plan, meter = meter)
+        val target = checkNotNull(chat.retryTarget())
+        assertEquals(Retry(2, "b", 2), target)
+
+        // The plan goes with the turns it came from; the meter stays until the core's next reading (Desktop's rewind).
+        assertEquals(Chat(listOf(Entry.User("a", 1, 0), Entry.Reply("A", TurnStatus.COMPLETE, stableId = 1)), model = "kimi-k2", meter = meter, nextId = 4),
+                     chat.rewound(target))
+        // A finished list goes too: Desktop's clearSessionTodos drops whatever is there.
+        assertNull(chat.copy(todos = TodoList(listOf(Todo("1", "Boil", TodoStatus.COMPLETED)), 5)).rewound(target).todos)
+        // An edit's target cuts the same way.
+        assertNull(chat.rewound(checkNotNull(chat.editTarget(2))).todos)
+        // The revision goes with the list: the rerun's first plan shows whatever its number.
+        assertEquals(TodoList(listOf(Todo("1", "Steep", TodoStatus.IN_PROGRESS)), 1),
+                     chat.rewound(target).sent("b").after(event("message.start"),
+                         event("todo.updated", """{"todos":[{"id":"1","content":"Steep","status":"in_progress"}],"revision":1}""")).todos)
+    }
+
+    @Test
+    fun aCutWithNoPlanAndASendWithoutACutChangeNoPlan() {
+        val meter = ContextMeter(1000, 8000, 13, false)
+        val plan = TodoList(listOf(Todo("1", "Boil", TodoStatus.COMPLETED), Todo("2", "Pour", TodoStatus.PENDING)), 5)
+        val bare = Chat(listOf(Entry.User("a", 1, 0), Entry.Reply("A", TurnStatus.COMPLETE, stableId = 1), Entry.User("b", 2, 2),
+                               Entry.Reply("B", TurnStatus.COMPLETE, stableId = 3)), meter = meter)
+
+        assertEquals(bare.copy(entries = bare.entries.take(2), nextId = bare.nextId), bare.rewound(checkNotNull(bare.retryTarget())))
+        // Only a cut drops the plan: a send that cuts nothing leaves the turn that made it on screen (B5-D1).
+        assertEquals(plan, bare.copy(todos = plan).sent("c").todos)
+    }
+
     private fun compression(json: String): SessionCompressResult =
         Json { ignoreUnknownKeys = true }.decodeFromString(SessionCompressResult.serializer(), json)
 

@@ -1584,6 +1584,56 @@ class ChatSessionTest {
     }
 
     @Test
+    fun aRetryOrAnEditThatCutsDropsTheAbandonedPlanAndKeepsTheMeter() = runTest(UnconfinedTestDispatcher()) {
+        val plan = TodoList(listOf(Todo("1", "Boil", TodoStatus.COMPLETED), Todo("2", "Pour", TodoStatus.PENDING)), 4)
+        val ways = listOf<Pair<String, suspend (ChatSession) -> Unit>>("retry" to { it.retry() }, "edit" to { it.resend(it.edit(0, "plan the coffee")) })
+        for ((way, cut) in ways) {
+            val chat = openChat().apply { open() }
+            val session = chat.sessionId.value
+            submit = { """{"status":"streaming","user_row_id":41}""" }
+            chat.send("plan the tea")
+            core.emit("message.start", session)
+            core.emit("todo.updated", session, """{"todos":[{"id":"1","content":"Boil","status":"completed"},
+                {"id":"2","content":"Pour","status":"pending"}],"revision":4}""")
+            core.emit("session.usage", session, """{"usage":{"context_used":1000,"context_max":8000,"context_percent":13}}""")
+            core.emit("message.complete", session, """{"text":"Half done."}""")
+            assertEquals("$way: the plan is held before the cut", plan, chat.state.value.todos)
+            submit = { """{"status":"streaming","user_row_id":52}""" }
+
+            cut(chat)
+
+            assertEquals("$way: a real cut", "41", lastSubmit().getValue("truncate_before_row_id").jsonPrimitive.content)
+            assertNull("$way: the abandoned plan goes with its turn", chat.state.value.todos)
+            assertEquals("$way: the meter stays (Desktop)", ContextMeter(1000, 8000, 13, false), chat.state.value.meter)
+
+            core.emit("message.start", session)
+            core.emit("todo.updated", session, """{"todos":[{"id":"1","content":"Steep","status":"in_progress"}],"revision":1}""")
+            assertEquals("$way: the rerun's first plan, whatever its revision", TodoList(listOf(Todo("1", "Steep", TodoStatus.IN_PROGRESS)), 1),
+                         chat.state.value.todos)
+        }
+    }
+
+    @Test
+    fun aRetrySentAgainWithoutACutKeepsThePlanOfTheTurnStillShown() = runTest(UnconfinedTestDispatcher()) {
+        val plan = TodoList(listOf(Todo("1", "Boil", TodoStatus.COMPLETED), Todo("2", "Pour", TodoStatus.PENDING)), 4)
+        val chat = openChat().apply { open() }
+        val session = chat.sessionId.value
+        submit = { """{"status":"streaming"}""" }
+        chat.send("ok")
+        core.emit("message.start", session)
+        core.emit("todo.updated", session, """{"todos":[{"id":"1","content":"Boil","status":"completed"},
+            {"id":"2","content":"Pour","status":"pending"}],"revision":4}""")
+        core.emit("message.complete", session, """{"text":"done"}""")
+        history = { """{"count":2,"messages":[{"role":"user","text":"ok","row_id":3},{"role":"user","text":"ok","row_id":7}]}""" }
+
+        chat.retry()
+
+        assertFalse("no cut", "truncate_before_row_id" in lastSubmit())
+        assertEquals("the old turn stays", Entry.Reply("done", TurnStatus.COMPLETE, stableId = 1), chat.state.value.entries.untimed()[1])
+        assertEquals("so does its plan", plan, chat.state.value.todos)
+    }
+
+    @Test
     fun theBreakdownIsAskedOfTheChatsSession() = runTest(UnconfinedTestDispatcher()) {
         val chat = openChat().apply { open() }
 
@@ -3798,10 +3848,14 @@ class ChatSessionTest {
         chat.send("/plan build it")
         turn()
         assertEquals("D6: the bubble is the typed line", "/plan build it", (chat.state.value.entries.first() as Entry.User).text)
+        core.emit("todo.updated", "s1", """{"todos":[{"id":"1","content":"Sketch","status":"pending"}],"revision":3}""")
+        assertNotNull("a plan before the cut", chat.state.value.todos)
         submit = { """{"status":"streaming","user_row_id":52}""" }
         val mark = core.calls.size
 
         chat.resend(chat.edit(0, "/plan build it with tests"))
+
+        assertNull("the dispatched cut drops the abandoned plan too", chat.state.value.todos)
 
         assertEquals("the catalog is cached", listOf("command.dispatch", "prompt.submit"), callsAfter(mark).map { it.first })
         assertEquals("plan" to "build it with tests", dispatches().last())
