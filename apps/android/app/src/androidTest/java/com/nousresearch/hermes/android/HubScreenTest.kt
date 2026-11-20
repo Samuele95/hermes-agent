@@ -188,22 +188,10 @@ class HubScreenTest {
             val searched = hub.state.value!!
             Log.i("HubScreenTest", "search(blackbox) answered in ${SystemClock.elapsedRealtime() - began} ms: " +
                                    "${searched.items?.items?.size} hits, error ${searched.error}")
-            if (searched.error == CORE_SEARCH_BUG) {
-                // The shipped core's search fails on every hit (P13 FOUND); browse is the hub's other way in.
-                Log.w("HubScreenTest", "the core's skills.manage search answered its own bug: $CORE_SEARCH_BUG")
-                began = SystemClock.elapsedRealtime()
-                withTimeout(40_000) { hub.browse(1) }
-                val browsed = hub.state.value!!
-                val rows = browsed.items?.items.orEmpty()
-                Log.i("HubScreenTest", "browse(1) answered in ${SystemClock.elapsedRealtime() - began} ms: ${rows.size} rows " +
-                                       "(${rows.count { !it.official }} not official), page ${browsed.items?.page} of ${browsed.items?.pages}")
-                assertNotNull(browsed.items)
-                assertNull(browsed.error)
-            } else {
-                val hits = searched.items!!.items
-                Log.i("HubScreenTest", "${hits.count { it.name !in official }} of ${hits.size} hits are not official")
-                assertNull(searched.error)
-            }
+            assertNull(searched.error)
+            val hits = searched.items!!.items
+            Log.i("HubScreenTest", "${hits.count { it.name !in official }} of ${hits.size} hits are not official")
+            assertTrue("no blackbox among ${hits.map { it.name }}", hits.any { it.name == "blackbox" })
         } finally {
             hub.close()
         }
@@ -315,6 +303,3 @@ class HubScreenTest {
         }
     }
 }
-
-/** The shipped core's `skills.manage search` answer to any search with a hit (`SkillMeta.describe` does not exist, P13 FOUND). */
-private const val CORE_SEARCH_BUG = "'SkillMeta' object has no attribute 'describe'"

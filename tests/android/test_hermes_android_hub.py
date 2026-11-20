@@ -184,10 +184,6 @@ def _manage(params: dict) -> dict:
     return srv._methods["skills.manage"](1, params)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="core bug (P13 FOUND): tui_gateway/methods_tools.py:1451 _skills_search calls SkillMeta.describe(), "
-                          "which SkillMeta has no such method (since 9bcbe7b5df), so every search with a hit answers 5024; "
-                          "with the description read instead, this passes")
 def test_an_offline_hub_search_answers_only_official_skills_and_no_error(offline, no_github_login):
     official = {row["name"] for row in ask("hub_official")["skills"]}
 
