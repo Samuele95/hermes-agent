@@ -15,7 +15,8 @@ so after a restore on a new phone the user signs in and re-enters keys.
 ``create`` writes ``TMPDIR/exports/hermes-backup-<UTC>.zip`` (replacing only the previous backup; a session export
 stays) through the core's ``_write_zip_entries``, so every ``*.db`` is a SQLite backup-API snapshot with no WAL or SHM.
 ``restore`` refuses in words, before its first write, while a turn runs in this process or the always-on gateway holds
-its runtime lock (D1; the app's ``BackupControl`` stops the bot first, P15), when the file is no zip, no Hermes backup
+its runtime lock (D1; the app's ``BackupControl`` refuses first, with the same words, at the pick and
+again at the confirm: P15 D2), when the file is no zip, no Hermes backup
 or holds nothing to restore, or when its settings or its session database cannot be read. Then, under the core's one
 backup slot, ``config.yaml`` goes through the app's config writer (E5), every ``*.db`` is written page by page into
 the open file (``_import_db_member``: the inode is kept, open handles see the restored rows) and every other member is
