@@ -1570,6 +1570,88 @@ class ChatSessionTest {
     }
 
     @Test
+    fun anEditWhoseStoppedTurnNeverEndsIsRefusedWithItsReason() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        submit = { """{"status":"streaming","user_row_id":41}""" }
+        chat.send("hello")
+        core.emit("message.start", "s1")
+        val mark = core.calls.size
+
+        // The test scheduler skips STOP_WAIT.
+        assertEquals(Resend.Refused("Edit failed: session busy"), chat.resend(chat.edit(0, "hello there")))
+
+        assertEquals(listOf("session.interrupt"), callsAfter(mark).map { it.first })
+        assertEquals(listOf(Entry.User("hello", 41, 0), Entry.Notice("Edit failed: session busy", stableId = 1)),
+                     chat.state.value.entries.untimed())
+        assertTrue("its turn still runs (D3)", chat.state.value.running)
+    }
+
+    @Test
+    fun anEditWhosePromptMovedIsRefusedNeverDropped() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        answeredTurn(chat, "helo", 41, "hi")
+        val stale = chat.edit(0, "hello")
+        submit = { """{"status":"streaming","user_row_id":52}""" }
+        assertEquals(Resend.Taken, chat.resend(chat.edit(0, "hullo")))
+        val (mark, shown) = core.calls.size to chat.state.value.entries
+
+        assertEquals("the prompt moved before admission", Resend.Refused("Edit failed"), chat.resend(stale))
+
+        assertEquals("nothing asked of the core", mark, core.calls.size)
+        assertEquals("nothing cut, no notice", shown, chat.state.value.entries)
+
+        // Declined by the change that would cut: an older prompt without the user's consent (inv. 1).
+        val older = openChat().apply { open() }
+        answeredTurn(older, "a", 41, "A")
+        answeredTurn(older, "b", 43, "B")
+        val (before, kept) = core.calls.size to older.state.value.entries
+
+        assertEquals(Resend.Refused("Edit failed"), older.resend(older.edit(0, "a2", deep = false)))
+
+        assertEquals(before, core.calls.size)
+        assertEquals(kept, older.state.value.entries)
+    }
+
+    @Test
+    fun anEditWhoseChatLeftItsSessionAnswersLeft() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        submit = { """{"status":"streaming","user_row_id":41}""" }
+        chat.send("hello")
+        core.emit("message.start", "s1")
+        val job = async { chat.resend(chat.edit(0, "hello there")) }  // the stop waits for the turn's end
+        val mark = core.calls.size
+
+        chat.open()  // a new session, not busy: the wait ends on another chat
+
+        assertEquals(Resend.Left, job.await())
+        assertTrue(callsAfter(mark).none { it.first == "prompt.submit" || it.first == "command.dispatch" })
+        assertTrue("nothing said in the new chat", chat.state.value.entries.none { it is Entry.Notice })
+    }
+
+    @Test
+    fun anEditTheCoreTakesAnswersTakenAndARefusedCutAnswersWhy() = runTest(UnconfinedTestDispatcher()) {
+        val chat = openChat().apply { open() }
+        answeredTurn(chat, "helo", 41, "hi")
+        submit = { """{"status":"streaming","user_row_id":52}""" }
+
+        assertEquals(Resend.Taken, chat.resend(chat.edit(0, "hello")))
+
+        val stale = openChat().apply { open() }
+        answeredTurn(stale, "hello", 41, "hi")
+        submit = { throw CoreError(4018, "target user message is no longer in session history") }
+        history = { """{"count":2,"messages":[{"role":"user","text":"hello","row_id":41},{"role":"assistant","text":"hi there","row_id":42}]}""" }
+
+        assertEquals(Resend.Refused("Edit failed: This turn is no longer in server history (it may have been compressed away)."),
+                     stale.resend(stale.edit(0, "hello there")))
+
+        val busy = openChat().apply { open() }
+        answeredTurn(busy, "hello", 41, "hi")
+        submit = { throw CoreError(4009, "session busy") }
+
+        assertEquals(Resend.Refused("Edit failed: session busy"), busy.resend(busy.edit(0, "hello there")))
+    }
+
+    @Test
     fun aRetryTheCoreFindsBusyIsRefusedAsBefore() = runTest(UnconfinedTestDispatcher()) {
         val chat = openChat().apply { open() }
         answeredTurn(chat, "hello", 41, "hi")
@@ -4002,5 +4084,43 @@ class ChatSessionTest {
         assertEquals("Edit failed: Commands could not be read: skill discovery unavailable", chat.lastNotice())
         assertEquals("nothing cut", shown, chat.state.value.entries.dropLast(1))
         assertFalse(chat.state.value.busy)
+    }
+
+    @Test
+    fun aDispatchedEditAnswersWhatItsCommandDid() = runTest(UnconfinedTestDispatcher()) {
+        val chat = planChat()
+        submit = { """{"status":"streaming","user_row_id":41}""" }
+        chat.send("/plan build it")
+        turn(chat.sessionId.value)
+        submit = { """{"status":"streaming","user_row_id":52}""" }
+
+        assertEquals(Resend.Taken, chat.resend(chat.edit(0, "/plan build it with tests")))
+
+        val other = planChat()
+        answeredTurn(other, "hello", 41, "hi")
+        dispatch = { throw CoreError(4004, "usage: /goal [text | …]") }
+
+        assertEquals(Resend.Refused("/goal: usage: /goal [text | …]"), other.resend(other.edit(0, "/goal")))
+
+        dispatch = { """{"type":"exec","output":"No pending memory writes."}""" }
+
+        assertEquals("the command ran and said its words", Resend.Taken, other.resend(other.edit(0, "/memory pending")))
+
+        val stale = planChat()
+        submit = { """{"status":"streaming","user_row_id":41}""" }
+        stale.send("/plan build it")
+        turn(stale.sessionId.value)
+        submit = { throw CoreError(4018, "target user message is no longer in session history") }
+        history = { """{"count":2,"messages":[{"role":"user","text":"PLAN: build it","row_id":41},{"role":"assistant","text":"Done.","row_id":42}]}""" }
+
+        assertEquals(Resend.Refused("Edit failed: This turn is no longer in server history (it may have been compressed away)."),
+                     stale.resend(stale.edit(0, "/plan build it with tests")))
+
+        catalog = { throw CoreError(5000, "skill discovery unavailable") }
+        val unread = openChat().apply { open() }
+        answeredTurn(unread, "hello", 41, "hi")
+
+        assertEquals(Resend.Refused("Edit failed: Commands could not be read: skill discovery unavailable"),
+                     unread.resend(unread.edit(0, "/plan x")))
     }
 }

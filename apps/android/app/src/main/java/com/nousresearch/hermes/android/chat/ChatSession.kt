@@ -732,24 +732,28 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
      * core's transcript, re-read (D7); words as a notice; an alias's target run once (D2). A failure says why in the
      * core's words, after the command's name. An edit's [Typed.cut] is made only by a send, in the change that paints
      * its bubble, and rides on its `prompt.submit` as a plain edit's does; every other outcome cuts nothing (Q3).
+     * Answers what became of the line for an edit's [resend] (Q7): taken once the command acted (a send, a prefill,
+     * words said, an app target run), refused with the words said, or left; every other caller ignores it.
      */
-    private suspend fun dispatched(session: RuntimeSessionId, typed: Typed) {
+    private suspend fun dispatched(session: RuntimeSessionId, typed: Typed): Resend {
         val line = typed.line
         val answer = try {
             core.call(Methods.COMMAND_DISPATCH, CommandDispatchParams(name = line.name, arg = line.arg.ifBlank { null }, sessionId = session.value))
         } catch (failed: Exception) {
-            return unsent(session, "/${line.name}: ${forUser(failed)}")  // a cancellation goes on
+            return refusedUnsent(session, "/${line.name}: ${forUser(failed)}")  // a cancellation goes on
         }
-        when (val directive = Dispatch.of(answer)) {
+        return when (val directive = Dispatch.of(answer)) {
             is Dispatch.Send -> {
-                if (directive.message.isBlank()) return unsent(session, "/${line.name}: $EMPTY_MESSAGE")
+                if (directive.message.isBlank()) return refusedUnsent(session, "/${line.name}: $EMPTY_MESSAGE")
                 val cut = typed.cut
                 var shownBefore: List<Entry>? = null
+                var moved = false
                 change { now ->
                     val again = cut?.let { now.chat.rewindTarget(it.rewind) }
+                    moved = false
                     when {
                         now.ref?.runtime != session -> now
-                        cut != null && again == null -> now.copy(chat = now.chat.unsent())  // the prompt moved: nothing cut
+                        cut != null && again == null -> { moved = true; now.copy(chat = now.chat.unsent()) }  // the prompt moved: nothing cut
                         else -> {
                             shownBefore = now.chat.entries
                             val base = if (again != null && cut?.rowId != null) now.chat.rewound(again) else now.chat
@@ -758,13 +762,19 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
                         }
                     }
                 }
-                val before = shownBefore ?: return
-                if (cut == null) return submit(session, directive.message, typed.queued)  // the model gets the message, never shown
+                val before = shownBefore ?: return if (moved) Resend.Refused(EDIT_FAILED) else Resend.Left
+                if (cut == null) {
+                    submit(session, directive.message, typed.queued)  // the model gets the message, never shown
+                    return Resend.Taken
+                }
                 try {
                     submitPastBusy(session, rewindParams(session, directive.message, cut.rowId, cut.rewind.deep)).userRowId?.let { bind(session, it) }
+                    Resend.Taken
                 } catch (failed: Exception) {
                     if (failed is CancellationException) throw failed
-                    resync(session, before, refused(cut.rewind, failed))
+                    val words = refused(cut.rewind, failed)
+                    resync(session, before, words)
+                    refusal(session, words)
                 }
             }
             is Dispatch.Prefill -> {
@@ -776,17 +786,24 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
                         now.copy(chat = (directive.notice?.let(kept::notice) ?: kept).copy(prefill = directive.text.ifBlank { null }))
                     }
                 }
+                Resend.Taken  // the command acted: its words went to the draft
             }
-            is Dispatch.Said -> unsent(session, directive.words)
+            is Dispatch.Said -> { unsent(session, directive.words); Resend.Taken }  // the command ran and said its words
             is Dispatch.Alias -> {
                 val target = orElse(null) { catalogOf(session).line("/${directive.target} ${line.arg}".trim()) }
                 when {
-                    target == null || typed.aliased -> unsent(session, NOT_ON_PHONE.format("/${directive.target}"))
-                    target.runs == Runner.APP -> actFor(session, target)
+                    target == null || typed.aliased -> refusedUnsent(session, NOT_ON_PHONE.format("/${directive.target}"))
+                    target.runs == Runner.APP -> { actFor(session, target); Resend.Taken }
                     else -> dispatched(session, typed.copy(line = target, aliased = true))
                 }
             }
         }
+    }
+
+    /** [session]'s dispatched line did not go out ([unsent], [why] said), and the edit it may carry is refused with [why]. */
+    private fun refusedUnsent(session: RuntimeSessionId, why: String): Resend {
+        unsent(session, why)
+        return refusal(session, why)
     }
 
     /**
@@ -1013,7 +1030,7 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
     /**
      * Runs the last prompt again, as the desktop's Retry does: [resend] of its own words, never a deep cut (B5, DC-P7).
      * The one retry `/retry`, the Retry button and the recovery card share; a command's turn is dispatched again by
-     * [resend]'s rule.
+     * [resend]'s rule. Its outcome is not read: a refusal says itself in the transcript, as B5's did.
      */
     suspend fun retry() {
         val (session, target) = synchronized(lock) { live.ref?.runtime to live.chat.retryTarget() }
@@ -1036,29 +1053,42 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
      * retry); an edit keeps its rules above and dispatches them, the cut riding on the `prompt.submit` of the message
      * (Q3). Plain words, a skill line or an unknown `/path` go as words. A `/` whose catalog cannot be read sends nothing
      * ([SLASH_UNREAD], D12; an edit's after "Edit failed").
+     *
+     * Answers what became of the words, so an editor keeps them until the core has them (Q7): [Resend.Taken] once a
+     * prompt went out in the old one's place or the command they name acted; [Resend.Refused] with the words the
+     * transcript says (or "Edit failed" alone where it says nothing: the prompt moved, a turn began, a deep cut has
+     * no consent); [Resend.Left] when the chat is on another session by then. It never throws but a cancellation.
      */
-    suspend fun resend(rewind: Rewind) {
+    suspend fun resend(rewind: Rewind): Resend {
         val (session, shown) = synchronized(lock) { live.ref?.runtime to live.chat }
-        if (session == null || shown.rewindTarget(rewind) == null) return
+        if (session == null) return Resend.Left
+        if (shown.rewindTarget(rewind) == null) return refusal(session, EDIT_FAILED)
         val command = if (!rewind.text.startsWith("/")) null else try {
             catalogOf(session).dispatchedCommand(rewind.text)
         } catch (failed: Exception) {
             val why = "$SLASH_UNREAD: ${forUser(failed)}"  // a cancellation goes on
-            return say(if (rewind.edits) "$EDIT_FAILED: $why" else why)
+            val words = if (rewind.edits) "$EDIT_FAILED: $why" else why
+            say(words)
+            return refusal(session, words)
         }
-        if (command != null && !rewind.edits) return runSlash(session, Typed(command, rewind.text))
+        if (command != null && !rewind.edits) {
+            runSlash(session, Typed(command, rewind.text))
+            return Resend.Taken  // a retry's: no caller reads it
+        }
         if (rewind.edits && shown.busy && !stopped(session)) {
             change { now -> if (now.ref?.runtime == session) now.copy(chat = now.chat.notice("$EDIT_FAILED: $SESSION_BUSY")) else now }
-            return
+            return refusal(session, "$EDIT_FAILED: $SESSION_BUSY")
         }
-        val known = synchronized(lock) { live.chat.rewindTarget(rewind) } ?: return
+        val known = synchronized(lock) { live.chat.rewindTarget(rewind) } ?: return refusal(session, EDIT_FAILED)
         val rowId = known.rowId ?: rowIdOf(session, known.text)
         var shownBefore: List<Entry>? = null
+        var left = false
         change { now ->
             val again = now.chat.rewindTarget(rewind)
+            left = now.ref?.runtime != session
             // Decided in the one change that cuts (EJ-78, B5-D4): the chat left, a turn began, the prompt moved, or a
-            // deep cut has no consent → nothing (inv. 1).
-            if (now.ref?.runtime != session || again == null || now.chat.busy || (now.chat.laterTurns(again) > 0 && !rewind.deep)) now
+            // deep cut has no consent → nothing (inv. 1); which of them, from the same snapshot.
+            if (left || again == null || now.chat.busy || (now.chat.laterTurns(again) > 0 && !rewind.deep)) now
             else {
                 shownBefore = now.chat.entries
                 // A command is cut only once its dispatch sends (Q3): busy meanwhile, as a typed one is (V5).
@@ -1066,17 +1096,24 @@ class ChatSession(private val core: CoreGateway, private val turns: TurnHost, pr
                 else now.copy(chat = (if (rowId != null) now.chat.rewound(again) else now.chat).sent(rewind.text, clock()))
             }
         }
-        val before = shownBefore ?: return
+        val before = shownBefore ?: return if (left) Resend.Left else Resend.Refused(EDIT_FAILED)
         if (command != null) return dispatched(session, Typed(command, rewind.text, cut = Cut(rewind, rowId)))
         val params = rewindParams(session, rewind.text, rowId, rewind.deep)
-        try {
+        return try {
             val result = if (rewind.edits) submitPastBusy(session, params) else core.call(Methods.PROMPT_SUBMIT, params)
             result.userRowId?.let { bind(session, it) }
+            Resend.Taken
         } catch (failed: Exception) {
             if (failed is CancellationException) throw failed
-            resync(session, before, refused(rewind, failed))
+            val words = refused(rewind, failed)
+            resync(session, before, words)
+            refusal(session, words)
         }
     }
+
+    /** A refusal of [session]'s rewind: [why], while the chat is still on that session; else it left (Q7). */
+    private fun refusal(session: RuntimeSessionId, why: String): Resend =
+        if (synchronized(lock) { live.ref?.runtime } == session) Resend.Refused(why) else Resend.Left
 
     /**
      * `prompt.submit` of [text] to [session] in a rewound prompt's place: cut before [rowId] when known (else after the

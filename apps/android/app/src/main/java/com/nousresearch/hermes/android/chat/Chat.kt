@@ -127,6 +127,16 @@ data class Rewind(val target: Retry, val text: String, val deep: Boolean) {
     val edits: Boolean get() = text != target.text
 }
 
+/** What became of a [Rewind] sent again ([ChatSession.resend]): its words were taken, refused with [Refused.why], or its chat left the session. */
+sealed interface Resend {
+    /** The core took the words: a prompt went out in the rewound prompt's place, or the command they name ran (Q3). */
+    data object Taken : Resend
+    /** Nothing was done with the words; [why] in the words the transcript notice uses (Desktop's "Edit failed", D8). */
+    data class Refused(val why: String) : Resend
+    /** The chat is on another session now: nothing to show, nothing to keep there. */
+    data object Left : Resend
+}
+
 /**
  * A chat's transcript. While a turn runs, [streaming] is the reply written since the turn began or since its last
  * sealed commentary, [reasoning] the model's reasoning so far (when the core shows it), [activity] what the agent is
