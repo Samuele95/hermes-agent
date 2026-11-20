@@ -37,6 +37,8 @@ class ToolsetsControl(private val core: CoreGateway, private val bridge: AppBrid
     /**
      * Shows the page at once, busy with no rows, then the toolsets the user can switch (D2). Either read failing shows
      * its words and no rows: without `switchable` nothing can be listed truthfully. A page closed meanwhile stays closed.
+     * `toolsets_keys` runs apart from the core's frames (`blocking`); the two reads are ordered by awaiting the first,
+     * as `AppBridge` asks of dependent calls.
      */
     suspend fun open() {
         screen.value = ToolsetsUi(busy = true)

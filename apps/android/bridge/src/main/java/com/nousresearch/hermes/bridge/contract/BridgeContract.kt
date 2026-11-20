@@ -597,7 +597,7 @@ object BridgeCalls {
     /** The install-time security scan of a hub skill without installing it (as GET /api/skills/hub/scan): the verdict, whether the install policy allows it (a policy that would ask is not allowed), one line per finding, most severe first, and the source's trust level; it fetches the bundle, so it may wait on the network. */
     val HUB_SCAN = BridgeCall("hub_scan", HubScanParams.serializer(), HubScanReply.serializer(), blocking = true)
     /** The configurable toolsets whose required keys are missing (hermes_cli.tools_config._toolset_has_keys, as GET /api/tools/toolsets's configured flag): names only, never a value; and the toolsets tools.configure switches for the CLI platform, with their GUI labels (as the `hermes tools` checklist and GET /api/tools/toolsets list them). */
-    val TOOLSETS_KEYS = BridgeCall("toolsets_keys", NoParams.serializer(), ToolsetsKeysReply.serializer())
+    val TOOLSETS_KEYS = BridgeCall("toolsets_keys", NoParams.serializer(), ToolsetsKeysReply.serializer(), blocking = true)
     /** Zips exactly five parts of the Hermes home into the app's cache (TMPDIR/exports/hermes-backup-<UTC>.zip, replacing only the previous backup): sessions (state.db, a SQLite backup-API snapshot), memories, skills (with the archive), config.yaml with every key field blanked, and cron without its lock and pid files; never .env, auth.json, vault files, mcp-tokens or a keystore secret (D49). Answers the file and the parts it holds. */
     val BACKUP_CREATE = BridgeCall("backup_create", NoParams.serializer(), BackupCreateReply.serializer(), blocking = true)
     /** Reads what a Hermes backup zip (the app's or `hermes backup`'s) would restore, writing nothing: the parts it holds, the members a restore would skip and the sessions its database holds. Refused in words, as backup_restore refuses a file that is no zip, no Hermes backup or holds nothing to restore; never refused for a running turn or gateway (it writes nothing). The file is never deleted. */
@@ -606,7 +606,7 @@ object BridgeCalls {
     val BACKUP_RESTORE = BridgeCall("backup_restore", BackupRestoreParams.serializer(), BackupRestoreReply.serializer(), blocking = true)
 
     /** The calls that may wait on the network or run for seconds on local files (`blocking` in the contract): EmbeddedPython runs them on their own thread. */
-    val BLOCKING: Set<String> = setOf("probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check", "hub_scan", "backup_create", "backup_inspect", "backup_restore")
+    val BLOCKING: Set<String> = setOf("probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check", "hub_scan", "toolsets_keys", "backup_create", "backup_inspect", "backup_restore")
 }
 
 /** One state change of the :gateway process's gateway host, as a JSON line through native.emit; reason only for failed. */

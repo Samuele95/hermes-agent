@@ -12,6 +12,9 @@ composites included, which ``tools.configure`` answers ``unknown``) and carries 
 and ``GET /api/tools/toolsets`` list them: configurable, allowed for ``cli``, not config-only, in the core's order,
 each with ``gui_toolset_label`` of its title. Names and labels only. The core is importable only after
 ``prepare()``, so its imports sit inside the function.
+
+Runs on the bridge's network thread (``blocking`` in the contract): reading the Nous account may call the portal,
+and in the composed app it held the frames' thread for most of a second (P14).
 """
 
 from __future__ import annotations

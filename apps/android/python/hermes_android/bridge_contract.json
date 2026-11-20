@@ -465,6 +465,7 @@
     },
     "toolsets_keys": {
       "summary": "The configurable toolsets whose required keys are missing (hermes_cli.tools_config._toolset_has_keys, as GET /api/tools/toolsets's configured flag): names only, never a value; and the toolsets tools.configure switches for the CLI platform, with their GUI labels (as the `hermes tools` checklist and GET /api/tools/toolsets list them).",
+      "blocking": true,
       "params": {},
       "reply": {
         "needs_keys": "[string]",
