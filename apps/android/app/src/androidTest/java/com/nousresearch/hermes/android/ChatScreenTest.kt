@@ -65,6 +65,8 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.test.longClick
+import androidx.compose.ui.test.click
+import androidx.compose.ui.test.doubleClick
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.semantics.ScrollAxisRange
@@ -1650,9 +1652,7 @@ class ChatScreenTest {
             assertEquals(tag, (took.top + took.bottom).value / 2, (b.top + b.bottom).value / 2, 1f)
         }
 
-        // A second tap inside the double-tap timeout is the selection's own (SelectionContainer selects the word it
-        // touches): the reader's second tap comes later.
-        compose.mainClock.advanceTimeBy(1_000)
+        compose.mainClock.advanceTimeBy(200)  // a reader's quick second tap hides it again: the row owns it, not the selection (Q9)
         compose.onNodeWithText("Sunny.").performClick()
         compose.onAllNodesWithTag("message-time").assertCountEquals(0)
     }
@@ -1687,6 +1687,74 @@ class ChatScreenTest {
         took.assertExists()
         assertTrue(took.getUnclippedBoundsInRoot().top >= compose.onNodeWithText("Context injection refused.").getUnclippedBoundsInRoot().bottom)
         compose.onAllNodesWithTag("retry").assertCountEquals(1)  // Retry still stands alone once after the notices
+    }
+
+    /** A text selection handle: foundation's SelectionHandleInfoKey ("SelectionHandleInfo"), present while a selection shows. */
+    private val selectionHandle = SemanticsMatcher("a selection handle") { n -> n.config.any { it.key.name == "SelectionHandleInfo" } }
+
+    private val sunny = Chat(listOf(Entry.User("weather?", stableId = 0),
+                                    Entry.Reply("Sunny and warm all day.", TurnStatus.COMPLETE, stableId = 1, at = local(2025, 9, 28, 15, 27))))
+
+    @Test
+    fun aQuickDoubleTapOnAnAnswerTogglesItsTimeAndSelectsNoWord() {
+        compose.setContent { ChatScreen(sunny, onSend = {}, onCopy = {}, now = { nowMs }) }
+
+        for (gap in listOf(150L, 250L)) {
+            compose.onNodeWithText("Sunny and warm all day.").performTouchInput { click() }
+            compose.onNodeWithTag("message-time").assertExists()
+            compose.mainClock.advanceTimeBy(gap)
+            compose.onNodeWithText("Sunny and warm all day.").performTouchInput { click() }
+            compose.onAllNodesWithTag("message-time").assertCountEquals(0)
+            compose.onAllNodes(selectionHandle, useUnmergedTree = true).assertCountEquals(0)
+            compose.mainClock.advanceTimeBy(1_000)  // the next pair starts afresh
+        }
+
+        compose.onNodeWithText("Sunny and warm all day.").performTouchInput { doubleClick(delayMillis = 200) }
+        compose.mainClock.advanceTimeBy(400)
+        compose.onAllNodesWithTag("message-time").assertCountEquals(0)  // on, then off: the per-gap checks show it toggled
+        compose.onAllNodes(selectionHandle, useUnmergedTree = true).assertCountEquals(0)
+    }
+
+    @Test
+    fun aLongPressStillSelectsAnAnswersWords() {
+        var chat by mutableStateOf(sunny)
+        var onReact by mutableStateOf<((Long, String?) -> Unit)?>(null)
+        compose.setContent { ChatScreen(chat, onSend = {}, onCopy = {}, now = { nowMs }, onReact = onReact) }
+
+        compose.onNodeWithText("Sunny and warm all day.").performTouchInput { longClick() }
+        compose.onAllNodes(selectionHandle, useUnmergedTree = true).fetchSemanticsNodes().let { assertTrue("handles", it.isNotEmpty()) }
+        compose.onAllNodesWithTag("message-time").assertCountEquals(0)  // a long press is the selection's, not the time's
+
+        // With reactions on, on a reactable answer: still the selection's, and nothing is reacted.
+        chat = Chat(listOf(Entry.User("hi", 21, 0),
+                           Entry.Reply("Cloudy by noon.", TurnStatus.COMPLETE, stableId = 2, rowId = 22, at = local(2025, 9, 28, 15, 27))))
+        onReact = { id, e -> reacted += id to e }
+        compose.onNodeWithTag("react").assertExists()
+        compose.onAllNodes(selectionHandle, useUnmergedTree = true).assertCountEquals(0)
+        compose.onNodeWithText("Cloudy by noon.").performTouchInput { longClick() }
+        compose.mainClock.advanceTimeBy(400)
+        compose.onAllNodes(selectionHandle, useUnmergedTree = true).fetchSemanticsNodes().let { assertTrue("handles", it.isNotEmpty()) }
+        compose.onAllNodesWithTag("message-time").assertCountEquals(0)
+        assertEquals(emptyList<Pair<Long, String?>>(), reacted)
+    }
+
+    @Test
+    fun aTapAChildTakesNeverTogglesTheTimeEvenRightAfterOne() {
+        val copies = mutableListOf<String>()
+        val reply = kotlinReply.copy(stableId = 1, rowId = 22, at = local(2025, 9, 28, 15, 27))
+        compose.setContent { ChatScreen(Chat(listOf(Entry.User("run it", 21, 0), reply)), onSend = {}, onCopy = { copies += it },
+                                        onReact = null, now = { nowMs }) }
+
+        compose.onNodeWithTag("copy-code").performTouchInput { click() }
+        assertEquals(listOf("val x = \"hi\" // note"), copies)
+        compose.onAllNodesWithTag("message-time").assertCountEquals(0)
+
+        compose.onNodeWithText("Run:").performTouchInput { click() }
+        compose.onNodeWithTag("message-time").assertExists()
+        compose.mainClock.advanceTimeBy(150)
+        compose.onNodeWithTag("copy-reply").performTouchInput { click() }
+        assertEquals(listOf("val x = \"hi\" // note", reply.text), copies)
+        compose.onNodeWithTag("message-time").assertExists()  // the quick press on a child was the child's, not a second toggle
     }
 
     // A failed answer's recovery card (chat-16): the core's words, one main fix and at most one second, View error details.
@@ -1857,6 +1925,66 @@ class ChatScreenTest {
         compose.onNodeWithTag("react").assertDoesNotExist()  // a job's run the gateway still owns (D10)
         chat = stored()
         compose.onNodeWithTag("react").assertExists()  // the same answer, writable: React
+    }
+
+    private fun dusted(reactions: List<Reaction> = emptyList()) =
+        Chat(listOf(Entry.User("hi", 21, 0),
+                    Entry.Reply("Done and dusted.", TurnStatus.COMPLETE, stableId = 1, rowId = 22, at = local(2026, 11, 16, 9, 5), reactions = reactions)))
+
+    @Test
+    fun aQuickDoubleTapHeartsAReactableAnswerAsDesktopsDoubleClick() {
+        var chat by mutableStateOf(dusted())
+        compose.setContent { ChatScreen(chat, onSend = {}, onReact = { id, e -> reacted += id to e }, now = { nowMs }) }
+
+        compose.onNodeWithText("Done and dusted.").performTouchInput { doubleClick(delayMillis = 200) }
+        compose.mainClock.advanceTimeBy(400)
+        assertEquals(listOf(1L to "❤️"), reacted)
+        compose.onAllNodesWithTag("message-time").assertCountEquals(0)  // the time untouched
+        compose.onAllNodes(selectionHandle, useUnmergedTree = true).assertCountEquals(0)
+
+        chat = dusted(listOf(Reaction("❤️", Author.USER)))
+        reacted.clear()
+        compose.onNodeWithText("Done and dusted.").performTouchInput { doubleClick(delayMillis = 200) }
+        compose.mainClock.advanceTimeBy(400)
+        assertEquals("the user's own heart again retracts", listOf(1L to null), reacted)
+
+        chat = dusted(listOf(Reaction("👍", Author.USER)))
+        reacted.clear()
+        compose.onNodeWithText("Done and dusted.").performTouchInput { doubleClick(delayMillis = 200) }
+        compose.mainClock.advanceTimeBy(400)
+        assertEquals("the heart replaces another", listOf(1L to "❤️"), reacted)
+        compose.onAllNodesWithTag("message-time").assertCountEquals(0)
+    }
+
+    @Test
+    fun aSingleTapStillShowsTheTimeWhenADoubleTapWouldHeart() {
+        compose.setContent { ChatScreen(dusted(), onSend = {}, onReact = { id, e -> reacted += id to e }, now = { nowMs }) }
+
+        compose.onNodeWithText("Done and dusted.").performTouchInput { click() }
+        compose.mainClock.advanceTimeBy(400)  // past the double-tap timeout
+        compose.onNodeWithTag("message-time").assertExists()
+        assertEquals(emptyList<Pair<Long, String?>>(), reacted)
+    }
+
+    @Test
+    fun withNoReactionsADoubleTapHeartsNothing() {
+        val writable = dusted().entries
+        val cases = listOf<Pair<Chat, ((Long, String?) -> Unit)?>>(
+            dusted() to null,  // reactions off
+            Chat(listOf(writable[0], (writable[1] as Entry.Reply).copy(rowId = null))) to { id, e -> reacted += id to e },  // no row (D2)
+            dusted().copy(runOwned = true) to { id, e -> reacted += id to e })  // a job's run the gateway owns (D10)
+        var case by mutableStateOf(cases[0])
+        compose.setContent { ChatScreen(case.first, onSend = {}, onReact = case.second, now = { nowMs }) }
+
+        for ((i, c) in cases.withIndex()) {
+            case = c
+            compose.onAllNodesWithTag("react").assertCountEquals(0)
+            compose.onNodeWithText("Done and dusted.").performTouchInput { doubleClick(delayMillis = 200) }
+            compose.mainClock.advanceTimeBy(400)
+            assertEquals("case $i", emptyList<Pair<Long, String?>>(), reacted)
+            compose.onAllNodesWithTag("message-time").assertCountEquals(0)  // on, then off
+            compose.mainClock.advanceTimeBy(1_000)
+        }
     }
 
     // The slash menu (chat-20, bet 9): a leading `/` opens it over built values; a pick fills the line, nothing is sent.

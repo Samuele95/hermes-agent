@@ -12,7 +12,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
@@ -85,6 +86,12 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.input.pointer.AwaitPointerEventScope
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerInputChange
+import androidx.compose.ui.input.pointer.changedToDownIgnoreConsumed
+import androidx.compose.ui.input.pointer.changedToUp
+import androidx.compose.ui.input.pointer.isOutOfBounds
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -638,11 +645,15 @@ private fun EntryRow(entry: Entry, onCopy: ((String) -> Unit)?, onEdit: (() -> U
             val label = stringResource(if (timeShown) R.string.chat_hide_time else R.string.chat_show_time)
             // A tap on its words shows when it came (D1, chat-15): a bare tap, not a click, so its text and code blocks stay
             // their own nodes and no ripple spans it (D2); a tap a child takes (a link, a code block's Copy, the fold, an
-            // action) never reaches it.
-            val tap = entry.at?.let { at ->
-                Modifier.semantics { onClick(label = label) { timeShown = !timeShown; true } }
-                    .pointerInput(at) { detectTapGestures(onTap = { timeShown = !timeShown }) }
-            } ?: Modifier
+            // action) never reaches it. A quick second press is claimed before SelectionContainer's word selection (Compose
+            // foundation 1.12.1 takes it as `touchSelectionSubsequentPress`): a heart with reactions on, as Desktop's
+            // double-click, else the time again.
+            val toggle by rememberUpdatedState(entry.at?.let { { timeShown = !timeShown } })
+            val heart by rememberUpdatedState(react?.let { r -> { r(entry.reactions.tapback()) } })
+            val tap = (entry.at?.let { Modifier.semantics { onClick(label = label) { timeShown = !timeShown; true } } } ?: Modifier)
+                .then(if (entry.at != null || react != null)
+                          Modifier.answerTaps(onTap = entry.at?.let { { toggle?.invoke() } }, onDoubleTap = react?.let { { heart?.invoke() } })
+                      else Modifier)
             Column(Modifier.fillMaxWidth().then(tap).testTag("entry-reply")) {
                 entry.reasoning?.let { reasoning ->
                     var shown by rememberSaveable { mutableStateOf(false) }
@@ -679,6 +690,57 @@ private fun EntryRow(entry: Entry, onCopy: ((String) -> Unit)?, onEdit: (() -> U
         }
     }
 }
+
+/**
+ * An answer's own taps, read beside SelectionContainer without taking its gestures: a single tap on the words or between
+ * them is [onTap] (the time); a quick second press near the first is this row's, never the selection's (its down is
+ * consumed in [PointerEventPass.Initial], before the selection reads it): [onDoubleTap] (the heart), or with none [onTap]
+ * again. A long press and a drag are the selection's and the list's (the first down is never consumed, and a press held
+ * past the long-press timeout or moved is let go); a press a child takes (a link, a Copy, the fold, React, the chip) is the
+ * child's (an up consumed below is no tap). With [onDoubleTap], a single tap waits out the double-tap timeout first, as
+ * `detectTapGestures` does.
+ */
+private fun Modifier.answerTaps(onTap: (() -> Unit)?, onDoubleTap: (() -> Unit)?): Modifier =
+    pointerInput(onTap != null, onDoubleTap != null) {
+        val slop = DOUBLE_TAP_SLOP.toPx()
+        awaitEachGesture {
+            awaitFirstDown(pass = PointerEventPass.Initial)
+            while (true) {
+                val up = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) { awaitOwnUp() }
+                    ?: return@awaitEachGesture  // a long press, a drag or a child's tap
+                if (onDoubleTap == null) onTap?.invoke()
+                val next = withTimeoutOrNull(viewConfiguration.doubleTapTimeoutMillis) {
+                    awaitFirstDown(pass = PointerEventPass.Initial)
+                }
+                if (next == null || (next.position - up.position).getDistance() > slop) {
+                    if (onDoubleTap != null) onTap?.invoke()
+                    if (next == null) return@awaitEachGesture
+                    continue  // a press elsewhere (a child, another line) starts afresh
+                }
+                next.consume()  // the row's second press: the selection skips a consumed down
+                withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) { awaitOwnUp() } ?: return@awaitEachGesture
+                (onDoubleTap ?: onTap)?.invoke()
+                return@awaitEachGesture
+            }
+        }
+    }
+
+/**
+ * The up of the press under way, read in [PointerEventPass.Final] after every child had it: null when a child consumed it
+ * (its tap), when the press moved and a scroller consumed it, or when it left the row. The press's own down, met again in
+ * this pass, is skipped (foundation's `waitForUpOrCancellation(Final)` reads one event ahead there and loses the up).
+ */
+private suspend fun AwaitPointerEventScope.awaitOwnUp(): PointerInputChange? {
+    while (true) {
+        val event = awaitPointerEvent(PointerEventPass.Final)
+        if (event.changes.all { it.changedToDownIgnoreConsumed() }) continue
+        if (event.changes.all { it.changedToUp() }) return event.changes[0]
+        if (event.changes.any { it.isConsumed || it.isOutOfBounds(size, extendedTouchPadding) }) return null
+    }
+}
+
+/** How far a second press may land from the first and still be the same double tap (a reader's finger, not a Copy below). */
+private val DOUBLE_TAP_SLOP = 24.dp
 
 /** A failed answer's card as drawn: its fixes ([fixes]: each label's string and its run, the main first) and its [details]. */
 private class RecoveryUi(val fixes: List<Pair<Int, () -> Unit>>, val details: String)

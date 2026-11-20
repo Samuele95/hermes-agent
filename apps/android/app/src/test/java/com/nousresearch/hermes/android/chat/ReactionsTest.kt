@@ -19,6 +19,15 @@ class ReactionsTest {
     }
 
     @Test
+    fun aDoubleTapHeartsAnAnswerAndAgainRetractsIt() {
+        assertEquals("❤️", emptyList<Reaction>().tapback())
+        assertEquals("the user's own heart again retracts", null, listOf(user("❤️")).tapback())
+        assertEquals("the heart replaces another emoji", "❤️", listOf(user("👍")).tapback())
+        assertEquals("another author's heart never counts", "❤️", listOf(Reaction("❤️", Author.AGENT)).tapback())
+        assertEquals("Desktop's first quick reaction", QUICK[0], DOUBLE_TAP_REACTION)
+    }
+
+    @Test
     fun theCoresRowsAreTheUsersOwnReactions() {
         val read = reactionsOf(listOf(MessageReaction("❤️", "user", 1.0, true), MessageReaction("👍", "agent"),
                                       MessageReaction(" ", "user"), MessageReaction("😂", "bot")))

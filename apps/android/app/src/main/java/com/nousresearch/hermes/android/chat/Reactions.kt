@@ -39,6 +39,17 @@ fun reactionsOf(meta: JsonElement?): List<Reaction> {
 /** Desktop's six quick reactions, Apple's Tapback defaults in Apple's order (reactions.ts:9; DC-P16: no full picker). */
 val QUICK = listOf("❤️", "👍", "👎", "😂", "‼️", "❓")
 
+/** The tapback a quick double tap on an answer lands: Apple's first Tapback, as Desktop's double-click (use-message-reactions.ts:27). */
+val DOUBLE_TAP_REACTION: String = QUICK[0]
+
+/**
+ * The emoji a double tap sends for these reactions: null (retract) when the user's own is already [DOUBLE_TAP_REACTION],
+ * else [DOUBLE_TAP_REACTION] (it replaces any other); other authors' entries never count. Desktop's
+ * `mine?.emoji === DOUBLE_CLICK_REACTION ? null : …`.
+ */
+fun List<Reaction>.tapback(): String? =
+    DOUBLE_TAP_REACTION.takeUnless { heart -> firstOrNull { it.author == Author.USER }?.emoji == heart }
+
 /**
  * These reactions after the user's tap on [emoji], as the core will apply it (`set_message_reaction`, Desktop's
  * `applyReaction`): the user's own entry goes, and [emoji] takes its place unless it is null or the one that went (the
