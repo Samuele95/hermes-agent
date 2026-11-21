@@ -493,3 +493,21 @@ def backup_restore(arg: str) -> str:
     from hermes_android import backup
 
     return backup.restore(arg)
+
+
+def mcp_catalog(arg: str) -> str:
+    from hermes_android import mcp
+
+    return mcp.catalog(arg)
+
+
+def mcp_set_enabled(arg: str) -> str:
+    from hermes_android import mcp
+
+    return mcp.set_enabled(arg)
+
+
+def mcp_key_ref(arg: str) -> str:
+    from hermes_android import mcp
+
+    return mcp.key_ref(arg)

@@ -43,6 +43,11 @@
       "skills",
       "config",
       "jobs"
+    ],
+    "McpAuthKind": [
+      "none",
+      "oauth",
+      "api_key"
     ]
   },
   "records": {
@@ -98,6 +103,25 @@
     "ToolsetLabel": {
       "name": "string",
       "label": "string"
+    },
+    "McpEnvSpec": {
+      "name": "string",
+      "prompt": "string",
+      "required": "boolean",
+      "secret": "boolean"
+    },
+    "McpCatalogEntry": {
+      "name": "string",
+      "description": "string",
+      "url": "string?",
+      "transport": "string",
+      "auth": "McpAuthKind",
+      "env": "[McpEnvSpec]",
+      "include": "[string]?",
+      "exclude": "[string]?",
+      "installed": "boolean",
+      "enabled": "boolean",
+      "connector_slug": "string?"
     }
   },
   "calls": {
@@ -505,6 +529,35 @@
         "restored": "[BackupPart]",
         "skipped": "integer",
         "sessions": "integer"
+      }
+    },
+    "mcp_catalog": {
+      "summary": "The curated MCP catalog shipped with the core, read locally without the network (as GET /api/mcp/catalog): each manifest's name, description, url (null for none), transport type, auth type, the env values it needs (name, prompt, required, secret — never a value), its tool defaults (include or exclude, null when it has none), whether it is configured and on, and its connector slug.",
+      "blocking": true,
+      "params": {},
+      "reply": {
+        "entries": "[McpCatalogEntry]"
+      }
+    },
+    "mcp_set_enabled": {
+      "summary": "Turns one configured MCP server on or off (config.yaml mcp_servers.<name>.enabled, as PUT /api/mcp/servers/{name}/enabled) under the app's config lock, never .env; no other server or key changes; a plugin's server, an unknown one or a malformed entry is refused in the route's words. Takes effect at the next reload.mcp.",
+      "params": {
+        "name": "string",
+        "enabled": "boolean"
+      },
+      "reply": {
+        "enabled": "boolean"
+      }
+    },
+    "mcp_key_ref": {
+      "summary": "Points one header of a configured remote MCP server at a keystore variable, writing only the template ('Bearer ${VAR}' for Authorization, else '${VAR}') under the app's config lock, never a value and never .env; env_var must be the name the core derives for that server and header (MCP_<NAME>_API_KEY for Authorization, else MCP_<NAME>_<HEADER>); the server's other headers stay. Answers the server's header names, never their values.",
+      "params": {
+        "name": "string",
+        "header": "string",
+        "env_var": "string"
+      },
+      "reply": {
+        "headers": "[string]"
       }
     }
   },

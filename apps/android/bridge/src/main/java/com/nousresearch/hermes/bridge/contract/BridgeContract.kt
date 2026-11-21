@@ -79,6 +79,13 @@ enum class BackupPart {
 }
 
 @Serializable
+enum class McpAuthKind {
+    @SerialName("none") NONE,
+    @SerialName("oauth") OAUTH,
+    @SerialName("api_key") API_KEY,
+}
+
+@Serializable
 data class FoundServer(
     @SerialName("base_url") val baseUrl: String,
     val kind: ServerKind,
@@ -147,6 +154,29 @@ data class HubOfficial(
 data class ToolsetLabel(
     val name: String,
     val label: String,
+)
+
+@Serializable
+data class McpEnvSpec(
+    val name: String,
+    val prompt: String,
+    val required: Boolean,
+    val secret: Boolean,
+)
+
+@Serializable
+data class McpCatalogEntry(
+    val name: String,
+    val description: String,
+    val url: String?,
+    val transport: String,
+    val auth: McpAuthKind,
+    val env: List<McpEnvSpec>,
+    val include: List<String>?,
+    val exclude: List<String>?,
+    val installed: Boolean,
+    val enabled: Boolean,
+    @SerialName("connector_slug") val connectorSlug: String?,
 )
 
 @Serializable
@@ -518,6 +548,34 @@ data class BackupRestoreReply(
     val sessions: Long,
 )
 
+@Serializable
+data class McpCatalogReply(
+    val entries: List<McpCatalogEntry>,
+)
+
+@Serializable
+data class McpSetEnabledParams(
+    val name: String,
+    val enabled: Boolean,
+)
+
+@Serializable
+data class McpSetEnabledReply(
+    val enabled: Boolean,
+)
+
+@Serializable
+data class McpKeyRefParams(
+    val name: String,
+    val header: String,
+    @SerialName("env_var") val envVar: String,
+)
+
+@Serializable
+data class McpKeyRefReply(
+    val headers: List<String>,
+)
+
 /** Every call the app may make into its Python half. */
 object BridgeCalls {
     /** The interpreter facts the app shows, and the core's release date (hermes_cli.__release_date__): the core's version on a phone, where get_version_info() has no stamp and no git and answers 'unknown'. */
@@ -604,9 +662,15 @@ object BridgeCalls {
     val BACKUP_INSPECT = BridgeCall("backup_inspect", BackupInspectParams.serializer(), BackupInspectReply.serializer(), blocking = true)
     /** Restores only those five parts from a Hermes backup zip (the app's or `hermes backup`'s), with config.yaml's key fields blanked and state.db written page by page into the open file; every other member is skipped and counted. Refused in words, before anything is written, while a turn runs, while the always-on gateway runs, or when the file holds nothing to restore. Answers the parts restored, the members skipped and the sessions the restored database holds. */
     val BACKUP_RESTORE = BridgeCall("backup_restore", BackupRestoreParams.serializer(), BackupRestoreReply.serializer(), blocking = true)
+    /** The curated MCP catalog shipped with the core, read locally without the network (as GET /api/mcp/catalog): each manifest's name, description, url (null for none), transport type, auth type, the env values it needs (name, prompt, required, secret — never a value), its tool defaults (include or exclude, null when it has none), whether it is configured and on, and its connector slug. */
+    val MCP_CATALOG = BridgeCall("mcp_catalog", NoParams.serializer(), McpCatalogReply.serializer(), blocking = true)
+    /** Turns one configured MCP server on or off (config.yaml mcp_servers.<name>.enabled, as PUT /api/mcp/servers/{name}/enabled) under the app's config lock, never .env; no other server or key changes; a plugin's server, an unknown one or a malformed entry is refused in the route's words. Takes effect at the next reload.mcp. */
+    val MCP_SET_ENABLED = BridgeCall("mcp_set_enabled", McpSetEnabledParams.serializer(), McpSetEnabledReply.serializer())
+    /** Points one header of a configured remote MCP server at a keystore variable, writing only the template ('Bearer ${VAR}' for Authorization, else '${VAR}') under the app's config lock, never a value and never .env; env_var must be the name the core derives for that server and header (MCP_<NAME>_API_KEY for Authorization, else MCP_<NAME>_<HEADER>); the server's other headers stay. Answers the server's header names, never their values. */
+    val MCP_KEY_REF = BridgeCall("mcp_key_ref", McpKeyRefParams.serializer(), McpKeyRefReply.serializer())
 
     /** The calls that may wait on the network or run for seconds on local files (`blocking` in the contract): EmbeddedPython runs them on their own thread. */
-    val BLOCKING: Set<String> = setOf("probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check", "hub_scan", "toolsets_keys", "backup_create", "backup_inspect", "backup_restore")
+    val BLOCKING: Set<String> = setOf("probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check", "hub_scan", "toolsets_keys", "backup_create", "backup_inspect", "backup_restore", "mcp_catalog")
 }
 
 /** One state change of the :gateway process's gateway host, as a JSON line through native.emit; reason only for failed. */

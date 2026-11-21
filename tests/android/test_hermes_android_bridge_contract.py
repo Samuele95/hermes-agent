@@ -47,18 +47,20 @@ def test_only_calls_that_wait_on_the_network_or_on_local_files_are_declared_bloc
     # The app runs these apart from the core's frames (BridgeThreads): a slow probe never queues Stop or an answer.
     # The SSH look/login and the Telegram check wait up to 15-20 s on a host or on Telegram; a hub scan fetches;
     # the toolsets' keys read may fetch the Nous account and was measured holding the frames' thread (P14);
-    # a backup or a restore runs for seconds over local files (F15, DC-P30: one flag, one meaning).
+    # a backup or a restore runs for seconds over local files (F15, DC-P30: one flag, one meaning); the MCP catalog
+    # parses its 65 local manifests on each call (batch-5 F12).
     assert {name for name, c in CONTRACT["calls"].items() if c.get("blocking")} == {
         "probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check", "hub_scan",
-        "toolsets_keys", "backup_create", "backup_inspect", "backup_restore"}
+        "toolsets_keys", "backup_create", "backup_inspect", "backup_restore", "mcp_catalog"}
     assert "network or run for seconds on local files" in CONTRACT["$comment"]
     assert all(isinstance(c["blocking"], bool) for c in CONTRACT["calls"].values() if "blocking" in c)
 
 
 def _known(kind: str) -> bool:
+    kind = kind.removesuffix("?")  # a nullable list, [T]?, is a list too
     if kind.startswith("[") and kind.endswith("]"):
         return _known(kind[1:-1])
-    return kind.removesuffix("?") in {"string", "integer", "boolean"} | set(CONTRACT["enums"]) | set(CONTRACT.get("records", {}))
+    return kind in {"string", "integer", "boolean"} | set(CONTRACT["enums"]) | set(CONTRACT.get("records", {}))
 
 
 def test_the_contract_uses_only_known_types():
@@ -169,7 +171,7 @@ def test_real_calls_answer_their_declared_replies():
     assert set(json.loads(hermes_android.call("telegram_status", "{}"))) == {"token", "allowed_user", "sdk", "enabled", "live"}
     assert set(json.loads(hermes_android.call("settings_read", ""))) == set(CONTRACT["calls"]["settings_read"]["reply"])
     assert set(json.loads(hermes_android.call("skills_list", ""))) == set(CONTRACT["calls"]["skills_list"]["reply"])
-    for name in ("skills_archived", "hub_official", "toolsets_keys"):
+    for name in ("skills_archived", "hub_official", "toolsets_keys", "mcp_catalog"):
         assert set(json.loads(hermes_android.call(name, ""))) == set(CONTRACT["calls"][name]["reply"]), name
 
 

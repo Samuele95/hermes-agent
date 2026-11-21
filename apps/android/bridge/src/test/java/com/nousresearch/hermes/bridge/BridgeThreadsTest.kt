@@ -106,7 +106,7 @@ class BridgeThreadsTest {
         val blocking = listOf(
             BridgeCalls.PROBE_ENDPOINT, BridgeCalls.DISCOVER_ENDPOINTS, BridgeCalls.SSH_HOST_KEY,
             BridgeCalls.SSH_CHECK_LOGIN, BridgeCalls.TELEGRAM_CHECK, BridgeCalls.HUB_SCAN, BridgeCalls.TOOLSETS_KEYS,
-            BridgeCalls.BACKUP_CREATE, BridgeCalls.BACKUP_INSPECT, BridgeCalls.BACKUP_RESTORE,
+            BridgeCalls.BACKUP_CREATE, BridgeCalls.BACKUP_INSPECT, BridgeCalls.BACKUP_RESTORE, BridgeCalls.MCP_CATALOG,
         )
         val quick = listOf(
             BridgeCalls.RUNTIME_FACTS, BridgeCalls.SECRETS_CHANGED, BridgeCalls.GATEWAY_START, BridgeCalls.GATEWAY_STOP,
@@ -115,6 +115,7 @@ class BridgeThreadsTest {
             BridgeCalls.SSH_TRUST_HOST, BridgeCalls.SSH_CONFIGURE, BridgeCalls.TERMINAL_STATUS,
             BridgeCalls.TERMINAL_LOCAL, BridgeCalls.TELEGRAM_CONFIGURE, BridgeCalls.TELEGRAM_STATUS,
             BridgeCalls.SKILLS_ARCHIVED, BridgeCalls.SKILLS_RESTORE, BridgeCalls.HUB_OFFICIAL,
+            BridgeCalls.MCP_SET_ENABLED, BridgeCalls.MCP_KEY_REF,
         )
 
         for (descriptor in blocking) {
@@ -127,7 +128,7 @@ class BridgeThreadsTest {
         }
         assertEquals(
             setOf("probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check", "hub_scan",
-                  "toolsets_keys", "backup_create", "backup_inspect", "backup_restore"),
+                  "toolsets_keys", "backup_create", "backup_inspect", "backup_restore", "mcp_catalog"),
             BridgeCalls.BLOCKING,
         )
     }
