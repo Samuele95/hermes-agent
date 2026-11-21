@@ -86,6 +86,14 @@ enum class McpAuthKind {
 }
 
 @Serializable
+enum class InstallState {
+    @SerialName("running") RUNNING,
+    @SerialName("done") DONE,
+    @SerialName("failed") FAILED,
+    @SerialName("cancelled") CANCELLED,
+}
+
+@Serializable
 data class FoundServer(
     @SerialName("base_url") val baseUrl: String,
     val kind: ServerKind,
@@ -576,6 +584,38 @@ data class McpKeyRefReply(
     val headers: List<String>,
 )
 
+@Serializable
+data class McpPipStartParams(
+    val server: String,
+    val requirement: String,
+)
+
+@Serializable
+data class McpPipStartReply(
+    val job: String,
+)
+
+@Serializable
+data class McpPipPollParams(
+    val job: String,
+)
+
+@Serializable
+data class McpPipPollReply(
+    val state: InstallState,
+    val tail: String,
+)
+
+@Serializable
+data class McpPipCancelParams(
+    val job: String,
+)
+
+@Serializable
+data class McpPipCancelReply(
+    val state: InstallState,
+)
+
 /** Every call the app may make into its Python half. */
 object BridgeCalls {
     /** The interpreter facts the app shows, and the core's release date (hermes_cli.__release_date__): the core's version on a phone, where get_version_info() has no stamp and no git and answers 'unknown'. */
@@ -668,6 +708,12 @@ object BridgeCalls {
     val MCP_SET_ENABLED = BridgeCall("mcp_set_enabled", McpSetEnabledParams.serializer(), McpSetEnabledReply.serializer())
     /** Points one header of a configured remote MCP server at a keystore variable, writing only the template ('Bearer ${VAR}' for Authorization, else '${VAR}') under the app's config lock, never a value and never .env; env_var must be the name the core derives for that server and header (MCP_<NAME>_API_KEY for Authorization, else MCP_<NAME>_<HEADER>); the server's other headers stay. Answers the server's header names, never their values. */
     val MCP_KEY_REF = BridgeCall("mcp_key_ref", McpKeyRefParams.serializer(), McpKeyRefReply.serializer())
+    /** Starts installing one PyPI distribution (a name, optionally ==version; nothing else) for an MCP server as a child of the app's Python launcher (`$HOME/bin/python3 -m pip install --isolated --only-binary=:all: --target …`), into HERMES_HOME/mcp-packages/<server> once pip succeeds; answers at once with the job, one job at a time; the child gets no secret. */
+    val MCP_PIP_START = BridgeCall("mcp_pip_start", McpPipStartParams.serializer(), McpPipStartReply.serializer())
+    /** The install job's state and the end of its output (redacted); a finished job's package is moved into place by the poll that sees it end. */
+    val MCP_PIP_POLL = BridgeCall("mcp_pip_poll", McpPipPollParams.serializer(), McpPipPollReply.serializer())
+    /** Kills the install job's child and drops what it installed; a finished job answers its final state. */
+    val MCP_PIP_CANCEL = BridgeCall("mcp_pip_cancel", McpPipCancelParams.serializer(), McpPipCancelReply.serializer())
 
     /** The calls that may wait on the network or run for seconds on local files (`blocking` in the contract): EmbeddedPython runs them on their own thread. */
     val BLOCKING: Set<String> = setOf("probe_endpoint", "discover_endpoints", "ssh_host_key", "ssh_check_login", "telegram_check", "hub_scan", "toolsets_keys", "backup_create", "backup_inspect", "backup_restore", "mcp_catalog")

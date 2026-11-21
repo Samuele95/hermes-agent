@@ -21,6 +21,12 @@ import com.nousresearch.hermes.bridge.contract.CronTriggerParams
 import com.nousresearch.hermes.bridge.contract.CronUpdateParams
 import com.nousresearch.hermes.bridge.contract.DeliveryTarget
 import com.nousresearch.hermes.bridge.contract.HubOfficial
+import com.nousresearch.hermes.bridge.contract.McpAuthKind
+import com.nousresearch.hermes.bridge.contract.McpCatalogEntry
+import com.nousresearch.hermes.bridge.contract.McpKeyRefParams
+import com.nousresearch.hermes.bridge.contract.McpPipPollParams
+import com.nousresearch.hermes.bridge.contract.McpPipStartParams
+import com.nousresearch.hermes.bridge.contract.McpSetEnabledParams
 import com.nousresearch.hermes.bridge.contract.Provenance
 import com.nousresearch.hermes.bridge.contract.SettingsReadReply
 import com.nousresearch.hermes.bridge.contract.SettingsWriteParams
@@ -38,11 +44,13 @@ import com.nousresearch.hermes.bridge.protocol.DispatchType
 import com.nousresearch.hermes.bridge.protocol.Events
 import com.nousresearch.hermes.bridge.protocol.LearningEditParams
 import com.nousresearch.hermes.bridge.protocol.LearningNodeParams
+import com.nousresearch.hermes.bridge.protocol.McpServersStatusResult
 import com.nousresearch.hermes.bridge.protocol.MessageReactParams
 import com.nousresearch.hermes.bridge.protocol.Method
 import com.nousresearch.hermes.bridge.protocol.Methods
 import com.nousresearch.hermes.bridge.protocol.PingParams
 import com.nousresearch.hermes.bridge.protocol.PingResult
+import com.nousresearch.hermes.bridge.protocol.ProfileParams
 import com.nousresearch.hermes.bridge.protocol.ReactionAuthor
 import com.nousresearch.hermes.bridge.protocol.SessionCloseParams
 import com.nousresearch.hermes.bridge.protocol.SessionContextBreakdownParams
@@ -660,6 +668,75 @@ class EmbeddedPythonTest {
             Log.i("P2Probe", "took ms: $took")
         }
         took.filterKeys { it != "backup_create" }.forEach { (call, ms) -> if (ms > 1_000) Log.w("P2Probe", "$call took $ms ms") }
+    }
+
+    @Test
+    fun theMcpCallsAnswerOnThePhone() = runBlocking {
+        core // the interpreter starts with the core
+        val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext
+        val took = linkedMapOf<String, Long>()
+        // No MCP server, no OAuth provider, no pip job and no network: the core's listing and status decode, the
+        // catalog is read locally, and every write call refuses bad input before it writes (host-proven in full).
+        val config = File(app.filesDir, ".hermes/config.yaml")
+        val original = config.takeIf { it.exists() }?.readBytes()
+        val tag = System.currentTimeMillis().toString(36)
+        try {
+            val listed = withTimeout(60_000) {
+                var r: Int? = null
+                took["mcp.servers.list"] = measureTimeMillis { r = core.call(Methods.MCP_SERVERS_LIST, ProfileParams()).servers.size }
+                r!!
+            }
+            val status = withTimeout(60_000) {
+                var r: McpServersStatusResult? = null
+                took["mcp.servers.status"] = measureTimeMillis { r = core.call(Methods.MCP_SERVERS_STATUS, ProfileParams()) }
+                r!!
+            }
+            assertTrue("checked_at ${status.checkedAt}", status.checkedAt > 0)
+            Log.i("R4Probe", "servers listed=$listed status rows=${status.servers.size}")
+
+            var entries: List<McpCatalogEntry>? = null
+            took["mcp_catalog"] = measureTimeMillis { entries = EmbeddedBridge.ask(BridgeCalls.MCP_CATALOG).entries }
+            assertTrue("only ${entries!!.size} catalog entries", entries!!.size >= 60)
+            val asana = entries!!.single { it.name == "asana" }
+            assertEquals(McpAuthKind.OAUTH, asana.auth)
+            assertEquals(listOf("ASANA_CLIENT_ID", "ASANA_CLIENT_SECRET"), asana.env.map { it.name })
+            assertTrue(entries!!.filter { it.transport != "http" }.toString(), entries!!.all { it.transport == "http" })
+            Log.i("R4Probe", "catalog entries=${entries!!.size} by auth=${entries!!.groupingBy { it.auth }.eachCount()}")
+
+            val bytes = config.takeIf { it.exists() }?.readBytes()
+            fun refused(call: suspend () -> Unit): String =
+                assertThrows(CoreError::class.java) { runBlocking { call() } }.message!!
+
+            val unknown = "r4-no-such-server-$tag"
+            took["mcp_set_enabled"] = measureTimeMillis {
+                assertEquals("Server '$unknown' not found",
+                             refused { EmbeddedBridge.ask(BridgeCalls.MCP_SET_ENABLED, McpSetEnabledParams(unknown, false)) })
+            }
+            took["mcp_key_ref"] = measureTimeMillis {
+                val words = refused {
+                    EmbeddedBridge.ask(BridgeCalls.MCP_KEY_REF, McpKeyRefParams(unknown, "Authorization", "OPENROUTER_API_KEY"))
+                }
+                assertTrue(words, words.isNotBlank())
+            }
+            took["mcp_pip_start"] = measureTimeMillis {
+                assertEquals("Only a package name from PyPI, optionally with ==version, can be installed.",
+                             refused { EmbeddedBridge.ask(BridgeCalls.MCP_PIP_START, McpPipStartParams("r4", "https://example.invalid/x.whl")) })
+                assertEquals("A server name is letters, digits, '.', '_' or '-' (at most 64) and does not start with '.'.",
+                             refused { EmbeddedBridge.ask(BridgeCalls.MCP_PIP_START, McpPipStartParams("..", "mcp-server-time")) })
+            }
+            took["mcp_pip_poll"] = measureTimeMillis {
+                assertEquals("That install is not known to the app any more.",
+                             refused { EmbeddedBridge.ask(BridgeCalls.MCP_PIP_POLL, McpPipPollParams("nope")) })
+            }
+            assertTrue("a refused MCP call changed config.yaml",
+                       bytes.contentEquals(config.takeIf { it.exists() }?.readBytes()))
+        } finally {
+            Log.i("R4Probe", "took ms: $took")
+            val now = config.takeIf { it.exists() }?.readBytes()
+            if (!original.contentEquals(now)) {
+                if (original != null) config.writeBytes(original) else config.delete()
+            }
+        }
     }
 
     @Test

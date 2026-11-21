@@ -115,7 +115,8 @@ class BridgeThreadsTest {
             BridgeCalls.SSH_TRUST_HOST, BridgeCalls.SSH_CONFIGURE, BridgeCalls.TERMINAL_STATUS,
             BridgeCalls.TERMINAL_LOCAL, BridgeCalls.TELEGRAM_CONFIGURE, BridgeCalls.TELEGRAM_STATUS,
             BridgeCalls.SKILLS_ARCHIVED, BridgeCalls.SKILLS_RESTORE, BridgeCalls.HUB_OFFICIAL,
-            BridgeCalls.MCP_SET_ENABLED, BridgeCalls.MCP_KEY_REF,
+            BridgeCalls.MCP_SET_ENABLED, BridgeCalls.MCP_KEY_REF, BridgeCalls.MCP_PIP_START, BridgeCalls.MCP_PIP_POLL,
+            BridgeCalls.MCP_PIP_CANCEL,
         )
 
         for (descriptor in blocking) {

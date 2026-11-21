@@ -48,6 +48,12 @@
       "none",
       "oauth",
       "api_key"
+    ],
+    "InstallState": [
+      "running",
+      "done",
+      "failed",
+      "cancelled"
     ]
   },
   "records": {
@@ -558,6 +564,35 @@
       },
       "reply": {
         "headers": "[string]"
+      }
+    },
+    "mcp_pip_start": {
+      "summary": "Starts installing one PyPI distribution (a name, optionally ==version; nothing else) for an MCP server as a child of the app's Python launcher (`$HOME/bin/python3 -m pip install --isolated --only-binary=:all: --target …`), into HERMES_HOME/mcp-packages/<server> once pip succeeds; answers at once with the job, one job at a time; the child gets no secret.",
+      "params": {
+        "server": "string",
+        "requirement": "string"
+      },
+      "reply": {
+        "job": "string"
+      }
+    },
+    "mcp_pip_poll": {
+      "summary": "The install job's state and the end of its output (redacted); a finished job's package is moved into place by the poll that sees it end.",
+      "params": {
+        "job": "string"
+      },
+      "reply": {
+        "state": "InstallState",
+        "tail": "string"
+      }
+    },
+    "mcp_pip_cancel": {
+      "summary": "Kills the install job's child and drops what it installed; a finished job answers its final state.",
+      "params": {
+        "job": "string"
+      },
+      "reply": {
+        "state": "InstallState"
       }
     }
   },

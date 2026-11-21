@@ -511,3 +511,21 @@ def mcp_key_ref(arg: str) -> str:
     from hermes_android import mcp
 
     return mcp.key_ref(arg)
+
+
+def mcp_pip_start(arg: str) -> str:
+    from hermes_android import mcp
+
+    return mcp.pip_start(arg)
+
+
+def mcp_pip_poll(arg: str) -> str:
+    from hermes_android import mcp
+
+    return mcp.pip_poll(arg)
+
+
+def mcp_pip_cancel(arg: str) -> str:
+    from hermes_android import mcp
+
+    return mcp.pip_cancel(arg)

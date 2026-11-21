@@ -333,3 +333,206 @@ def test_pointing_a_header_waits_for_the_apps_config_lock(home):
     _waits_for_the_config_lock(
         home, lambda: _ask("mcp_key_ref", {"name": "srv", "header": "Authorization", "env_var": "MCP_SRV_API_KEY"}),
         lambda raw: "Authorization" in (((raw.get("mcp_servers") or {}).get("srv") or {}).get("headers") or {}))
+
+
+# ------------------------------------------------------------------------------------------- mcp_pip_start/poll/cancel
+# F18: a Python server's package installs only through one named PyPI requirement, as a child of the app's launcher,
+# one job at a time, polled by quick calls. A fake launcher stands in for pip (no pip, no network in these tests).
+
+BAD_REQUIREMENT = "Only a package name from PyPI, optionally with ==version, can be installed."
+BAD_SERVER = "A server name is letters, digits, '.', '_' or '-' (at most 64) and does not start with '.'."
+NO_LAUNCHER = "Python packages cannot be installed here: this install has no Python launcher."
+BUSY = "Another package is still installing. Wait for it or cancel it."
+UNKNOWN_JOB = "That install is not known to the app any more."
+PLANTED = {"MCP_SRV_API_KEY": "canary-pip-1", "OPENROUTER_API_KEY": "canary-pip-2", "PIP_INDEX_URL": "http://evil"}
+
+FAKE_PIP = '''#!{python}
+import json, os, sys, time
+home = os.environ["HOME"]
+with open(os.path.join(home, "fake-pip-seen.json"), "w") as seen:
+    json.dump({{"argv": sys.argv[1:], "env": sorted(os.environ), "pid": os.getpid()}}, seen)
+plan_path = os.path.join(home, "fake-pip.json")
+plan = json.load(open(plan_path)) if os.path.exists(plan_path) else {{}}
+print(plan.get("print", "Successfully installed"), flush=True)
+time.sleep(plan.get("sleep", 0))
+target = sys.argv[sys.argv.index("--target") + 1]
+for rel in plan.get("files", ["pkg/__init__.py"]):
+    os.makedirs(os.path.dirname(os.path.join(target, rel)), exist_ok=True)
+    open(os.path.join(target, rel), "w").close()
+sys.exit(plan.get("exit", 0))
+'''
+
+
+@pytest.fixture
+def pip(home, tmp_path, monkeypatch):
+    """A home whose ``bin/python3`` is a fake pip, the env the app's interpreter has, and no job left over."""
+    import sys
+
+    from hermes_android import launcher, mcp
+
+    files, native_libs, runtime = tmp_path / "files", tmp_path / "app-lib" / "arm64", tmp_path / "runtime" / "b1"
+    native_libs.mkdir(parents=True)
+    runtime.mkdir(parents=True)
+    (tmp_path / "tmp").mkdir()
+    fake = native_libs / "libhermes_pyexec.so"
+    fake.write_text(FAKE_PIP.format(python=sys.executable), encoding="utf-8")
+    fake.chmod(0o755)
+    assert launcher.ensure(str(files), str(native_libs), str(runtime))
+    monkeypatch.setenv("HOME", str(files))
+    monkeypatch.setenv("TMPDIR", str(tmp_path / "tmp"))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    for name, value in PLANTED.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(mcp, "_job", None, raising=False)
+    yield files
+    job = getattr(mcp, "_job", None)
+    if job is not None and job.proc.poll() is None:
+        job.proc.kill()
+        job.proc.wait(timeout=5)
+
+
+def _plan(files, **plan):
+    (files / "fake-pip.json").write_text(json.dumps(plan), encoding="utf-8")
+
+
+def _seen(files):
+    path = files / "fake-pip-seen.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
+def _start(server="srv", requirement="mcp-server-time==2025.4.7") -> dict:
+    return _ask("mcp_pip_start", {"server": server, "requirement": requirement})
+
+
+def _finished(job: str, within: float = 10.0) -> dict:
+    import time
+
+    deadline = time.monotonic() + within
+    while True:
+        answer = _ask("mcp_pip_poll", {"job": job})
+        if answer.get("state") != "running" or time.monotonic() > deadline:
+            return answer
+        time.sleep(0.05)
+
+
+def _packages(home):
+    return home / "mcp-packages"
+
+
+def test_one_named_requirement_reaches_pip_isolated_wheels_only_and_with_no_secret(pip, home):
+    job = _start()["job"]
+    assert _finished(job)["state"] == "done"
+
+    seen = _seen(pip)
+    assert seen["argv"] == ["-m", "pip", "install", "--isolated", "--no-input", "--disable-pip-version-check",
+                            "--only-binary=:all:", "--target", str(_packages(home) / f".staging-{job}"),
+                            "mcp-server-time==2025.4.7"]
+    assert not set(seen["env"]) & {*PLANTED, "HERMES_HOME"}
+    assert set(seen["env"]) <= {"HOME", "PATH", "TMPDIR", "LANG", "LC_CTYPE"}  # LC_CTYPE: the interpreter's own
+
+
+def test_a_finished_install_is_moved_into_place_and_stays_done(pip, home):
+    job = _start()["job"]
+
+    assert _finished(job)["state"] == "done"
+    assert (_packages(home) / "srv" / "pkg" / "__init__.py").is_file()
+    assert not list(_packages(home).glob(".staging-*"))
+    assert _ask("mcp_pip_poll", {"job": job})["state"] == "done"
+
+
+def test_a_reinstall_replaces_the_old_package_whole(pip, home):
+    (_packages(home) / "srv").mkdir(parents=True)
+    (_packages(home) / "srv" / "old.py").write_text("", encoding="utf-8")
+
+    assert _finished(_start()["job"])["state"] == "done"
+    assert not (_packages(home) / "srv" / "old.py").exists()
+    assert (_packages(home) / "srv" / "pkg" / "__init__.py").is_file()
+
+
+def test_a_failed_install_keeps_the_old_package_and_redacts_its_output(pip, home):
+    (_packages(home) / "srv").mkdir(parents=True)
+    (_packages(home) / "srv" / "keep.py").write_text("", encoding="utf-8")
+    _plan(pip, exit=1, print="ERROR: Could not find a version (https://user:hunter2@host/simple/x)")
+
+    answer = _finished(_start()["job"])
+
+    assert answer["state"] == "failed"
+    assert "ERROR" in answer["tail"] and "hunter2" not in answer["tail"]
+    assert not list(_packages(home).glob(".staging-*"))
+    assert sorted(p.name for p in (_packages(home) / "srv").iterdir()) == ["keep.py"]
+
+
+def test_one_job_at_a_time_and_cancel_kills_the_child(pip, home):
+    import time
+
+    _plan(pip, sleep=60)
+    job = _start()["job"]
+    deadline = time.monotonic() + 10
+    while _seen(pip) is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    pid = _seen(pip)["pid"]
+
+    assert _start(server="other") == {"error": BUSY}
+    began = time.monotonic()
+    assert _ask("mcp_pip_cancel", {"job": job}) == {"state": "cancelled"}
+    assert time.monotonic() - began < 5
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+    assert not list(_packages(home).glob(".staging-*"))
+    assert not (_packages(home) / "srv").exists()
+    assert _ask("mcp_pip_poll", {"job": job})["state"] == "cancelled"
+
+    _plan(pip)
+    assert _finished(_start(server="other")["job"])["state"] == "done"
+
+
+def test_cancelling_a_finished_job_answers_its_final_state(pip):
+    job = _start()["job"]
+    assert _finished(job)["state"] == "done"
+
+    assert _ask("mcp_pip_cancel", {"job": job}) == {"state": "done"}
+
+
+def test_a_staging_dir_left_by_a_killed_process_is_dropped_at_the_next_start(pip, home):
+    (_packages(home) / ".staging-dead" / "half").mkdir(parents=True)
+
+    assert _finished(_start()["job"])["state"] == "done"
+    assert not (_packages(home) / ".staging-dead").exists()
+
+
+@pytest.mark.parametrize("requirement", [
+    "https://x/y.whl", "git+https://h/r", "./pkg", "/abs/pkg", "pkg @ https://h/p.whl", "-r req.txt",
+    "--index-url=http://evil", "pkg[extra]", "pkg>=1", "pkg==1.*", 'pkg; python_version>"3"', "pkg==1.0 --pre",
+    "", " pkg", "pkg\n", "pkg==", "-pkg",
+])
+def test_anything_but_a_name_with_an_optional_exact_pin_is_refused(pip, requirement):
+    assert _start(requirement=requirement) == {"error": BAD_REQUIREMENT}
+    assert _seen(pip) is None
+
+
+@pytest.mark.parametrize("requirement", ["mcp-server-time", "mcp_server_fetch==2025.4.7", "Foo.Bar", "a"])
+def test_a_name_with_an_optional_exact_pin_is_installed(pip, requirement):
+    assert _finished(_start(requirement=requirement)["job"])["state"] == "done"
+    assert _seen(pip)["argv"][-1] == requirement
+
+
+@pytest.mark.parametrize("server", ["..", ".", ".hidden", "a/b", "", "a" * 65])
+def test_a_server_name_that_is_no_plain_directory_name_is_refused(pip, server):
+    assert _start(server=server) == {"error": BAD_SERVER}
+    assert _seen(pip) is None
+
+
+def test_nothing_installs_without_a_launcher(pip, tmp_path):
+    from hermes_android import launcher
+
+    empty = tmp_path / "no-launcher"
+    empty.mkdir()
+    assert not launcher.ensure(str(pip), str(empty), str(tmp_path / "runtime" / "b1"))
+
+    assert _start() == {"error": NO_LAUNCHER}
+    assert _seen(pip) is None
+
+
+@pytest.mark.parametrize("function", ["mcp_pip_poll", "mcp_pip_cancel"])
+def test_an_unknown_job_is_said_so(pip, function):
+    assert _ask(function, {"job": "nope"}) == {"error": UNKNOWN_JOB}
