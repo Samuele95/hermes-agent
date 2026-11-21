@@ -28,6 +28,9 @@ android {
     buildFeatures { compose = true }
     // runtime.zip is deflated already; the APK stores it as is.
     androidResources { noCompress += "zip" }
+    // The installer extracts the native libraries, so the Python launcher (libhermes_pyexec.so) can be exec'd from
+    // nativeLibraryDir, the one place an app may run a binary from (decision row 9: kept only while R1 proves it).
+    packaging { jniLibs { useLegacyPackaging = true } }
 }
 
 // The runtime payload `python -m scripts.android.payload --out <dir>` assembles: an Android
