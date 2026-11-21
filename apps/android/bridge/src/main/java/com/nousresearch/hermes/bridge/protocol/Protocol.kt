@@ -37,6 +37,14 @@ object Methods {
     val LEARNING_DELETE = Method("learning.delete", LearningNodeParams.serializer(), LearningMutationResult.serializer())
     val LEARNING_DETAIL = Method("learning.detail", LearningNodeParams.serializer(), LearningDetailResult.serializer())
     val LEARNING_EDIT = Method("learning.edit", LearningEditParams.serializer(), LearningMutationResult.serializer())
+    val MCP_SERVERS_ADD = Method("mcp.servers.add", McpServersAddParams.serializer(), McpServersAddResult.serializer())
+    val MCP_SERVERS_LIST = Method("mcp.servers.list", ProfileParams.serializer(), McpServersListResult.serializer())
+    val MCP_SERVERS_OAUTH_CANCEL = Method("mcp.servers.oauth.cancel", McpOauthFlowParams.serializer(), McpOauthCancelResult.serializer())
+    val MCP_SERVERS_OAUTH_POLL = Method("mcp.servers.oauth.poll", McpOauthFlowParams.serializer(), McpOauthPollResult.serializer())
+    val MCP_SERVERS_OAUTH_START = Method("mcp.servers.oauth.start", McpOauthStartParams.serializer(), McpOauthStartResult.serializer())
+    val MCP_SERVERS_REMOVE = Method("mcp.servers.remove", McpServerNameParams.serializer(), McpServersRemoveResult.serializer())
+    val MCP_SERVERS_STATUS = Method("mcp.servers.status", ProfileParams.serializer(), McpServersStatusResult.serializer())
+    val MCP_SERVERS_TEST = Method("mcp.servers.test", McpServerNameParams.serializer(), McpServersTestResult.serializer())
     val MESSAGE_REACT = Method("message.react", MessageReactParams.serializer(), MessageReactResult.serializer())
     val MODEL_DISCONNECT = Method("model.disconnect", ModelDisconnectParams.serializer(), ModelDisconnectResult.serializer())
     val MODEL_OPTIONS = Method("model.options", ModelOptionsParams.serializer(), ModelOptionsResult.serializer())
@@ -45,6 +53,7 @@ object Methods {
     val NOUS_LOGIN_START = Method("nous.login.start", NousLoginStartParams.serializer(), NousLoginStartResult.serializer())
     val PING = Method("ping", PingParams.serializer(), PingResult.serializer())
     val PROMPT_SUBMIT = Method("prompt.submit", PromptSubmitParams.serializer(), PromptSubmitResult.serializer())
+    val RELOAD_MCP = Method("reload.mcp", ReloadMcpParams.serializer(), ReloadMcpResult.serializer())
     val REQUEST_ANSWER = Method("request.answer", RequestAnswerParams.serializer(), RequestAnswerResult.serializer())
     val SESSION_CLOSE = Method("session.close", SessionCloseParams.serializer(), SessionCloseResult.serializer())
     val SESSION_COMPRESS = Method("session.compress", SessionCompressParams.serializer(), SessionCompressResult.serializer())
@@ -709,11 +718,163 @@ data class LearningNodeParams(
 )
 
 @Serializable
+data class McpOauthCancelResult(
+    @SerialName("ok") val ok: Boolean,
+    @SerialName("status") val status: String? = null,
+    @SerialName("error_message") val errorMessage: String? = null,
+)
+
+/** ``session_id`` is the OAuth flow id returned by ``oauth.start`` (not a gateway session). */
+@Serializable
+data class McpOauthFlowParams(
+    @SerialName("profile") val profile: String? = null,
+    @SerialName("name") val name: String,
+    @SerialName("session_id") val sessionId: String,
+)
+
+@Serializable
+data class McpOauthPollResult(
+    @SerialName("ok") val ok: Boolean,
+    @SerialName("status") val status: McpOauthPollStatus,
+    @SerialName("session_id") val sessionId: String? = null,
+    @SerialName("error_message") val errorMessage: String? = null,
+    @SerialName("auth_url") val authUrl: String? = null,
+    @SerialName("tools") val tools: List<McpProbeTool>? = null,
+)
+
+@Serializable
+enum class McpOauthPollStatus {
+    @SerialName("pending") PENDING,
+    @SerialName("approved") APPROVED,
+    @SerialName("error") ERROR,
+}
+
+/** With ``client_redirect_uri`` the CLIENT hosts the loopback and relays the code via ``mcp.servers.oauth.callback``. */
+@Serializable
+data class McpOauthStartParams(
+    @SerialName("profile") val profile: String? = null,
+    @SerialName("name") val name: String,
+    @SerialName("client_redirect_uri") val clientRedirectUri: String? = null,
+)
+
+@Serializable
+data class McpOauthStartResult(
+    @SerialName("ok") val ok: Boolean,
+    @SerialName("session_id") val sessionId: String,
+    @SerialName("auth_url") val authUrl: String,
+    @SerialName("flow") val flow: String,
+)
+
+@Serializable
+data class McpProbeTool(
+    @SerialName("name") val name: String,
+    @SerialName("description") val description: String,
+)
+
+@Serializable
+enum class McpRuntimeStatus {
+    @SerialName("connected") CONNECTED,
+    @SerialName("disabled") DISABLED,
+    @SerialName("connecting") CONNECTING,
+    @SerialName("failed") FAILED,
+    @SerialName("lazy") LAZY,
+    @SerialName("configured") CONFIGURED,
+}
+
+@Serializable
+data class McpServerNameParams(
+    @SerialName("profile") val profile: String? = null,
+    @SerialName("name") val name: String,
+)
+
+/** Safe projection of ``tools.mcp_tool_discovery.get_mcp_status`` rows. */
+@Serializable
+data class McpServerRuntimeRow(
+    @SerialName("name") val name: String,
+    @SerialName("transport") val transport: String,
+    @SerialName("tools") val tools: Long,
+    @SerialName("connected") val connected: Boolean,
+    @SerialName("disabled") val disabled: Boolean,
+    @SerialName("status") val status: McpRuntimeStatus,
+    @SerialName("source") val source: McpServerSource,
+    @SerialName("plugin") val plugin: String? = null,
+)
+
+@Serializable
+enum class McpServerSource {
+    @SerialName("config") CONFIG,
+    @SerialName("plugin") PLUGIN,
+}
+
+@Serializable
 data class McpServerStatus(
     @SerialName("name") val name: String = "",
     @SerialName("status") val status: String? = null,
     @SerialName("tool_count") val toolCount: Long? = null,
     @SerialName("error") val error: String? = null,
+)
+
+/** ``tui_gateway/mcp_rpc_helpers.summarize_server`` — a server's config without secret values. */
+@Serializable
+data class McpServerSummary(
+    @SerialName("name") val name: String,
+    @SerialName("transport") val transport: String,
+    @SerialName("url") val url: String? = null,
+    @SerialName("command") val command: String? = null,
+    @SerialName("args") val args: List<String>,
+    @SerialName("env") val env: List<String>,
+    @SerialName("auth") val auth: String? = null,
+    @SerialName("oauth_tokens_present") val oauthTokensPresent: Boolean? = null,
+    @SerialName("enabled") val enabled: Boolean,
+    @SerialName("tools") val tools: JsonElement? = null,
+    @SerialName("source") val source: McpServerSource,
+    @SerialName("plugin") val plugin: String? = null,
+)
+
+/** ``preset`` (catalog id) and/or ``config`` (url/command/args/env/headers/auth/tools); a ``bearer_token`` is written to the profile's .env, only the header template persists. */
+@Serializable
+data class McpServersAddParams(
+    @SerialName("profile") val profile: String? = null,
+    @SerialName("name") val name: String,
+    @SerialName("preset") val preset: String? = null,
+    @SerialName("config") val config: JsonObject? = null,
+    @SerialName("bearer_token") val bearerToken: String? = null,
+)
+
+@Serializable
+data class McpServersAddResult(
+    @SerialName("ok") val ok: Boolean,
+    @SerialName("name") val name: String,
+    @SerialName("server") val server: McpServerSummary,
+)
+
+@Serializable
+data class McpServersListResult(
+    @SerialName("servers") val servers: List<McpServerSummary>,
+)
+
+@Serializable
+data class McpServersRemoveResult(
+    @SerialName("ok") val ok: Boolean,
+    @SerialName("removed") val removed: Boolean,
+)
+
+@Serializable
+data class McpServersStatusResult(
+    @SerialName("servers") val servers: List<McpServerRuntimeRow>,
+    @SerialName("checked_at") val checkedAt: Long,
+)
+
+/** ``ok: false`` carries ``error``; ``prompts`` / ``resources`` are only counted on success. */
+@Serializable
+data class McpServersTestResult(
+    @SerialName("ok") val ok: Boolean,
+    @SerialName("tools") val tools: List<McpProbeTool>,
+    @SerialName("error") val error: String? = null,
+    @SerialName("prompts") val prompts: Long? = null,
+    @SerialName("resources") val resources: Long? = null,
+    @SerialName("oauth_needed") val oauthNeeded: Boolean,
+    @SerialName("oauth_tokens_present") val oauthTokensPresent: Boolean? = null,
 )
 
 /** ``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` / ``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text`` only) / ``compute_host_bridge`` (``text`` + ``status``). */
@@ -1030,6 +1191,31 @@ data class QueuedPrompt(
 enum class ReactionAuthor {
     @SerialName("user") USER,
     @SerialName("agent") AGENT,
+}
+
+/** Without ``confirm`` the handler may answer ``confirm_required`` (per ``approvals.mcp_reload_confirm``); ``always`` persists the opt-out; ``rev`` is the config revision the caller wants loaded (coalescing). */
+@Serializable
+data class ReloadMcpParams(
+    @SerialName("session_id") val sessionId: String? = null,
+    @SerialName("confirm") val confirm: Boolean = false,
+    @SerialName("always") val always: Boolean = false,
+    @SerialName("rev") val rev: String? = null,
+)
+
+@Serializable
+data class ReloadMcpResult(
+    @SerialName("status") val status: ReloadMcpStatus,
+    @SerialName("message") val message: String? = null,
+    @SerialName("loaded_rev") val loadedRev: String? = null,
+    @SerialName("coalesced") val coalesced: Boolean? = null,
+    @SerialName("turn_isolation") val turnIsolation: Boolean? = null,
+    @SerialName("host_ack") val hostAck: JsonElement? = null,
+)
+
+@Serializable
+enum class ReloadMcpStatus {
+    @SerialName("confirm_required") CONFIRM_REQUIRED,
+    @SerialName("reloaded") RELOADED,
 }
 
 @Serializable

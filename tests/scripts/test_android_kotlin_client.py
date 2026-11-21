@@ -132,3 +132,19 @@ def test_the_client_names_the_backend_contract_it_was_built_against():
 
     assert gen.core_backend_contract() == DESKTOP_BACKEND_CONTRACT
     assert f"const val BACKEND_CONTRACT = {DESKTOP_BACKEND_CONTRACT}" in gen.OUT.read_text(encoding="utf-8-sig")
+
+
+MCP_CALLS = ("mcp.servers.add", "mcp.servers.list", "mcp.servers.oauth.cancel", "mcp.servers.oauth.poll",
+             "mcp.servers.oauth.start", "mcp.servers.remove", "mcp.servers.status", "mcp.servers.test", "reload.mcp")
+
+
+def test_the_subset_offers_the_mcp_calls_but_never_a_dotenv_writer():
+    # The MCP pages (batch 5) call these on the core. set_api_key writes the key to .env (D8, F1), the OAuth callback
+    # needs a listener the app does not host (D54), and the catalog is read through the app's own bridge call (bet 8):
+    # none of them exists in Kotlin, so no later unit can call one by mistake.
+    for name in MCP_CALLS:
+        assert name in gen.SURFACE.methods, name
+    for name in ("mcp.servers.set_api_key", "mcp.servers.oauth.callback", "mcp.catalog"):
+        assert name not in gen.SURFACE.methods, name
+    assert '"mcp.servers.set_api_key"' not in gen.OUT.read_text(encoding="utf-8-sig")
+    assert list(gen.SURFACE.methods) == sorted(gen.SURFACE.methods)
