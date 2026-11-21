@@ -43,11 +43,13 @@ import kotlinx.coroutines.launch
 
 /**
  * Unpacks the APK's runtime payload, once per build (both of the app's processes may ask at once), and lays out
- * the directories the core runs in (D8): `HOME` = filesDir, `HERMES_HOME` = filesDir/.hermes.
+ * the directories the core runs in (D8): `HOME` = filesDir, `HERMES_HOME` = filesDir/.hermes; the native-library
+ * directory is where the installer put the Python launcher, if it extracts the native libraries.
  */
 fun installRuntime(context: Context): HermesPaths {
     val runtime = RuntimeInstaller(File(context.noBackupFilesDir, "runtime")).install(AssetPayload(context.assets))
-    return HermesPaths(runtime, context.filesDir, File(context.filesDir, ".hermes"), context.cacheDir)
+    return HermesPaths(runtime, context.filesDir, File(context.filesDir, ".hermes"), context.cacheDir,
+                       File(context.applicationInfo.nativeLibraryDir))
 }
 
 /**

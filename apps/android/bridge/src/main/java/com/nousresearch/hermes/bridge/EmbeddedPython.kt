@@ -7,8 +7,11 @@ import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** Where the core runs: the extracted runtime, HOME, HERMES_HOME and the temp directory. */
-data class HermesPaths(val runtime: File, val home: File, val hermesHome: File, val tmp: File)
+/**
+ * Where the core runs: the extracted runtime, HOME, HERMES_HOME, the temp directory, and [nativeLibs], the app's
+ * native-library directory, where the installer extracts the Python launcher `$HOME/bin/python3` points at.
+ */
+data class HermesPaths(val runtime: File, val home: File, val hermesHome: File, val tmp: File, val nativeLibs: File)
 
 /** Receives the core's frames, on core threads. Hand each frame off and return: submitting from here deadlocks. */
 fun interface FrameSink {
@@ -41,7 +44,7 @@ object EmbeddedPython : CoreRuntime {
         listOf(paths.home, paths.hermesHome, paths.tmp).forEach { it.mkdirs() }
         threads.onCore {
             System.loadLibrary("hermes_bridge")
-            nativeStart(paths.runtime.path, paths.home.path, paths.hermesHome.path, paths.tmp.path, role)
+            with(paths) { nativeStart(runtime.path, home.path, hermesHome.path, tmp.path, nativeLibs.path, role) }
         }
     }
 
@@ -92,7 +95,9 @@ object EmbeddedPython : CoreRuntime {
     private fun readSecrets(): ByteArray = SecretsJson.encode(secrets?.all().orEmpty())
 
     @JvmStatic
-    private external fun nativeStart(runtime: String, home: String, hermesHome: String, tmp: String, role: String)
+    private external fun nativeStart(
+        runtime: String, home: String, hermesHome: String, tmp: String, nativeLibs: String, role: String,
+    )
 
     @JvmStatic
     private external fun nativeSubmit(frame: ByteArray)

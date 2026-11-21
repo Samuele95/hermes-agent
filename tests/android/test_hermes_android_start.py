@@ -33,8 +33,9 @@ def paths(tmp_path, monkeypatch):
     (runtime / "site-packages" / "extra.pth").write_text("pth-dir\n", encoding="utf-8")
     (runtime / "site-packages" / "pth-dir").mkdir()
     (runtime / "app").mkdir()
+    (tmp_path / "lib").mkdir()  # the app's nativeLibraryDir; a test puts the launcher there when it needs one
     return {"runtime": str(runtime), "home": str(tmp_path / "files"), "hermes_home": str(tmp_path / "files/.hermes"),
-            "tmp": str(tmp_path / "cache")}
+            "tmp": str(tmp_path / "cache"), "native_libs": str(tmp_path / "lib")}
 
 
 def test_the_app_owns_the_home_and_temp_directories(paths):
@@ -59,6 +60,30 @@ def test_the_wheels_openssl_legacy_provider_is_declared_off(paths, monkeypatch):
     hermes_android.prepare(paths)
 
     assert os.environ["CRYPTOGRAPHY_OPENSSL_NO_LEGACY"] == "1"
+
+
+def test_lazy_dependency_installs_are_off_in_the_app(paths, monkeypatch):
+    # The core's package manager would fetch a Termux binary (uvx, npx, node) the app can never exec (bet 6, F3).
+    # tests/conftest.py sets the variable for every host test: start from an unset one, then from a "0".
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    hermes_android.prepare(paths)
+    assert os.environ["HERMES_DISABLE_LAZY_INSTALLS"] == "1"
+
+    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "0")
+    hermes_android.prepare(paths)
+    assert os.environ["HERMES_DISABLE_LAZY_INSTALLS"] == "1"
+
+
+def test_prepare_points_home_bin_python3_at_the_extracted_launcher(paths):
+    # Both of the app's interpreters run prepare(): each start rewrites the link the MCP config names (D54 row 1).
+    launcher = Path(paths["native_libs"]) / "libhermes_pyexec.so"
+    launcher.write_bytes(b"\x7fELF")
+
+    hermes_android.prepare(paths)
+
+    link = Path(paths["home"]) / "bin" / "python3"
+    assert link.is_symlink() and os.readlink(link) == str(launcher)
+    assert (link.parent / ".hermes-runtime").read_text(encoding="utf-8").strip() == paths["runtime"]
 
 
 def test_tls_verifies_against_certifis_authorities_unless_the_host_chose_a_bundle(paths, monkeypatch):
@@ -212,7 +237,7 @@ def test_prepare_imports_no_core_module(tmp_path):
     (runtime / "site-packages").mkdir(parents=True)
     (runtime / "app").mkdir()
     paths = {"runtime": str(runtime), "home": str(tmp_path / "files"), "hermes_home": str(tmp_path / "files/.hermes"),
-             "tmp": str(tmp_path / "cache")}
+             "tmp": str(tmp_path / "cache"), "native_libs": str(tmp_path / "lib")}
     body = f"""
 hermes_android.prepare({paths!r})
 core = {{"cron", "gateway", "tui_gateway", "agent", "tools", "hermes_cli", "run_agent"}}

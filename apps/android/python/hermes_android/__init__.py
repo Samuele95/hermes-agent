@@ -11,6 +11,9 @@ the app drives with :func:`gateway_start` / :func:`gateway_stop`, whose state ch
 
 Every other call from the app goes through :func:`call`, which admits only the calls declared in
 ``bridge_contract.json`` (D26) and holds their requests and replies to it.
+
+:func:`prepare`, in both roles, keeps ``$HOME/bin/python3`` pointing at the Python launcher the installer extracted
+(:mod:`hermes_android.launcher`), the one interpreter a child process of the app can run.
 """
 
 from __future__ import annotations
@@ -53,6 +56,8 @@ def prepare(paths: dict[str, str]) -> None:
     # The wheels' OpenSSL looks for its legacy provider under the Termux prefix, unreadable from an app:
     # say so up front, or every `import cryptography` warns on stderr (logcat). Nothing else changes.
     os.environ.setdefault("CRYPTOGRAPHY_OPENSSL_NO_LEGACY", "1")
+    # The core's package manager would fetch Termux binaries (uvx, npx, node) the app cannot exec: none, ever.
+    os.environ["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
     # The process image is app_process64, not Python: subprocess spawners must see no interpreter.
     # (_base_executable is private and undeclared; the core reads it to find the base interpreter.)
     sys.executable = ""
@@ -65,6 +70,9 @@ def prepare(paths: dict[str, str]) -> None:
     import certifi
 
     os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+    from hermes_android import launcher
+
+    launcher.ensure(paths["home"], paths["native_libs"], paths["runtime"])
 
 
 def start(paths: dict[str, str], native: Native) -> None:

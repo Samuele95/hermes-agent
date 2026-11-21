@@ -113,7 +113,9 @@ class CoreCompositionTest {
     }
     /** The platform's collaborators every composition starts from (after [secrets] and [turns]: properties initialise in order). */
     private val deps = CoreDeps(secrets, turns, Notifier.None)
-    private val paths = File("/data/app-files").let { HermesPaths(File(it, "runtime"), it, File(it, ".hermes"), File(it, "cache")) }
+    private val paths = File("/data/app-files").let {
+        HermesPaths(File(it, "runtime"), it, File(it, ".hermes"), File(it, "cache"), File(it, "lib"))
+    }
 
     @Test
     fun theComposedCoreHasOpenedTheChatsSessionAndSaysWhatRuns() = runTest(UnconfinedTestDispatcher()) {
