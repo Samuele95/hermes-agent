@@ -85,6 +85,7 @@ def vendor(elves: Iterable[Path], libdir: Path, jnilibs: Path) -> dict[str, str]
 
 
 # Stdlib parts an embedded runtime never imports: its own tests and the Tk / IDLE / pip bootstraps.
+# pip itself ships from the wheel ensurepip bundles (see _bundled_pip), installed into site-packages.
 _STDLIB_SKIP = ("test", "idlelib", "tkinter", "turtledemo", "ensurepip", "__pycache__")
 _PYTHON_LIBS = ("libpython3.14.so", "libssl_python.so", "libcrypto_python.so")
 
@@ -116,10 +117,22 @@ def _copy_stdlib(prefix: Path, runtime: Path) -> None:
 def _install_wheels(wheelhouse: Path, site: Path) -> None:
     site.mkdir(parents=True)
     for wheel in sorted(wheelhouse.glob("*.whl")):
-        with zipfile.ZipFile(wheel) as archive:
-            archive.extractall(site)
-        for data in sorted(site.glob("*.data")):
-            _place_wheel_data(wheel.name, data, site)
+        _install_wheel(wheel, site)
+
+
+def _install_wheel(wheel: Path, site: Path) -> None:
+    with zipfile.ZipFile(wheel) as archive:
+        archive.extractall(site)
+    for data in sorted(site.glob("*.data")):
+        _place_wheel_data(wheel.name, data, site)
+
+
+def _bundled_pip(prefix: Path) -> Path:
+    """The pip wheel python.org's release bundles for ensurepip, covered by the tarball's pin."""
+    wheels = sorted((prefix / "lib" / "python3.14" / "ensurepip" / "_bundled").glob("pip-*-py3-none-any.whl"))
+    if len(wheels) != 1:
+        raise ValueError(f"python tarball bundles no pip wheel (found {[w.name for w in wheels]})")
+    return wheels[0]
 
 
 def _place_wheel_data(wheel: str, data: Path, site: Path) -> None:
@@ -176,6 +189,10 @@ def assemble(*, python_tarball: Path, python_sha256: str, wheelhouse: Path, runt
     prefix = work / "prefix"
     _copy_stdlib(prefix, runtime)
     _install_wheels(wheelhouse, runtime / "site-packages")
+    # pip, for packages the user installs later; a wheel set that closes over pip itself keeps its own.
+    pip = _bundled_pip(prefix)
+    if not any(wheelhouse.glob("pip-*.whl")):
+        _install_wheel(pip, runtime / "site-packages")
     commit = subprocess.run(["git", "rev-parse", "--verify", f"{ref}^{{commit}}"], cwd=repo, check=True,
                             capture_output=True, text=True, encoding="utf-8", timeout=60).stdout.strip()
     snapshot(repo, commit, runtime / "app", exclude=INERT_SNAPSHOT_DIRS)

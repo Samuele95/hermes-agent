@@ -98,12 +98,25 @@ def test_libraries_outside_the_runtime_libs_are_left_to_the_system(termux, tmp_p
     assert system_needed <= set(_elf(ext, "--print-needed"))
 
 
-def _tarball(tmp: Path, libdir_build: Path) -> Path:
-    """A python.org-shaped Android release: prefix/lib/{libpython3.14.so, python3.14/...}."""
+def _pip_wheel(path: Path, version: str) -> None:
+    import zipfile
+
+    with zipfile.ZipFile(path, "w") as whl:
+        whl.writestr("pip/__init__.py", f'__version__ = "{version}"\n')
+        whl.writestr(f"pip-{version}.dist-info/METADATA", f"Name: pip\nVersion: {version}\n")
+
+
+def _tarball(tmp: Path, libdir_build: Path, *, with_pip: bool = True) -> Path:
+    """A python.org-shaped Android release: prefix/lib/{libpython3.14.so, python3.14/...}, with the pip
+    wheel ensurepip bundles."""
     root = tmp / "pyorg"
     (root / "prefix/lib/python3.14/test").mkdir(parents=True)
     (root / "prefix/lib/python3.14/os.py").write_text("# stdlib\n")
     (root / "prefix/lib/python3.14/test/test_os.py").write_text("# stdlib tests are not shipped\n")
+    (root / "prefix/lib/python3.14/ensurepip/_bundled").mkdir(parents=True)
+    (root / "prefix/lib/python3.14/ensurepip/__init__.py").write_text('_PIP_VERSION = "26.2.1"\n')
+    if with_pip:
+        _pip_wheel(root / "prefix/lib/python3.14/ensurepip/_bundled/pip-26.2.1-py3-none-any.whl", "26.2.1")
     (root / "prefix/include/python3.14").mkdir(parents=True)
     (root / "prefix/include/python3.14/Python.h").write_text("/* C API */\n")
     for name in ("libpython3.14.so", "libssl_python.so", "libcrypto_python.so", "libsqlite3_python.so"):
@@ -252,3 +265,37 @@ def test_a_wheel_with_files_for_the_install_prefix_is_refused(tmp_path):
 
     with pytest.raises(ValueError, match=r"shared-1\.0-py3-none-any\.whl.*data"):
         payload._install_wheels(tmp_path / "wheels", tmp_path / "site-packages")
+
+
+def _runtime_names(out: Path) -> set[str]:
+    import zipfile
+
+    return set(zipfile.ZipFile(out / "assets/runtime.zip").namelist())
+
+
+def test_the_runtime_carries_python_orgs_bundled_pip_and_not_ensurepip(inputs, tmp_path):
+    payload.assemble(out=tmp_path / "out", **inputs)
+
+    names = _runtime_names(tmp_path / "out")
+    assert {"site-packages/pip/__init__.py", "site-packages/pip-26.2.1.dist-info/METADATA"} <= names
+    assert not any(n.startswith("lib/python3.14/ensurepip/") for n in names)
+
+
+def test_a_wheelhouse_pip_wins_over_the_bundled_one(inputs, tmp_path):
+    _pip_wheel(inputs["wheelhouse"] / "pip-26.3.0-py3-none-any.whl", "26.3.0")
+
+    payload.assemble(out=tmp_path / "out", **inputs)
+
+    dist_infos = {n.split("/")[1] for n in _runtime_names(tmp_path / "out")
+                  if re.match(r"site-packages/pip-[^/]+\.dist-info/", n)}
+    assert dist_infos == {"pip-26.3.0.dist-info"}
+
+
+def test_a_tarball_without_a_bundled_pip_is_refused(inputs, tmp_path):
+    bare = tmp_path / "bare"
+    (bare / "build").mkdir(parents=True)
+    inputs["python_tarball"] = _tarball(bare, bare / "build", with_pip=False)
+    inputs["python_sha256"] = __import__("hashlib").sha256(inputs["python_tarball"].read_bytes()).hexdigest()
+
+    with pytest.raises(ValueError, match="pip"):
+        payload.assemble(out=tmp_path / "out", **inputs)
