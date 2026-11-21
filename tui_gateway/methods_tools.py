@@ -1528,21 +1528,18 @@ def _(rid, params: dict) -> dict:
 # desktop plugin can manage MCP servers for ANY profile. Persistence: hermes_cli/mcp_config.py.
 @_scoped_rpc("mcp.catalog")
 def _(rid, params: dict) -> dict:
-    """``{servers: [{name, description, installed, enabled, requires: [env keys], transport}]}`` per profile."""
+    """``{servers: [{name, description, installed, enabled, requires: [required env names], transport}]}``
+    per profile."""
     mcp_catalog = _tools_mod("hermes_cli.mcp_catalog")
     out = []
     for entry in mcp_catalog.list_catalog():
-        try:
-            requires = [str(k) for k in (getattr(entry, "env_keys", None) or [])]
-        except Exception:
-            requires = []
-        transport = getattr(entry, "transport", None)  # TransportSpec → its kind string
         out.append({
             "name": entry.name, "description": getattr(entry, "description", "") or "",
             "connector_slug": getattr(entry, "connector_slug", None),
             "installed": bool(mcp_catalog.is_installed(entry.name)),
-            "enabled": bool(mcp_catalog.is_enabled(entry.name)), "requires": requires,
-            "transport": str(getattr(transport, "kind", "") or transport or "stdio")})
+            "enabled": bool(mcp_catalog.is_enabled(entry.name)),
+            "requires": [spec.name for spec in entry.auth.env if spec.required],
+            "transport": entry.transport.type})
     return _ok(rid, {"servers": out})
 
 
