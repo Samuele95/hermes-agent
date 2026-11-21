@@ -17,6 +17,9 @@
 #   --repo <dir>   hermes-agent checkout to build from (must contain the tag)
 #   --tag <tag>    immutable release tag (vX.Y.Z or vX.Y.Z+canary.<UTC timestamp>)
 #   --out <dir>    output dir (wheelhouse/ + index.json + SHA256SUMS land here)
+# Optional:
+#   --extra <name> an extra the wheelhouse also closes over, beyond acp (repeatable;
+#                  the Android app's build adds asyncssh and telegram)
 
 set -Eeuo pipefail
 
@@ -155,6 +158,7 @@ TAG=""
 COMMIT_MODE=""
 RELEASE_COMMIT=""
 OUT=""
+EXTRAS=()  # extras the wheelhouse also closes over, beyond acp (e.g. the Android app's asyncssh, telegram)
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --repo) REPO="${2:?}"; shift 2 ;;
@@ -162,11 +166,12 @@ while [ "$#" -gt 0 ]; do
         --commit) COMMIT_MODE="${2:?}"; shift 2 ;;
         --release-commit) RELEASE_COMMIT="${2:?}"; shift 2 ;;
         --out) OUT="${2:?}"; shift 2 ;;
-        *) printf 'usage: termux_build.sh --repo <dir> (--tag <tag> | --commit <full-sha>) --out <dir>\n' >&2; exit 2 ;;
+        --extra) EXTRAS+=("${2:?}"); shift 2 ;;
+        *) printf 'usage: termux_build.sh --repo <dir> (--tag <tag> | --commit <full-sha>) --out <dir> [--extra <name>]...\n' >&2; exit 2 ;;
     esac
 done
 [ -n "$REPO" ] && [ -n "$OUT" ] && { [ -n "$TAG" ] || [ -n "$COMMIT_MODE" ]; } || {
-    printf 'usage: termux_build.sh --repo <dir> (--tag <tag> | --commit <full-sha>) --out <dir>\n' >&2; exit 2; }
+    printf 'usage: termux_build.sh --repo <dir> (--tag <tag> | --commit <full-sha>) --out <dir> [--extra <name>]...\n' >&2; exit 2; }
 { [ -z "$TAG" ] || [ -z "$COMMIT_MODE" ]; } || fail "--tag and --commit are mutually exclusive"
 [ -z "$RELEASE_COMMIT" ] || { [ -n "$TAG" ] && [ -z "$COMMIT_MODE" ]; } \
     || fail "--release-commit requires --tag and conflicts with --commit"
@@ -230,8 +235,13 @@ DIGEST="$(cd "$REPO_ROOT" && python3 -c 'from pm.lock import termux_docker_diges
 IMAGE="${TERMUX_BUILDER_IMAGE:-termux/termux-docker@$DIGEST}"
 docker pull "$IMAGE"
 IMAGE="$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE")"
+EXTRA_ARGS=(--extra acp)
+for extra in "${EXTRAS[@]}"; do
+    [[ "$extra" =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "invalid extra name: $extra"
+    EXTRA_ARGS+=(--extra "$extra")
+done
 CACHE_ARGS=(--payload "$OUT_ABS" --repo "$WORK/tree" --builder "$IMAGE"
-            --platform-tag "$PLATFORM_TAG" --python-abi "$PYTHON_ABI")
+            --platform-tag "$PLATFORM_TAG" --python-abi "$PYTHON_ABI" "${EXTRA_ARGS[@]}")
 WHEELHOUSE_CACHE_OK=0
 if python3 "$HERE/wheelhouse_cache.py" check "${CACHE_ARGS[@]}"; then
     WHEELHOUSE_CACHE_OK=1
@@ -246,7 +256,7 @@ rm -f "$OUT_ABS/index.json" "$OUT_ABS/SHA256SUMS" "$WORK/resolved.txt" "$WORK/bu
 # [d] Resolve the real graph from the tag's own lock.
 log "Resolving dependency graph from the tag's uv.lock"
 ( cd "$REPO_ROOT" && python3 -m pm.build_env --source "$WORK/tree" \
-    --extra acp --export-requirements "$WORK/req.txt" ) \
+    "${EXTRA_ARGS[@]}" --export-requirements "$WORK/req.txt" ) \
     || fail "PM requirements export failed (frozen lock at $REF)"
 # Host parsing needs packaging too. Use the release lock, not runner packages.
 PACKAGING_SPEC="$(python3 - "$WORK/tree/uv.lock" <<'PY'

@@ -1,0 +1,392 @@
+package com.nousresearch.hermes.android.jobs
+
+import com.nousresearch.hermes.android.chat.StoredSessionId
+import com.nousresearch.hermes.android.gateway.GatewaySeen
+import com.nousresearch.hermes.android.gateway.GatewayStatus
+import com.nousresearch.hermes.bridge.contract.CronDeliveryTargetsReply
+import com.nousresearch.hermes.bridge.contract.CronRun
+import com.nousresearch.hermes.bridge.contract.CronRunOwnedReply
+import com.nousresearch.hermes.bridge.contract.CronSchedulerReply
+import com.nousresearch.hermes.bridge.contract.CronUpdateParams
+import com.nousresearch.hermes.bridge.protocol.CronAction
+import com.nousresearch.hermes.bridge.protocol.CronJobRow
+import com.nousresearch.hermes.bridge.protocol.CronManageParams
+import com.nousresearch.hermes.bridge.protocol.CronManageResult
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
+import kotlinx.serialization.json.JsonPrimitive
+import com.nousresearch.hermes.bridge.contract.DeliveryTarget as TargetRow
+
+/** The core's `job_id`: the only reference to a job the app ever sends (a name may repeat or change, EJ-62). */
+@JvmInline
+value class JobId(val value: String)
+
+/** A job's state as the core judges it (`effective_job_state`); a word the app does not know is [UNKNOWN]. */
+enum class JobState {
+    SCHEDULED, PAUSED, COMPLETED, ERROR, UNKNOWN;
+
+    internal companion object {
+        fun of(word: String?): JobState = when (word) {
+            "scheduled" -> SCHEDULED
+            "paused" -> PAUSED
+            "completed" -> COMPLETED
+            "error" -> ERROR
+            else -> UNKNOWN
+        }
+    }
+}
+
+/** How a job's last run ended, from the core's `last_status`; any word of its own is [OTHER]. */
+enum class RunOutcome { OK, FAILED, DELIVERY_FAILED, OTHER }
+
+/**
+ * A job's last run: when ([at]), how it ended ([outcome], with the core's own [word] for it, e.g. `blocked_config`),
+ * and the first error the core recorded for it (its run, its delivery, or its fire, already redacted by the core).
+ */
+data class LastRun(val at: String?, val outcome: RunOutcome?, val word: String?, val error: String?)
+
+/**
+ * One scheduled job as the core lists it: [schedule] and [repeat] are the core's own display, [prompt] its preview,
+ * [nextRunAt] and [LastRun.at] its own wall time, [delivery] where its result goes (last, so J5's positional calls
+ * stay as they are: V1).
+ */
+data class Job(val id: JobId, val name: String, val schedule: String, val prompt: String, val state: JobState,
+               val nextRunAt: String?, val last: LastRun?, val repeat: String?, val delivery: Delivery = Delivery.Local) {
+    /** The total runs [repeat] allows, read from the core's display (V4): `once`, `1/1` → 1; `3 times`, `2/5`; null = no limit or unknown. */
+    val times: Int? get() = repeat?.trim()?.let { shown ->
+        when {
+            shown == "once" -> 1
+            else -> (TIMES.matchEntire(shown) ?: OF_TIMES.matchEntire(shown))?.groupValues?.get(1)?.toIntOrNull()
+        }
+    }
+
+    /** [prompt] is the core's preview of a longer prompt (`prompt[:100] + "..."`): it must never be saved back (V3). */
+    val promptCut: Boolean get() = prompt.length == PREVIEW_CUT && prompt.endsWith("...")
+
+    /**
+     * The job could still fire: not paused (a disabled job reads paused) and not completed. A recurring job in error
+     * still counts, as the gateway's due-scan heals it (the Dashboard's rule).
+     */
+    val firing: Boolean get() = state != JobState.PAUSED && state != JobState.COMPLETED
+
+    companion object {
+        /** The job a core row describes, or null for a row without an id (skipped, never a crash). */
+        fun of(row: CronJobRow): Job? {
+            if (row.jobId.isBlank()) return null
+            val error = listOf(row.lastError, row.lastDeliveryError, row.lastFireError).firstOrNull { !it.isNullOrBlank() }
+            val outcome = row.lastStatus?.let {
+                when (it) {
+                    "ok" -> RunOutcome.OK
+                    "error" -> RunOutcome.FAILED
+                    "delivery_failed" -> RunOutcome.DELIVERY_FAILED
+                    else -> RunOutcome.OTHER
+                }
+            }
+            val last = if (row.lastRunAt == null && row.lastStatus == null && error == null) null
+                       else LastRun(row.lastRunAt, outcome, row.lastStatus, error)
+            return Job(id = JobId(row.jobId), name = row.name.ifBlank { row.jobId }, schedule = row.schedule,
+                       prompt = row.promptPreview, state = JobState.of(row.state), nextRunAt = row.nextRunAt, last = last,
+                       repeat = (row.repeat as? JsonPrimitive)?.takeIf { it.isString }?.content,
+                       delivery = Delivery.parse(row.deliver))
+        }
+    }
+}
+
+private val TIMES = Regex("""^(\d+) times$""")
+private val OF_TIMES = Regex("""^\d+/(\d+)$""")
+private const val PREVIEW_CUT = 103  // tools/cronjob_job_args.py: prompt[:100] + "..."
+
+/**
+ * The core ticker's own record: seconds since its last heartbeat and its last good tick (null: no stamp, so the age
+ * cannot be told), its last error (redacted), and the core's threshold past which a heartbeat is stale. An age past
+ * [Int] fails the read, never truncated.
+ */
+data class TickerFacts(val heartbeatAgeS: Int?, val successAgeS: Int?, val lastError: String?, val staleAfterS: Int) {
+    companion object {
+        fun of(reply: CronSchedulerReply): TickerFacts =
+            TickerFacts(reply.heartbeatAgeS?.let(Math::toIntExact), reply.successAgeS?.let(Math::toIntExact),
+                        reply.lastError, Math.toIntExact(reply.staleAfterS))
+    }
+}
+
+/** Why the scheduled jobs will not run. */
+sealed interface JobsWarning {
+    /** The always-on gateway, where jobs run, is not running: off, starting, stopping, failed or died. */
+    data class GatewayOff(val status: GatewayStatus) : JobsWarning
+
+    /** The gateway runs, but its ticker last stamped [minutes] ago; [error] is the last one it recorded. */
+    data class NotTicking(val minutes: Int, val error: String?) : JobsWarning
+}
+
+/**
+ * Whether the [jobs] will not run, and why (D39 bet 8, F2): asked only while one of them could still fire; the app's
+ * own gateway record ([seen]) first, then the core ticker's heartbeat ([ticker]), stale only past the core's own
+ * threshold. An unknown heartbeat (no stamp, or an unreadable ticker) is no warning: it cannot be told, which is not
+ * dead (EJ-55). The core's own `gateway_running` and `warning` in its [CronManageResult] are deliberately not inputs:
+ * they are a guess made in the chat process, and their remedy names commands a phone cannot run.
+ */
+fun jobsWarning(seen: GatewaySeen, ticker: TickerFacts?, jobs: List<Job>): JobsWarning? {
+    if (jobs.none { it.firing }) return null
+    if (seen.status != GatewayStatus.RUNNING) return JobsWarning.GatewayOff(seen.status)
+    val age = ticker?.heartbeatAgeS ?: return null
+    return if (age > ticker.staleAfterS) JobsWarning.NotTicking(maxOf(1, age / 60), ticker.lastError) else null
+}
+
+/** A Run now the user asked for (F1): the [lastAt] the core showed then, and when ([askedAtMs], monotonic). */
+data class RunMark(val lastAt: String?, val askedAtMs: Long)
+
+/** How long a queued mark lasts when nothing moves: two ticks of the gateway's 60 s ticker (§2.4 invariant 3). */
+const val QUEUED_FOR_MS = 120_000L
+
+/**
+ * The marks that still stand after a list: a job still listed and still scheduled whose last run is the one it
+ * showed when asked, asked less than [QUEUED_FOR_MS] ago. A moved `last_run_at` means the gateway ran it (V12).
+ */
+fun stillQueued(marks: Map<JobId, RunMark>, jobs: List<Job>, nowMs: Long): Map<JobId, RunMark> =
+    marks.filter { (id, mark) ->
+        val job = jobs.find { it.id == id }
+        job != null && job.state == JobState.SCHEDULED && job.last?.at == mark.lastAt && nowMs - mark.askedAtMs < QUEUED_FOR_MS
+    }
+
+private val WALL_MINUTE = Regex("""^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})""")
+
+/** The core's ISO time as its own wall time to the minute (`2026-11-13 18:05`); any other text as the core wrote it. */
+fun wallTime(iso: String): String = WALL_MINUTE.find(iso)?.let { "${it.groupValues[1]} ${it.groupValues[2]}" } ?: iso
+
+/** How many of a job's runs the sheet asks for (§3.3: `cron_runs(id, 20)`); the core caps any ask at 100. */
+const val RUNS_SHOWN = 20
+
+/**
+ * One past run of a job, as the core keeps it: its own stored session [sessionId] (the app never reads the job
+ * out of it, EJ-62), when it began and ended (epoch s; [endedAt] null: no end recorded), its [messages], the
+ * core's [preview] of its first prompt, and [active]: no end and active in the last 300 s (the core's window). A
+ * count past [Int] fails the read, never truncated.
+ */
+data class JobRun(val sessionId: StoredSessionId, val startedAt: Long, val endedAt: Long?, val messages: Int,
+                  val preview: String?, val active: Boolean) {
+    companion object {
+        /** The run a core row describes, or null for a row without a session id (skipped, never a crash). */
+        fun of(row: CronRun): JobRun? {
+            if (row.sessionId.isBlank()) return null
+            // No check of the id's shape: the core's query already binds it to the job.
+            return JobRun(StoredSessionId(row.sessionId), row.startedAt, row.endedAt, Math.toIntExact(row.messages),
+                          row.preview?.trim()?.ifEmpty { null }, row.active)
+        }
+    }
+}
+
+/** Where a run stands: still going ([RUNNING]), never closed and quiet ([UNFINISHED]), or closed ([ENDED]). */
+enum class RunPhase { RUNNING, UNFINISHED, ENDED }
+
+/** A run with no end is running while the core calls it active; otherwise it never closed (V9). */
+val JobRun.phase: RunPhase get() = when {
+    endedAt != null -> RunPhase.ENDED
+    active -> RunPhase.RUNNING
+    else -> RunPhase.UNFINISHED
+}
+
+/**
+ * Whether the gateway's scheduler still owns a job's run (the core's `cron_run_scheduler_owned`, which the
+ * Dashboard stamps as `scheduler_owned`): true while a live process holds the run's execution, false once none does
+ * or the run ended, null when the core cannot say (not a run, no such session, an older core). Stronger than
+ * [JobRun.active]'s 300 s window, which a run inside a long tool call fails (/architect 20261113T220113Z #4).
+ */
+data class RunOwnership(val owned: Boolean?) {
+    companion object {
+        fun of(reply: CronRunOwnedReply): RunOwnership = RunOwnership(reply.owned)
+    }
+}
+
+/**
+ * What the Scheduled jobs page is doing, one thing at a time (/architect 20261113T220113Z #1, §2 JobActivity):
+ * nothing ([Idle]), the first list ([Listing]), a save ([Saving]), a pause or resume of one job ([Acting]), a delete
+ * ([Deleting]), the first read of a job's runs ([Showing]), opening one run in the chat ([Opening]), or a Run now
+ * ([Triggering]). Each is admitted only while the page is [Idle] and ended only by the step that began it, so a re-list
+ * on `cron.changed` ends none but its own [Listing].
+ */
+sealed interface JobActivity {
+    data object Idle : JobActivity
+
+    data object Listing : JobActivity
+
+    data object Saving : JobActivity
+
+    data class Acting(val id: JobId) : JobActivity
+
+    data class Deleting(val id: JobId) : JobActivity
+
+    data class Showing(val id: JobId) : JobActivity
+
+    data class Opening(val run: StoredSessionId) : JobActivity
+
+    data class Triggering(val id: JobId) : JobActivity
+}
+
+/** A run's start (epoch s) as the phone's wall time to the minute (`2026-11-13 09:30`), as [wallTime] writes the core's. */
+fun runTime(epochS: Long, zone: TimeZone = TimeZone.getDefault()): String =
+    SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.ROOT).apply { timeZone = zone }.format(Date(epochS * 1000))
+
+/** A span of [minutes] in the largest whole unit: `12 min`, `3 h`, `2 d`. */
+fun elapsed(minutes: Int): String = when {
+    minutes < 60 -> "$minutes min"
+    minutes < 1440 -> "${minutes / 60} h"
+    else -> "${minutes / 1440} d"
+}
+
+/** When a job runs, as one of the form's presets; [wire] is the core's own grammar, and the core judges it (F6, DC-J7). */
+sealed interface Schedule {
+    data class Every(val minutes: Int) : Schedule
+    data class Daily(val hour: Int, val minute: Int) : Schedule
+    data class Weekdays(val hour: Int, val minute: Int) : Schedule
+    data class Once(val inMinutes: Int) : Schedule
+    data class Custom(val text: String) : Schedule
+}
+
+/** The schedule in the core's grammar (`parse_schedule`); a clock is a cron line, minute first (`30 9 * * *` is 09:30). */
+fun Schedule.wire(): String = when (this) {
+    is Schedule.Every -> "every ${minutes}m"
+    is Schedule.Daily -> "$minute $hour * * *"
+    is Schedule.Weekdays -> "$minute $hour * * 1-5"
+    is Schedule.Once -> "in ${inMinutes}m"
+    is Schedule.Custom -> text.trim()
+}
+
+enum class SchedulePreset { EVERY, DAILY, WEEKDAYS, ONCE, CUSTOM }
+
+/**
+ * The schedule fields as typed (V2); [schedule] is what they make, null while they make none. Only the input is
+ * shaped here (whole minutes from 1, a clock's hour and minute); a count's only upper bound is its `Int`, as the
+ * core's grammar has none; the grammar, and all of [SchedulePreset.CUSTOM], is the core's to judge.
+ */
+data class ScheduleDraft(val preset: SchedulePreset = SchedulePreset.DAILY, val minutes: String = "30",
+                         val hour: String = "9", val minute: String = "0", val text: String = "") {
+    val schedule: Schedule? get() {
+        val span = minutes.trim().toIntOrNull()?.takeIf { it >= 1 }
+        val h = hour.trim().toIntOrNull()?.takeIf { it in 0..23 }
+        val m = minute.trim().toIntOrNull()?.takeIf { it in 0..59 }
+        return when (preset) {
+            SchedulePreset.EVERY -> span?.let { Schedule.Every(it) }
+            SchedulePreset.ONCE -> span?.let { Schedule.Once(it) }
+            SchedulePreset.DAILY -> if (h != null && m != null) Schedule.Daily(h, m) else null
+            SchedulePreset.WEEKDAYS -> if (h != null && m != null) Schedule.Weekdays(h, m) else null
+            SchedulePreset.CUSTOM -> text.trim().takeIf { it.isNotEmpty() }?.let { Schedule.Custom(it) }
+        }
+    }
+}
+
+/**
+ * What one of the form's digit fields keeps of the text typed: its digits, and for a [CLOCK] (an hour, a minute) two
+ * at most, which is input shaping (J6 V2). A [COUNT] (minutes, times to run) keeps every digit: the core's grammar
+ * bounds no count (`parse_duration`'s `\d*`), so one is never cut to a length; a count the form cannot take shows
+ * red instead (/improve 20261113T221531Z #1).
+ */
+enum class DigitField {
+    COUNT, CLOCK;
+
+    fun keep(typed: String): String = typed.filter(Char::isDigit).let { if (this == CLOCK) it.take(2) else it }
+}
+
+/** Where a job's result goes (F10): saved only, a platform's home chat, or the core's own words, kept as they are. */
+sealed interface Delivery {
+    /** Saved on the phone only (`local`). */
+    data object Local : Delivery
+
+    /** The home chat of platform [id] (`telegram`). */
+    data class Platform(val id: String) : Delivery
+
+    /** The core's own words for anything else (`origin`, an explicit chat, a list): shown as they are and kept unchanged on edit. */
+    data class Other(val raw: String) : Delivery
+
+    companion object {
+        private val PLATFORM = Regex("^[a-z][a-z0-9_]*$")
+
+        /** A row's `deliver` (null or blank is the core's default, `local`); `parse(d.wire()) == d` for every value it returns. */
+        fun parse(raw: String?): Delivery {
+            val word = raw?.trim()
+            return when {
+                word.isNullOrEmpty() || word == "local" -> Local
+                word != "origin" && PLATFORM.matches(word) -> Platform(word)
+                else -> Other(raw)
+            }
+        }
+    }
+}
+
+/** The delivery as the core's `deliver` word. */
+fun Delivery.wire(): String = when (this) {
+    Delivery.Local -> "local"
+    is Delivery.Platform -> id
+    is Delivery.Other -> raw
+}
+
+/** One place a job may deliver to; [homeSet] false: the platform has no home chat yet ("send /sethome to the bot first"). */
+data class DeliveryTarget(val delivery: Delivery, val name: String, val homeSet: Boolean)
+
+/** Local first, as the Dashboard's route prepends it, then the core's own targets with their home flag; null (unread) is Local alone (V7). */
+fun deliveryTargets(reply: CronDeliveryTargetsReply?): List<DeliveryTarget> =
+    listOf(DeliveryTarget(Delivery.Local, "local", homeSet = true)) +
+        reply?.targets.orEmpty().map { row: TargetRow -> DeliveryTarget(Delivery.parse(row.id), row.name, row.homeSet) }
+            .filter { it.delivery != Delivery.Local }
+
+/**
+ * The job being made ([id] null) or edited: the form's parameter object (§3.3). [schedule] null on an edit keeps the
+ * job's own (only while no preset is picked: [canSave]); [repeat] null is no limit. The draft is UI state, never
+ * saved.
+ */
+data class JobForm(val id: JobId?, val name: String, val prompt: String, val schedule: Schedule?,
+                   val delivery: Delivery, val repeat: Int?) {
+    companion object {
+        /** A new job: daily at 09:00, delivered locally, no limit. */
+        fun blank(): JobForm = JobForm(null, "", "", ScheduleDraft().schedule, Delivery.Local, null)
+
+        /** [job]'s own values; its schedule is kept (null), and a prompt the core shortened starts empty (V3). */
+        fun of(job: Job): JobForm =
+            JobForm(job.id, job.name, if (job.promptCut) "" else job.prompt, schedule = null, job.delivery, job.times)
+    }
+}
+
+/** `cron.manage add` in the core's words, or null while the form has no prompt or no schedule. */
+fun JobForm.addParams(): CronManageParams? {
+    val schedule = schedule ?: return null
+    if (prompt.isBlank()) return null
+    return CronManageParams(action = CronAction.ADD, name = name.trim().ifEmpty { null }, schedule = schedule.wire(),
+                            prompt = prompt.trim(), repeat = repeat?.let(::JsonPrimitive), deliver = delivery.wire())
+}
+
+/**
+ * The edit of [job] as `cron_update` takes it: the job's id and only the fields the user changed, each other one
+ * null (DC-J8, invariant 2); null when nothing changed. The schedule is sent only when a preset was picked, never
+ * derived from the job's own: that is the core's display, which does not parse back (`once in 45m` is refused).
+ * Choosing no limit on a limited job sends 0, which the core reads as forever.
+ */
+fun JobForm.changesFrom(job: Job): CronUpdateParams? {
+    val name = name.trim().takeIf { it.isNotEmpty() && it != job.name }
+    val prompt = prompt.trim().takeIf { it.isNotEmpty() && it != job.prompt.trim() }
+    val schedule = schedule?.wire()
+    val deliver = delivery.takeIf { it != job.delivery }?.wire()
+    val repeat = if (repeat == job.times) null else repeat ?: 0
+    if (name == null && prompt == null && schedule == null && deliver == null && repeat == null) return null
+    return CronUpdateParams(jobId = job.id.value, name = name, schedule = schedule, prompt = prompt, deliver = deliver, repeat = repeat?.toLong())
+}
+
+/**
+ * Whether the form can be saved: a new one with a prompt and a schedule; an edit of the listed [job] that changes
+ * something. [picked] is the preset the form shows chosen, null for an edit's keep row (the job's own schedule).
+ * While a picked preset makes no schedule, nothing is saved, new or edit: its null [JobForm.schedule] would read as
+ * "keep", and the job's old schedule would stay beside a red field (K9 FOUND 1).
+ */
+fun JobForm.canSave(job: Job?, picked: SchedulePreset?): Boolean =
+    (picked == null || schedule != null) && (if (id == null) addParams() != null else job != null && changesFrom(job) != null)
+
+/** The runs a job may make: a one-shot runs once (as the core sets it); otherwise the typed limit, blank or 0 being none. */
+fun repeatOf(schedule: Schedule?, typed: String): Int? =
+    if (schedule is Schedule.Once) 1 else typed.trim().toIntOrNull()?.takeIf { it > 0 }
+
+/**
+ * Whether the typed limit is one the form can send: blank or 0 (none), or a whole count within `Int`. A count past
+ * it would read as none in [repeatOf], so it is shown red and not saved (/improve 20261113T221531Z #1); the core's
+ * normalize_repeat_value bounds none.
+ */
+fun repeatFits(typed: String): Boolean = typed.isBlank() || typed.trim().toIntOrNull() != null

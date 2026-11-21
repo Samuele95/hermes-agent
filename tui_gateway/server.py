@@ -167,16 +167,16 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # ── Async RPC dispatch: slow handlers (seconds to minutes) would leave approval.respond and
 # session.interrupt unread in the stdin pipe, so only THESE go to a small thread pool; everything else
 # stays inline so fast-path ordering stays sane (write_json is _stdout_lock-guarded). Why each is slow:
-# billing/subscription/usage = blocking portal (+Stripe) round-trips; complete.* = git ls-files /
-# prompt_toolkit import + skill scan; model.options = credential pool + pricing + provider probe;
-# pet.* = network or PNG decode (generate = several image-model round-trips); reload.mcp /
-# mcp.servers.* = rediscovery, cold npx spawn, ~30s OAuth wait; profiles.* = skill-tree walk + state.db
-# open; bot_relay.* = a FULL one-turn agent conversation (600s); setup.* / session.active_list =
-# Desktop-polled and under GIL pressure block the WS read loop (false "needs setup", stalled
-# interrupts); voice.*/wake.* = SYNCHRONOUS faster-whisper install (300s); session.workspace.move =
-# git subprocess probes on an arbitrary (maybe slow) mount; session.save = a full stored-session read + JSON
-# render (up to sessions.max_export_messages rows, ~0.8s at the default cap); onboarding.start = session
-# creation + a prompt.submit; onboarding.state = a bounded wait on the boot-time due answer.
+# billing/subscription/usage = blocking portal (+Stripe) round-trips; complete.* = git ls-files / prompt_toolkit
+# import + skill scan; skills.reload = a full rescan of every skill dir + the plugin projection (~1 s on slow
+# storage); model.options = credential pool + pricing + provider probe; pet.* = network or PNG decode (generate
+# = several image-model round-trips); reload.mcp / mcp.servers.* = rediscovery, cold npx spawn, ~30s OAuth wait;
+# profiles.* = skill-tree walk + state.db open; bot_relay.* = a FULL one-turn agent conversation (600s); setup.*
+# / session.active_list = Desktop-polled and under GIL pressure block the WS read loop (false "needs setup",
+# stalled interrupts); voice.*/wake.* = SYNCHRONOUS faster-whisper install (300s); session.workspace.move = git
+# subprocess probes on an arbitrary (maybe slow) mount; session.save = a full stored-session read + JSON render
+# (up to sessions.max_export_messages rows, ~0.8s at the default cap); onboarding.start = session creation + a
+# prompt.submit; onboarding.state = a bounded wait on the boot-time due answer.
 _LONG_HANDLERS = frozenset({
     "session.foreign.list", "session.foreign.preview", "session.foreign.import",
     "billing.state", "subscription.state", "subscription.preview", "subscription.change",
@@ -184,14 +184,14 @@ _LONG_HANDLERS = frozenset({
     "browser.manage", "cli.exec", "complete.path", "complete.slash", "llm.oneshot", "model.options",
     "pet.cells", "pet.gallery", "pet.generate", "pet.hatch", "pet.info", "pet.select", "pet.thumb",
     "learning.frames", "plugins.manage", "plugins.catalog.lookup", "reload.mcp", "mcp.servers.test",
-    "mcp.servers.oauth.start",
+    "mcp.servers.oauth.start", "nous.login.start",
     "process.list", "profiles.configure", "profiles.create", "profiles.describe", "profiles.get_asset",
     "profiles.list", "profiles.set_asset", "bot_relay.roster.sync", "bot_relay.outbox.drain",
     "bot_relay.deliver", "bot_relay.reply", "image.generate", "projects.discover_repos",
     "projects.record_repos", "projects.for_cwd", "projects.tree", "projects.project_sessions",
     "setup.runtime_check", "setup.status", "free_tier.provision", "voice.toggle", "voice.record", "voice.tts", "wake.start",
     "wake.status", "session.active_list", "session.branch", "session.compress", "session.list",
-    "session.resume", "session.save", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
+    "session.resume", "session.save", "session.workspace.move", "shell.exec", "skills.manage", "skills.reload", "slash.exec",
     "onboarding.start", "onboarding.state",
     "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
     "shared_metrics.set",  # consent reconcile waits on the metrics store's write lock
@@ -1208,12 +1208,12 @@ def _start_agent_build(sid: str, session: dict) -> None:
         except Exception as e:
             from agent.auxiliary_unavailable import ProviderNotConfiguredError
             current["agent_error"] = str(e)
-            # A client can route "no provider is set up" to its setup flow instead of a dead-end
-            # error toast — but only if it can tell. The sentence is for the reader, the code is
-            # for the client; older clients keep matching the text.
-            _emit("error", sid, {
-                "message": agent_init_failed_message(e),
-                **({"code": "provider_not_configured"} if isinstance(e, ProviderNotConfiguredError) else {})})
+            # A client can route "no provider is set up" to its setup flow, but only if it can tell: the sentence is
+            # for the reader, the code for the client. A record closed or replaced while it built tells no one: its
+            # frame would fall through write_json to stdout, a log sink outside the stdio TUI (logcat, desktop.log).
+            if _sessions.get(sid) is current:
+                _emit("error", sid, {"message": agent_init_failed_message(e), **(
+                    {"code": "provider_not_configured"} if isinstance(e, ProviderNotConfiguredError) else {})})
         finally:
             _finish_agent_build(
                 sid, key, current, notify_registered=notify_registered, scopes=scopes, session_db=session_db)

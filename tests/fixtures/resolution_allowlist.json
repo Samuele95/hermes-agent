@@ -549,6 +549,11 @@
     "kind": "bare_which"
   },
   {
+    "path": "tools/environments/ssh.py",
+    "symbol": "openssh_client_missing",
+    "kind": "bare_which"
+  },
+  {
     "path": "tools/mcp_tool_config.py",
     "symbol": "_resolve_stdio_command",
     "kind": "bare_which"

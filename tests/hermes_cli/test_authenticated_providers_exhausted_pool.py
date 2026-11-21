@@ -22,6 +22,10 @@ class _FakePool:
         # ...but none of them are usable when exhausted/dead.
         return self._available
 
+    def has_hydrated_credentials(self) -> bool:
+        # ...each holding its secret: exhausted, not signed out.
+        return True
+
 
 def _patch_opencode_pool(monkeypatch, *, available: bool):
     """Make the opencode-go aggregator look configured but with a pool whose

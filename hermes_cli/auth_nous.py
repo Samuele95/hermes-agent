@@ -809,6 +809,26 @@ def refresh_nous_oauth_pure(
         on_state_update=on_state_update)
 
 
+def nous_auth_state_from_token(
+    token_data: dict[str, Any], *, portal_base_url: str, client_id: str, scope: Optional[str]) -> dict[str, Any]:
+    """The auth state a device-code token response starts as, before ``refresh_nous_oauth_from_state``
+    validates it; ``scope`` stands in when the token response omits its own."""
+    now = datetime.now(UTC)
+    token_ttl = int(token_data.get("expires_in") or 0)
+    return {
+        "portal_base_url": portal_base_url,
+        "inference_base_url": token_data.get("inference_base_url"),
+        "client_id": client_id,
+        "scope": token_data.get("scope") or scope,
+        "token_type": token_data.get("token_type", "Bearer"),
+        "access_token": token_data["access_token"],
+        "refresh_token": token_data.get("refresh_token"),
+        "obtained_at": now.isoformat(),
+        "expires_at": datetime.fromtimestamp(now.timestamp() + token_ttl, tz=UTC).isoformat() if token_ttl else None,
+        "expires_in": token_ttl,
+    }
+
+
 def refresh_nous_oauth_from_state(
     src: dict[str, Any], *, timeout_seconds: float = 15.0, force_refresh: bool = False,
     on_state_update: Optional[Callable[[dict[str, Any], str], None]] = None) -> dict[str, Any]:

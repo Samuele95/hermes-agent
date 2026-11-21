@@ -49,6 +49,15 @@ def adopt_external_logins_enabled() -> bool:
     return enabled
 
 
+def _is_source_suppressed_fn() -> Callable[[str, str], bool]:
+    """``hermes_cli.auth.is_source_suppressed`` (late-bound), or an always-False stub."""
+    try:
+        from hermes_cli.auth import is_source_suppressed
+        return is_source_suppressed
+    except ImportError:
+        return lambda _p, _s: False
+
+
 @dataclass
 class RemovalResult:
     """Outcome of removing a credential source.

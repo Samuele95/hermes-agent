@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Iterable
 
 from tools.environments.base import BaseEnvironment, EnvironmentConnectionError
-from tools.environments.base_output import _popen_bash
+from tools.environments.base_output import ProcessHandle, _popen_bash
 from tools.environments.file_sync import (
     FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
 from tools.environments.remote_common import (
@@ -29,12 +29,42 @@ _SSH_MULTIPLEX = os.name != "nt"
 _load_hermes_env_vars = load_hermes_env_vars
 
 
+def openssh_client_missing() -> list[str]:
+    """Which of the OpenSSH programs this backend's default transport runs (``ssh``, ``scp``) are not on PATH.
+    The same lookup as :func:`_ensure_ssh_available`, which that transport then requires."""
+    return [tool for tool in ("ssh", "scp") if not shutil.which(tool)]
+
+
+def openssh_client_available() -> bool:
+    """Both OpenSSH programs this backend's default transport runs resolve."""
+    return not openssh_client_missing()
+
+
 def _ensure_ssh_available() -> None:
     """Fail fast with a clear error when the SSH client is unavailable."""
     for tool in ("ssh", "scp"):
         if not shutil.which(tool):
             raise RuntimeError(f"{tool.upper()} is not installed or not in PATH. "
                                "Install OpenSSH client: apt install openssh-client")
+
+
+def _relative_to_sync_base(remote_path: str, base: str) -> str:
+    """*remote_path* relative to the sync base; refuses a path that is the base or escapes it."""
+    try:
+        rel_remote = os.path.relpath(remote_path, base)
+    except ValueError as exc:
+        raise RuntimeError(f"remote path {remote_path!r} is not under sync base {base!r}") from exc
+    if rel_remote == "." or rel_remote.startswith("../"):
+        raise RuntimeError(f"remote path {remote_path!r} escapes sync base {base!r}")
+    return rel_remote
+
+
+def _only_sockets_skipped(returncode: int, stderr: str) -> bool:
+    """A remote ``tar c`` that exited 2 only because it skipped sockets not named ``*.sock``: the one
+    failure a sync-back tolerates, anchored to the diagnostic suffix so a filename merely containing
+    "socket ignored" cannot sneak through."""
+    lines = [line for line in stderr.splitlines() if line.strip()]
+    return returncode == 2 and bool(lines) and all(line.endswith(": socket ignored") for line in lines)
 
 
 def _sync_error(reason: str, subject: str, what: str = "the SSH connection") -> EnvironmentConnectionError:
@@ -72,7 +102,7 @@ class SSHEnvironment(BaseEnvironment):
             socket_key = f"{socket_key}:probe:{self._session_id}"
         _socket_id = hashlib.sha256(socket_key.encode()).hexdigest()[:16]
         self.control_socket = self.control_dir / f"{_socket_id}.sock"
-        _ensure_ssh_available()
+        self._ensure_client()
         self._establish_connection()
         if probe_only:
             self._sync_manager = None
@@ -88,6 +118,10 @@ class SSHEnvironment(BaseEnvironment):
                 bulk_upload_fn=self._ssh_bulk_upload, bulk_download_fn=self._ssh_bulk_download)
             self._sync_manager.sync(force=True)
         self.init_session()
+
+    def _ensure_client(self) -> None:
+        """The transport's client must be present; here, OpenSSH's ``ssh`` and ``scp``."""
+        _ensure_ssh_available()
 
     def _control_socket_for(self, send_env: tuple[str, ...]) -> Path:
         """One ControlMaster per SendEnv name-set, beside the plain target socket: a mux master only
@@ -192,13 +226,7 @@ class SSHEnvironment(BaseEnvironment):
         # only that case falls back to a plain copy, other OSErrors re-raise.
         with tempfile.TemporaryDirectory(prefix="hermes-ssh-bulk-") as staging:
             for host_path, remote_path in files:
-                try:
-                    rel_remote = os.path.relpath(remote_path, base)
-                except ValueError as exc:
-                    raise RuntimeError(f"remote path {remote_path!r} is not under sync base {base!r}") from exc
-                if rel_remote == "." or rel_remote.startswith("../"):
-                    raise RuntimeError(f"remote path {remote_path!r} escapes sync base {base!r}")
-                staged = os.path.join(staging, rel_remote)
+                staged = os.path.join(staging, _relative_to_sync_base(remote_path, base))
                 os.makedirs(os.path.dirname(staged), exist_ok=True)
                 try:
                     os.symlink(os.path.abspath(host_path), staged)
@@ -258,13 +286,7 @@ class SSHEnvironment(BaseEnvironment):
             result = subprocess.run(ssh_cmd, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.PIPE, timeout=120, check=False)
         if result.returncode != 0:
             stderr = result.stderr.decode(errors="replace").strip()
-            # A socket not named *.sock is the only rc=2 we knowingly accept, and only when
-            # nothing else was reported — anchored to the diagnostic suffix so a filename merely
-            # containing "socket ignored" cannot sneak through. Every other status still fails.
-            diagnostic_lines = [line for line in stderr.splitlines() if line.strip()]
-            tolerated = result.returncode == 2 and bool(diagnostic_lines) and all(
-                line.endswith(": socket ignored") for line in diagnostic_lines)
-            if not tolerated:
+            if not _only_sockets_skipped(result.returncode, stderr):
                 raise _sync_error(f"SSH bulk download failed: {stderr}",
                                   f"File sync from {self.host}")
 
@@ -277,7 +299,7 @@ class SSHEnvironment(BaseEnvironment):
             self._sync_manager.sync()  # rate-limited internally
 
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
-                  stdin_data: str | None = None) -> subprocess.Popen:
+                  stdin_data: str | None = None) -> ProcessHandle:
         """Forward the passthrough allowlist (skill ``required_environment_variables`` +
         ``terminal.env_passthrough``) the way docker does: ``SendEnv`` carries the names, the ssh
         client's env carries the values, so secrets never enter the remote ``bash -c`` argv. The

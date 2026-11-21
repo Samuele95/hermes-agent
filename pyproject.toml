@@ -258,6 +258,9 @@ piper = [
 ]
 modal = ["modal==1.5.5"]
 daytona = ["daytona==0.155.0"]
+# Native SSH transport for the ssh terminal backend where no OpenSSH client is
+# installed (the Android app, Termux without openssh, Windows without ssh.exe).
+asyncssh = ["asyncssh==2.24.1"]
 vercel = ["vercel==0.7.2"]
 google-meet = ["playwright==1.62.0", "websockets==15.0.1"]
 messaging = [

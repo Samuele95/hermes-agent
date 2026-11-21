@@ -172,12 +172,15 @@ def _credential_pool_is_usable(provider: str, *, raw_pool_present: bool = False,
     stay visible (``raw_pool_present``); a real pool's availability is authoritative — an
     all-exhausted/dead pool is not authenticated. ``for_picker`` (human-facing pickers) also
     accepts a pool whose entries are all in cooldown: a rate-limited provider is not a signed-out
-    one, and limits are per-model for many providers, so another model may still work."""
+    one, and limits are per-model for many providers, so another model may still work. It still needs
+    a row that holds its secret: an ``env:VAR`` reference row outlives its VAR on disk (#9331) and is no
+    credential."""
     try:
         from agent.credential_pool import load_pool
         pool = load_pool(provider)
         if pool.has_credentials():
-            return for_picker or pool.has_available()
+            # Pickers keep a pool in cooldown visible, but only one that holds a secret (#9331 rows outlive their VAR).
+            return pool.has_hydrated_credentials() if for_picker else pool.has_available()
     except Exception:
         pass
     return raw_pool_present

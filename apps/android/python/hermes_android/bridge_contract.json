@@ -1,0 +1,614 @@
+{
+  "$comment": "The app's calls into its own Python half (hermes_android.call). Each call takes a JSON object with exactly its params and answers either its reply or {\"error\": <words for the user>}. Events are the lines the Python half emits on its own (hermes_android.event_line); secrets are the keystore variable names (for custom-endpoint slots, their fixed prefix and suffix) both halves use. Types: string, integer, boolean, T? (a T or null), [T] (a list of T), or an enum or a record below. The Kotlin side is generated from this file (scripts/android/gen_bridge_contract.py). `blocking: true` marks a call that may wait on the network or run for seconds on local files; the app runs it apart from the core's frames, so it is not ordered with them or with other calls.",
+  "version": 1,
+  "enums": {
+    "Pinned": [
+      "no",
+      "yes",
+      "changed"
+    ],
+    "TelegramCheck": [
+      "ok",
+      "refused",
+      "unreachable"
+    ],
+    "GatewayState": [
+      "stopped",
+      "running",
+      "restarting",
+      "failed"
+    ],
+    "EndpointProbe": [
+      "unreachable",
+      "needs_key",
+      "refused",
+      "no_models"
+    ],
+    "ServerKind": [
+      "ollama",
+      "lmstudio",
+      "llamacpp",
+      "vllm",
+      "server"
+    ],
+    "Provenance": [
+      "hub",
+      "bundled",
+      "external",
+      "agent"
+    ],
+    "BackupPart": [
+      "sessions",
+      "memories",
+      "skills",
+      "config",
+      "jobs"
+    ],
+    "McpAuthKind": [
+      "none",
+      "oauth",
+      "api_key"
+    ],
+    "InstallState": [
+      "running",
+      "done",
+      "failed",
+      "cancelled"
+    ]
+  },
+  "records": {
+    "FoundServer": {
+      "base_url": "string",
+      "kind": "ServerKind",
+      "models": "[string]"
+    },
+    "SavedEndpoint": {
+      "id": "string",
+      "name": "string",
+      "base_url": "string",
+      "model": "string",
+      "has_key": "boolean"
+    },
+    "CronRun": {
+      "session_id": "string",
+      "started_at": "integer",
+      "ended_at": "integer?",
+      "messages": "integer",
+      "preview": "string?",
+      "active": "boolean"
+    },
+    "DeliveryTarget": {
+      "id": "string",
+      "name": "string",
+      "home_set": "boolean"
+    },
+    "PlatformEntry": {
+      "state": "string?",
+      "error_message": "string?",
+      "writer_pid": "integer?",
+      "updated_at": "string?"
+    },
+    "Personality": {
+      "name": "string",
+      "description": "string"
+    },
+    "SkillEntry": {
+      "name": "string",
+      "description": "string",
+      "category": "string?",
+      "enabled": "boolean",
+      "provenance": "Provenance",
+      "uses": "integer"
+    },
+    "HubOfficial": {
+      "name": "string",
+      "description": "string",
+      "category": "string?",
+      "identifier": "string"
+    },
+    "ToolsetLabel": {
+      "name": "string",
+      "label": "string"
+    },
+    "McpEnvSpec": {
+      "name": "string",
+      "prompt": "string",
+      "required": "boolean",
+      "secret": "boolean"
+    },
+    "McpCatalogEntry": {
+      "name": "string",
+      "description": "string",
+      "url": "string?",
+      "transport": "string",
+      "auth": "McpAuthKind",
+      "env": "[McpEnvSpec]",
+      "include": "[string]?",
+      "exclude": "[string]?",
+      "installed": "boolean",
+      "enabled": "boolean",
+      "connector_slug": "string?"
+    }
+  },
+  "calls": {
+    "runtime_facts": {
+      "summary": "The interpreter facts the app shows, and the core's release date (hermes_cli.__release_date__): the core's version on a phone, where get_version_info() has no stamp and no git and answers 'unknown'.",
+      "params": {},
+      "reply": {
+        "python": "string",
+        "sqlite": "string",
+        "fts5": "boolean",
+        "executable": "string",
+        "core_release": "string"
+      }
+    },
+    "secrets_changed": {
+      "summary": "The keystore changed: re-read its secrets; variables it no longer holds are revoked.",
+      "params": {},
+      "reply": {}
+    },
+    "gateway_start": {
+      "summary": "Starts the gateway in the :gateway process; state changes arrive as events.",
+      "params": {},
+      "reply": {
+        "gateway": "GatewayState"
+      }
+    },
+    "gateway_stop": {
+      "summary": "Asks the gateway to drain and stop; 'stopped' arrives as an event.",
+      "params": {},
+      "reply": {
+        "gateway": "GatewayState"
+      }
+    },
+    "gateway_state": {
+      "summary": "The gateway host's state in this process.",
+      "params": {},
+      "reply": {
+        "gateway": "GatewayState"
+      }
+    },
+    "save_custom_endpoint": {
+      "summary": "Adds a custom OpenAI-compatible endpoint to config.yaml (Dv20), or replaces the saved one id names (null for a new one); a new key goes to the keystore under key_env, an edit without one keeps the entry's key_env; forget names the endpoint's own keystore slot when config.yaml no longer names it after this save (the app forgets it, as for a delete), else null.",
+      "params": {
+        "id": "string?",
+        "name": "string",
+        "base_url": "string",
+        "model": "string",
+        "has_key": "boolean"
+      },
+      "reply": {
+        "id": "string",
+        "key_env": "string",
+        "forget": "string?"
+      }
+    },
+    "list_custom_endpoints": {
+      "summary": "The custom endpoints saved in config.yaml (providers.*), without keys: has_key says whether the entry names a key_env (the variable the app keeps its key under). key_envs is every key variable config.yaml names, under key_env or api_key_env in any section, listed or not; the app forgets a custom-endpoint slot it holds that is not among them.",
+      "params": {},
+      "reply": {
+        "endpoints": "[SavedEndpoint]",
+        "key_envs": "[string]"
+      }
+    },
+    "delete_custom_endpoint": {
+      "summary": "Removes a saved custom endpoint from config.yaml; names the keystore variable the app deletes (always the endpoint's own HERMES_CUSTOM_<ID>_API_KEY, never another provider's), and whether the default model was detached from it.",
+      "params": {
+        "id": "string"
+      },
+      "reply": {
+        "key_env": "string",
+        "was_default": "boolean"
+      }
+    },
+    "probe_endpoint": {
+      "summary": "The server behind an address (URL, host:port or a bare host on the known ports) and its models; the key, if any, is used for this probe only. Exactly one of found (the server and its models) and failure (why none was found) is null.",
+      "blocking": true,
+      "params": {
+        "address": "string",
+        "api_key": "string?"
+      },
+      "reply": {
+        "found": "FoundServer?",
+        "failure": "EndpointProbe?"
+      }
+    },
+    "discover_endpoints": {
+      "summary": "OpenAI-compatible servers on the phone's Wi-Fi network (its /24 at most, the known ports), each with its models.",
+      "blocking": true,
+      "params": {
+        "cidr": "string"
+      },
+      "reply": {
+        "found": "[FoundServer]"
+      }
+    },
+    "ssh_new_key": {
+      "summary": "A fresh Ed25519 identity; the app stores private in the keystore at once.",
+      "params": {},
+      "reply": {
+        "private": "string",
+        "public": "string"
+      }
+    },
+    "ssh_public_key": {
+      "summary": "The public half of the identity the core reads from the keystore.",
+      "params": {},
+      "reply": {
+        "public": "string"
+      }
+    },
+    "ssh_host_key": {
+      "summary": "A host's key, seen without logging in, and how it stands against known_hosts.",
+      "blocking": true,
+      "params": {
+        "host": "string",
+        "port": "integer"
+      },
+      "reply": {
+        "key": "string",
+        "fingerprint": "string",
+        "pinned": "Pinned"
+      }
+    },
+    "ssh_trust_host": {
+      "summary": "Pins a host key the user confirmed; refuses over a different pinned key.",
+      "params": {
+        "host": "string",
+        "port": "integer",
+        "key": "string"
+      },
+      "reply": {
+        "pinned": "Pinned"
+      }
+    },
+    "ssh_configure": {
+      "summary": "Points the terminal at the host (config.yaml terminal.*, Dv32).",
+      "params": {
+        "host": "string",
+        "user": "string",
+        "port": "integer"
+      },
+      "reply": {
+        "backend": "string"
+      }
+    },
+    "ssh_check_login": {
+      "summary": "Logs in once with the app's key against the pinned host key.",
+      "blocking": true,
+      "params": {
+        "host": "string",
+        "user": "string",
+        "port": "integer"
+      },
+      "reply": {
+        "ok": "boolean"
+      }
+    },
+    "terminal_status": {
+      "summary": "Where the terminal runs: user@host:port on an SSH host, null on the phone.",
+      "params": {},
+      "reply": {
+        "ssh_host": "string?"
+      }
+    },
+    "terminal_local": {
+      "summary": "Runs the terminal on the phone again (config.yaml terminal.backend, Dv32); the host stays pinned.",
+      "params": {},
+      "reply": {
+        "backend": "string"
+      }
+    },
+    "telegram_configure": {
+      "summary": "Sets the one Telegram user the bot answers (config.yaml telegram.allow_from, Dv32).",
+      "params": {
+        "allowed_user": "string"
+      },
+      "reply": {
+        "allowed_user": "string"
+      }
+    },
+    "telegram_status": {
+      "summary": "Whether a token is held, who may talk to the bot, whether this build has the Telegram SDK, whether config.yaml lets the bot run (enabled), and the core's own last entry for it in gateway_state.json (live, as written, with the pid that wrote it; null when there is none).",
+      "params": {},
+      "reply": {
+        "token": "boolean",
+        "allowed_user": "string?",
+        "sdk": "boolean",
+        "enabled": "boolean",
+        "live": "PlatformEntry?"
+      }
+    },
+    "telegram_check": {
+      "summary": "Asks Telegram who the held token belongs to: ok (bot named), refused by Telegram, or Telegram out of reach.",
+      "blocking": true,
+      "params": {},
+      "reply": {
+        "check": "TelegramCheck",
+        "bot": "string?",
+        "message": "string?"
+      }
+    },
+    "telegram_enable": {
+      "summary": "Switches the phone's Telegram bot on or off (config.yaml platforms.telegram.enabled, under the app's config lock; off beats a held token); the token and the allowed user stay, and the gateway applies it at its next start.",
+      "params": {
+        "enabled": "boolean"
+      },
+      "reply": {
+        "enabled": "boolean"
+      }
+    },
+    "cron_update": {
+      "summary": "Edits a job by its id through the core's cronjob update: null leaves a field as it is; the core judges the schedule and the prompt and refuses in its own words.",
+      "params": {
+        "job_id": "string",
+        "name": "string?",
+        "schedule": "string?",
+        "prompt": "string?",
+        "deliver": "string?",
+        "repeat": "integer?"
+      },
+      "reply": {
+        "job_id": "string"
+      }
+    },
+    "cron_trigger": {
+      "summary": "Makes a job due now (cron.jobs.trigger_job) so the gateway's ticker runs it at its next tick; nothing runs in this process. A finished or unknown job is refused.",
+      "params": {
+        "job_id": "string"
+      },
+      "reply": {
+        "next_run_at": "string?"
+      }
+    },
+    "cron_runs": {
+      "summary": "A job's past runs, newest first: its own cron sessions, at most limit (1 to 100); active means not ended and active in the last 300 s.",
+      "params": {
+        "job_id": "string",
+        "limit": "integer"
+      },
+      "reply": {
+        "runs": "[CronRun]"
+      }
+    },
+    "cron_delivery_targets": {
+      "summary": "The platforms a job can deliver to, each with whether its home channel is set; Bot Chat is left out and Local is the app's own.",
+      "params": {},
+      "reply": {
+        "targets": "[DeliveryTarget]"
+      }
+    },
+    "cron_scheduler": {
+      "summary": "The cron ticker's own record: seconds since its last heartbeat and last good tick (null when there is no stamp), its last error redacted, and the core's staleness threshold.",
+      "params": {},
+      "reply": {
+        "heartbeat_age_s": "integer?",
+        "success_age_s": "integer?",
+        "last_error": "string?",
+        "stale_after_s": "integer"
+      }
+    },
+    "cron_run_owned": {
+      "summary": "Whether the gateway's scheduler still owns a job's run session (the core's cron_run_scheduler_owned, the Dashboard's scheduler_owned): true while a live process holds its execution, false once none does or the run ended, null when the core cannot say (not a run, no such session, an older core).",
+      "params": {
+        "session_id": "string"
+      },
+      "reply": {
+        "owned": "boolean?"
+      }
+    },
+    "cron_warm_delivery_targets": {
+      "summary": "The app's startup calls are done: the job form's delivery targets (every plugin and platform adapter), then the skills listing's first scan, start loading in this process's waiting background thread, once; answers at once. Asked earlier, the load slows those calls through the GIL.",
+      "params": {},
+      "reply": {}
+    },
+    "settings_read": {
+      "summary": "The settings config.set refuses, as the core reads them: the approval timeout in seconds, the always-allowed command patterns, memory and the user profile on or off with their size limits in characters, and every personality the core offers with its preview line.",
+      "params": {},
+      "reply": {
+        "approvals_timeout_s": "integer",
+        "command_allowlist": "[string]",
+        "memory_enabled": "boolean",
+        "user_profile_enabled": "boolean",
+        "memory_char_limit": "integer",
+        "user_char_limit": "integer",
+        "personalities": "[Personality]"
+      }
+    },
+    "settings_write": {
+      "summary": "Changes only the given settings in config.yaml under the app's config lock (null leaves a field as it is; never .env); allowlist_remove takes those patterns out and makes this process stop honouring them at once, the gateway at its next start. applied says whether config.yaml changed; a timeout below 1, a negative limit, or a removal while command_allowlist on disk is not a list of strings is refused in words, with nothing written and nothing reconciled.",
+      "params": {
+        "approvals_timeout_s": "integer?",
+        "memory_enabled": "boolean?",
+        "user_profile_enabled": "boolean?",
+        "memory_char_limit": "integer?",
+        "user_char_limit": "integer?",
+        "allowlist_remove": "[string]"
+      },
+      "reply": {
+        "applied": "boolean"
+      }
+    },
+    "skills_list": {
+      "summary": "Every skill Hermes can use on this phone, in the core's listing order, with its description, its category (null when it has none), whether the global skills.disabled list leaves it on, where it came from (the REST route's classification: hub, else bundled, else external, else agent) and how often it was used (views, uses and patches, the core's activity_count).",
+      "params": {},
+      "reply": {
+        "skills": "[SkillEntry]"
+      }
+    },
+    "skills_enable": {
+      "summary": "Turns the named skills on or off in config.yaml's global skills.disabled under the app's config lock (never .env), then answers the list re-read; the core's essential skills are never turned off: a request to turn off only those is refused in the core's words, and among others they stay on.",
+      "params": {
+        "names": "[string]",
+        "enabled": "boolean"
+      },
+      "reply": {
+        "skills": "[SkillEntry]"
+      }
+    },
+    "session_export": {
+      "summary": "Writes the stored session's file into the app's cache (TMPDIR/exports/<title>-<id8>.json, replacing the previous export) as the core's GET /api/sessions/{id}/export streams it: the session row, then every message incl. inactive ones, paged by 500; a session with no stored row yet is refused in words and nothing is written.",
+      "params": {
+        "session_id": "string"
+      },
+      "reply": {
+        "path": "string",
+        "name": "string",
+        "bytes": "integer"
+      }
+    },
+    "skills_archived": {
+      "summary": "The skills in skills/.archive/, by archive directory name, sorted (tools.skill_usage.list_archived_skill_names).",
+      "params": {},
+      "reply": {
+        "names": "[string]"
+      }
+    },
+    "skills_restore": {
+      "summary": "Moves an archived skill back as `hermes curator restore` does (tools.skill_usage.restore_skill, as the user) and answers the list re-read; a refused restore is answered in the core's words and moves nothing.",
+      "params": {
+        "name": "string"
+      },
+      "reply": {
+        "skills": "[SkillEntry]"
+      }
+    },
+    "hub_official": {
+      "summary": "The official optional skills shipped with the core, read locally without the network (OptionalSkillSource().list_local(), as GET /api/skills/hub/official): name, description, the identifier's category (null when it has none) and the identifier skills.manage install takes.",
+      "params": {},
+      "reply": {
+        "skills": "[HubOfficial]"
+      }
+    },
+    "hub_scan": {
+      "summary": "The install-time security scan of a hub skill without installing it (as GET /api/skills/hub/scan): the verdict, whether the install policy allows it (a policy that would ask is not allowed), one line per finding, most severe first, and the source's trust level; it fetches the bundle, so it may wait on the network.",
+      "blocking": true,
+      "params": {
+        "identifier": "string"
+      },
+      "reply": {
+        "verdict": "string",
+        "allowed": "boolean",
+        "findings": "[string]",
+        "trust": "string"
+      }
+    },
+    "toolsets_keys": {
+      "summary": "The configurable toolsets whose required keys are missing (hermes_cli.tools_config._toolset_has_keys, as GET /api/tools/toolsets's configured flag): names only, never a value; and the toolsets tools.configure switches for the CLI platform, with their GUI labels (as the `hermes tools` checklist and GET /api/tools/toolsets list them).",
+      "blocking": true,
+      "params": {},
+      "reply": {
+        "needs_keys": "[string]",
+        "switchable": "[ToolsetLabel]"
+      }
+    },
+    "backup_create": {
+      "summary": "Zips exactly five parts of the Hermes home into the app's cache (TMPDIR/exports/hermes-backup-<UTC>.zip, replacing only the previous backup): sessions (state.db, a SQLite backup-API snapshot), memories, skills (with the archive), config.yaml with every key field blanked, and cron without its lock and pid files; never .env, auth.json, vault files, mcp-tokens or a keystore secret (D49). Answers the file and the parts it holds.",
+      "blocking": true,
+      "params": {},
+      "reply": {
+        "path": "string",
+        "name": "string",
+        "bytes": "integer",
+        "parts": "[BackupPart]"
+      }
+    },
+    "backup_inspect": {
+      "summary": "Reads what a Hermes backup zip (the app's or `hermes backup`'s) would restore, writing nothing: the parts it holds, the members a restore would skip and the sessions its database holds. Refused in words, as backup_restore refuses a file that is no zip, no Hermes backup or holds nothing to restore; never refused for a running turn or gateway (it writes nothing). The file is never deleted.",
+      "blocking": true,
+      "params": {
+        "path": "string"
+      },
+      "reply": {
+        "parts": "[BackupPart]",
+        "skipped": "integer",
+        "sessions": "integer"
+      }
+    },
+    "backup_restore": {
+      "summary": "Restores only those five parts from a Hermes backup zip (the app's or `hermes backup`'s), with config.yaml's key fields blanked and state.db written page by page into the open file; every other member is skipped and counted. Refused in words, before anything is written, while a turn runs, while the always-on gateway runs, or when the file holds nothing to restore. Answers the parts restored, the members skipped and the sessions the restored database holds.",
+      "blocking": true,
+      "params": {
+        "path": "string"
+      },
+      "reply": {
+        "restored": "[BackupPart]",
+        "skipped": "integer",
+        "sessions": "integer"
+      }
+    },
+    "mcp_catalog": {
+      "summary": "The curated MCP catalog shipped with the core, read locally without the network (as GET /api/mcp/catalog): each manifest's name, description, url (null for none), transport type, auth type, the env values it needs (name, prompt, required, secret — never a value), its tool defaults (include or exclude, null when it has none), whether it is configured and on, and its connector slug.",
+      "blocking": true,
+      "params": {},
+      "reply": {
+        "entries": "[McpCatalogEntry]"
+      }
+    },
+    "mcp_set_enabled": {
+      "summary": "Turns one configured MCP server on or off (config.yaml mcp_servers.<name>.enabled, as PUT /api/mcp/servers/{name}/enabled) under the app's config lock, never .env; no other server or key changes; a plugin's server, an unknown one or a malformed entry is refused in the route's words. Takes effect at the next reload.mcp.",
+      "params": {
+        "name": "string",
+        "enabled": "boolean"
+      },
+      "reply": {
+        "enabled": "boolean"
+      }
+    },
+    "mcp_key_ref": {
+      "summary": "Points one header of a configured remote MCP server at a keystore variable, writing only the template ('Bearer ${VAR}' for Authorization, else '${VAR}') under the app's config lock, never a value and never .env; env_var must be the name the core derives for that server and header (MCP_<NAME>_API_KEY for Authorization, else MCP_<NAME>_<HEADER>); the server's other headers stay. Answers the server's header names, never their values.",
+      "params": {
+        "name": "string",
+        "header": "string",
+        "env_var": "string"
+      },
+      "reply": {
+        "headers": "[string]"
+      }
+    },
+    "mcp_pip_start": {
+      "summary": "Starts installing one PyPI distribution (a name, optionally ==version; nothing else) for an MCP server as a child of the app's Python launcher (`$HOME/bin/python3 -m pip install --isolated --only-binary=:all: --target …`), into HERMES_HOME/mcp-packages/<server> once pip succeeds; answers at once with the job, one job at a time; the child gets no secret.",
+      "params": {
+        "server": "string",
+        "requirement": "string"
+      },
+      "reply": {
+        "job": "string"
+      }
+    },
+    "mcp_pip_poll": {
+      "summary": "The install job's state and the end of its output (redacted); a finished job's package is moved into place by the poll that sees it end.",
+      "params": {
+        "job": "string"
+      },
+      "reply": {
+        "state": "InstallState",
+        "tail": "string"
+      }
+    },
+    "mcp_pip_cancel": {
+      "summary": "Kills the install job's child and drops what it installed; a finished job answers its final state.",
+      "params": {
+        "job": "string"
+      },
+      "reply": {
+        "state": "InstallState"
+      }
+    }
+  },
+  "events": {
+    "gateway_state": {
+      "summary": "One state change of the :gateway process's gateway host, as a JSON line through native.emit; reason only for failed.",
+      "fields": {
+        "gateway": "GatewayState",
+        "reason": "string?"
+      }
+    }
+  },
+  "secrets": {
+    "ssh_identity": "TERMINAL_SSH_PRIVATE_KEY",
+    "telegram_bot_token": "TELEGRAM_BOT_TOKEN",
+    "custom_endpoint_slot_prefix": "HERMES_CUSTOM_",
+    "custom_endpoint_slot_suffix": "_API_KEY"
+  }
+}

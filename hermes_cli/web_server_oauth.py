@@ -301,7 +301,8 @@ def _nous_plain_poller(session_id: str, sess: dict[str, Any]) -> None:
     ``_nous_promotion_poller`` instead; this is the "connect another Nous account" path.
     """
     from hermes_cli.web_server_profiles import _profile_scope
-    from hermes_cli.auth import _poll_for_token, persist_nous_credentials, refresh_nous_oauth_from_state
+    from hermes_cli.auth import (
+        _poll_for_token, nous_auth_state_from_token, persist_nous_credentials, refresh_nous_oauth_from_state)
     from hermes_cli import anon_auth
     import httpx
     portal_base_url, client_id = sess["portal_base_url"], sess["client_id"]
@@ -324,23 +325,8 @@ def _nous_plain_poller(session_id: str, sess: dict[str, Any]) -> None:
     if _cancelled():
         return
     # Same post-processing as _nous_device_code_login (validate/refresh JWT)
-    now = datetime.now(UTC)
-    token_ttl = int(token_data.get("expires_in") or 0)
-    auth_state = {
-        "portal_base_url": portal_base_url,
-        "inference_base_url": token_data.get("inference_base_url"),
-        "client_id": client_id,
-        "scope": token_data.get("scope") or sess.get("scope"),
-        "token_type": token_data.get("token_type", "Bearer"),
-        "access_token": token_data["access_token"],
-        "refresh_token": token_data.get("refresh_token"),
-        "obtained_at": now.isoformat(),
-        "expires_at": (
-            datetime.fromtimestamp(now.timestamp() + token_ttl, tz=UTC).isoformat()
-            if token_ttl else None
-        ),
-        "expires_in": token_ttl,
-    }
+    auth_state = nous_auth_state_from_token(
+        token_data, portal_base_url=portal_base_url, client_id=client_id, scope=sess.get("scope"))
     # The profile comes from the poller's own session dict: a cancel or the 15-minute sweep drops
     # the registry entry, and a lookup by id would then save into the dashboard's launch profile.
     with _profile_scope(sess.get("profile")):

@@ -377,22 +377,23 @@ def _(rid, params: dict) -> dict:
     skew = _model_skew_err(rid)
     if skew is not None:
         return skew
-    from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.config import is_managed
+    from hermes_cli.providers import api_key_auth
     slug, api_key = (params.get("slug") or "").strip(), (params.get("api_key") or "").strip()
     if not slug or not api_key:
         return _err(rid, 4001, "slug and api_key are required")
     if is_managed():
         return _err(rid, 4006, "managed install — credentials are read-only")
-    if not (pconfig := PROVIDER_REGISTRY.get(slug)):
+    if (auth := api_key_auth(slug)) is None:
         return _err(rid, 4002, f"unknown provider: {slug}")
-    if pconfig.auth_type != "api_key":
-        return _err(rid, 4003, f"{pconfig.name} uses {pconfig.auth_type} auth — run `hermes model` to configure")
-    if not pconfig.api_key_env_vars:
-        return _err(rid, 4004, f"no env var defined for {pconfig.name}")
+    name, env_vars = auth.name, auth.env_vars
+    if auth.auth_type != "api_key":
+        return _err(rid, 4003, f"{name} uses {auth.auth_type} auth — run `hermes model` to configure")
+    if not env_vars:
+        return _err(rid, 4004, f"no env var defined for {name}")
     # Save the key to ~/.hermes/.env via the unified credential lifecycle so any stale config.yaml mirror of
     # the previous key (model.api_key, custom_providers[*].api_key) is rotated in the same action (#62269).
-    env_var = pconfig.api_key_env_vars[0]
+    env_var = env_vars[0]
     from hermes_cli.config import load_env
     from hermes_cli.credential_lifecycle import save_provider_env_credential  # also rotates stale config.yaml mirrors
     previous = load_env().get(env_var)
@@ -412,7 +413,7 @@ def _(rid, params: dict) -> dict:
     payload = build_models_payload(_model_picker_context(_session_agent(params)), picker_hints=True, max_models=50)
     provider_data = next((p for p in payload["providers"] if p["slug"] == slug), None)
     if provider_data is None:  # key saved but provider didn't appear — still success
-        provider_data = {"slug": slug, "name": pconfig.name, "is_current": False, "models": [], "total_models": 0}
+        provider_data = {"slug": slug, "name": name, "is_current": False, "models": [], "total_models": 0}
     provider_data["authenticated"] = True  # synthetic fallback bypasses picker_hints
     return _ok(rid, {"provider": provider_data})
 
@@ -423,14 +424,15 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Remove all credentials (env keys AND OAuth/pool state) for provider ``slug``."""
     from hermes_cli import managed_scope
-    from hermes_cli.auth import PROVIDER_REGISTRY, clear_provider_auth
+    from hermes_cli.auth import clear_provider_auth
     from hermes_cli.config import env_write_refusal, load_env
     from hermes_cli.credential_lifecycle import remove_provider_env_credential
+    from hermes_cli.providers import ApiKeyAuth, api_key_auth
     if not (slug := (params.get("slug") or "").strip()):
         return _err(rid, 4001, "slug is required")
-    pconfig = PROVIDER_REGISTRY.get(slug)
+    auth = api_key_auth(slug) or ApiKeyAuth(auth_type="", name=slug, env_vars=())
+    name, env_vars = auth.name, auth.env_vars
     # Remove EVERY env var plus its mirrors or the provider resurrects in the picker after restart.
-    env_vars = (pconfig.api_key_env_vars if pconfig else None) or ()
     # Ask the .env lock about every var before removing any: a refusal part-way through left the earlier stores
     # stripped. A locked var that holds nothing is no refusal (a package-managed install keeps keys in auth.json).
     removable = []
@@ -443,7 +445,43 @@ def _(rid, params: dict) -> dict:
     cleared_auth = clear_provider_auth(slug)  # full disconnect: OAuth grants go too
     if not cleared_env and not cleared_auth:
         return _err(rid, 4005, f"no credentials found for {slug}")
-    return _ok(rid, {"slug": slug, "name": pconfig.name if pconfig else slug, "disconnected": True})
+    return _ok(rid, {"slug": slug, "name": name, "disconnected": True})
+
+
+def _resolved_home() -> str:
+    from hermes_constants import get_hermes_home
+    return str(get_hermes_home().expanduser().resolve(strict=False))
+
+
+@method("nous.login.start")
+@_profile_scoped
+@_catch(5037)
+def _(rid, params: dict) -> dict:
+    """Start a Nous Portal device-code sign-in → ``{login_id, user_code, verification_url, expires_in,
+    poll_interval}``: the client shows the code, opens the URL and polls ``nous.login.poll`` (for
+    clients without the dashboard's ``/api/providers/oauth`` routes). On the RPC pool (_LONG_HANDLERS)."""
+    from tui_gateway import nous_login
+    try:
+        return _ok(rid, nous_login.start(_resolved_home()))
+    except nous_login.GuestIdentity as e:
+        return _err(rid, 4036, str(e))
+
+
+@method("nous.login.poll")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """``{status: pending|approved|expired|cancelled|error, error_message?, model?}``; ``approved``
+    means the account is stored (auth.json) and Nous lists as signed in."""
+    from tui_gateway import nous_login
+    return _ok(rid, nous_login.poll(str(params.get("login_id") or ""), _resolved_home()))
+
+
+@method("nous.login.cancel")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Abandon a pending sign-in → ``{cancelled}``; an approval that arrives later is not stored."""
+    from tui_gateway import nous_login
+    return _ok(rid, nous_login.cancel(str(params.get("login_id") or ""), _resolved_home()))
 
 
 def register(server) -> None:

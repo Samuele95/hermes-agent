@@ -1,0 +1,319 @@
+package com.nousresearch.hermes.android.gateway
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/** The always-on gateway's controls (D23): an observed switch, an opt-in boot start, one battery request. */
+class GatewayControlTest {
+    private val launched = mutableListOf<String>()
+    private var running = GatewayStatus.STOPPED
+    private var reason: String? = null
+    private var exempt = false
+    private var refuse = false
+    private val settings = object : GatewaySettings {
+        override var startAtBoot = false
+    }
+    private val control = GatewayControl(settings, object : GatewayLauncher {
+        override fun start() {
+            if (refuse) throw IllegalStateException("not allowed")
+            launched += "start"
+        }
+        override fun stop() { launched += "stop" }
+    }, observe = { GatewaySeen(running, reason) }, batteryExempt = { exempt })
+
+    @Test
+    fun theScreenShowsWhatRunsNotAStoredWish() {
+        running = GatewayStatus.RUNNING  // e.g. started at boot, or before the app's process was restarted
+        control.open()
+
+        assertEquals(GatewayUi(GatewayStatus.RUNNING, startAtBoot = false), control.state.value)
+
+        running = GatewayStatus.STOPPED  // stopped from its notification, or by its own failure
+        control.refresh()
+
+        assertEquals(GatewayStatus.STOPPED, control.state.value?.status)
+    }
+
+    @Test
+    fun aFailureIsShownWithItsReason() {
+        running = GatewayStatus.FAILED
+        reason = "no network"
+        control.open()
+
+        assertEquals(GatewayUi(GatewayStatus.FAILED, startAtBoot = false, reason = "no network"), control.state.value)
+
+        running = GatewayStatus.RUNNING
+        reason = null
+        control.refresh()
+
+        assertNull(control.state.value?.reason)
+
+        running = GatewayStatus.FAILED
+        reason = "exited with code 78"
+        control.refresh()
+
+        assertEquals("exited with code 78", control.state.value?.reason)
+    }
+
+    @Test
+    fun turningItOnStartsTheGatewayAndAsksForTheBatteryExemptionOnce() {
+        control.open()
+
+        control.turnOn()
+
+        assertEquals(listOf("start"), launched)
+        assertEquals(GatewayStatus.STARTING, control.state.value?.status)
+        assertTrue(control.state.value!!.askBatteryExemption)
+        control.batteryAsked()
+        assertFalse(control.state.value!!.askBatteryExemption)
+    }
+
+    @Test
+    fun anExemptAppIsNotAskedAgain() {
+        exempt = true
+        control.open()
+
+        control.turnOn()
+
+        assertFalse(control.state.value!!.askBatteryExemption)
+    }
+
+    @Test
+    fun turningItOffStopsTheGateway() {
+        running = GatewayStatus.RUNNING
+        control.open()
+
+        running = GatewayStatus.STOPPED
+        control.turnOff()
+
+        assertEquals(listOf("stop"), launched)
+        assertEquals(GatewayStatus.STOPPED, control.state.value?.status)
+    }
+
+    @Test
+    fun aBootStartsTheGatewayOnlyWhenTheUserAskedForIt() {
+        control.onBoot()
+        assertEquals(emptyList<String>(), launched)
+
+        control.open()
+        control.setStartAtBoot(true)
+        control.onBoot()
+
+        assertTrue(settings.startAtBoot)
+        assertTrue(control.state.value!!.startAtBoot)
+        assertEquals(listOf("start"), launched)
+    }
+
+    @Test
+    fun aClosedScreenHasNoState() {
+        control.open()
+        control.close()
+        control.refresh()
+
+        assertNull(control.state.value)
+    }
+
+    @Test
+    fun restartingARunningGatewayStartsItAgainOnceItHasStopped() {
+        running = GatewayStatus.RUNNING
+        control.open()
+
+        control.restart()
+        control.refresh()  // still draining: the old process has not stopped yet
+        assertEquals(listOf("stop"), launched)
+
+        running = GatewayStatus.STOPPED
+        control.refresh()
+        assertEquals(listOf("stop", "start"), launched)  // started only after it stopped
+        assertEquals(GatewayStatus.STARTING, control.state.value?.status)
+
+        running = GatewayStatus.STARTING  // the new process is coming up
+        control.refresh()
+        running = GatewayStatus.FAILED  // and fails on its own: that is shown, not restarted again
+        control.refresh()
+        assertEquals(listOf("stop", "start"), launched)  // started once
+        assertEquals(GatewayStatus.FAILED, control.state.value?.status)
+    }
+
+    @Test
+    fun restartingAGatewayThatDoesNotRunJustStartsIt() {
+        for (status in listOf(GatewayStatus.STOPPED, GatewayStatus.FAILED)) {
+            launched.clear()
+            running = status
+            control.open()
+
+            control.restart()
+
+            assertEquals(listOf("start"), launched)
+        }
+    }
+
+    @Test
+    fun aRestartWaitsUntilTheOldGatewayHasEnded() {
+        running = GatewayStatus.RUNNING
+        control.open()
+
+        control.restart()
+        running = GatewayStatus.STOPPING  // stop recorded, the old process still alive
+        control.refresh()
+        assertEquals(listOf("stop"), launched)
+
+        running = GatewayStatus.STOPPED
+        control.refresh()
+        assertEquals(listOf("stop", "start"), launched)
+    }
+
+    @Test
+    fun aRestartFinishesWithTheScreenClosed() {
+        running = GatewayStatus.RUNNING
+
+        control.restart()  // the screen may close right after the tap
+        assertTrue(control.restarting)
+        running = GatewayStatus.STOPPED
+        control.refresh()
+
+        assertEquals(listOf("stop", "start"), launched)
+        assertFalse(control.restarting)
+    }
+
+    @Test
+    fun turningItOffDuringARestartKeepsItOff() {
+        running = GatewayStatus.RUNNING
+        control.open()
+
+        control.restart()
+        control.turnOff()
+        running = GatewayStatus.STOPPED
+        control.refresh()
+
+        assertEquals(listOf("stop", "stop"), launched)  // no start after the user turned it off
+        assertEquals(GatewayStatus.STOPPED, control.state.value?.status)
+    }
+
+    @Test
+    fun turningItOnWhileTheOldGatewayStillStopsStartsItOnceThatOneHasEnded() {
+        running = GatewayStatus.STOPPING
+        control.open()
+
+        control.turnOn()
+        assertEquals(emptyList<String>(), launched)  // not into the process that is about to end
+
+        running = GatewayStatus.STOPPED
+        control.refresh()
+        assertEquals(listOf("start"), launched)
+    }
+
+    @Test
+    fun aRestartGivenUpOnStartsNothingLater() {
+        running = GatewayStatus.RUNNING
+        control.open()
+        control.restart()
+
+        control.abandonPendingStart()  // the old gateway did not end in time
+        running = GatewayStatus.STOPPED
+        control.refresh()
+
+        assertEquals(listOf("stop"), launched)
+        assertFalse(control.restarting)
+    }
+
+    @Test
+    fun aRestartInProgressKeepsSayingSo() {
+        running = GatewayStatus.RUNNING
+        control.open()
+
+        control.restart()
+        running = GatewayStatus.STOPPING
+        control.refresh()
+
+        assertEquals(GatewayStatus.RESTARTING, control.state.value?.status)
+    }
+
+    @Test
+    fun aGatewayThatDiedUnplannedIsStartedAgain() {
+        running = GatewayStatus.DIED
+
+        assertTrue(control.revive())
+        assertEquals(listOf("start"), launched)
+        assertTrue(control.restarting)  // seen through until its process is up
+
+        running = GatewayStatus.STARTING
+        control.refresh()
+        assertFalse(control.restarting)
+    }
+
+    @Test
+    fun openingTheScreenRevivesADeadGatewayAndShowsItComingUp() {
+        running = GatewayStatus.DIED
+
+        control.open()
+        assertEquals(listOf("start"), launched)
+        assertEquals(GatewayStatus.STARTING, control.state.value?.status)
+
+        control.refresh()  // the new process is not up yet: never "Off" in between
+        assertEquals(GatewayStatus.STARTING, control.state.value?.status)
+
+        running = GatewayStatus.RUNNING
+        control.refresh()
+        assertEquals(GatewayStatus.RUNNING, control.state.value?.status)
+    }
+
+    @Test
+    fun onlyADiedGatewayIsRevived() {
+        for (status in GatewayStatus.entries - GatewayStatus.DIED) {
+            running = status
+
+            assertFalse("$status revived", control.revive())
+            control.open()
+
+            assertEquals("$status revived", emptyList<String>(), launched)
+        }
+    }
+
+    @Test
+    fun aStartTheSystemRefusesLeavesTheGatewayShownAsDied() {
+        refuse = true
+        running = GatewayStatus.DIED
+
+        control.open()
+
+        assertEquals(GatewayStatus.DIED, control.state.value?.status)
+        assertFalse(control.restarting)
+    }
+
+    @Test
+    fun aRevivalThatNeverComesUpIsGivenUp() {
+        running = GatewayStatus.DIED
+        control.open()
+
+        control.abandonPendingStart()
+        control.refresh()
+
+        assertEquals(GatewayStatus.DIED, control.state.value?.status)
+        assertFalse(control.restarting)
+    }
+
+    @Test
+    fun aDiedGatewayIsRestartedByStartingIt() {
+        running = GatewayStatus.DIED
+
+        control.restart()
+
+        assertEquals(listOf("start"), launched)  // no stop to send to a process that is gone
+    }
+
+    @Test
+    fun aRestartWhoseOldGatewayDiedStartsTheNewOne() {
+        running = GatewayStatus.RUNNING
+        control.open()
+        control.restart()
+
+        running = GatewayStatus.DIED  // killed while it drained
+        control.refresh()
+
+        assertEquals(listOf("stop", "start"), launched)
+    }
+}

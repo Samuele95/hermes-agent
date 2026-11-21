@@ -110,6 +110,48 @@ method("model.disconnect", params=ModelDisconnectParams, result=ModelDisconnectR
        doc="Remove every credential (env keys and OAuth state) for a provider.")
 
 
+class NousLoginStartParams(ProfileParams):
+    session_id: str | None = None
+
+
+class NousLoginStartResult(Result):
+    login_id: str
+    user_code: str
+    verification_url: str
+    expires_in: int
+    poll_interval: int
+
+
+method("nous.login.start", params=NousLoginStartParams, result=NousLoginStartResult,
+       doc="Start a Nous Portal device-code sign-in: show user_code, open verification_url, poll nous.login.poll.")
+
+
+class NousLoginParams(ProfileParams):
+    login_id: str
+    session_id: str | None = None
+
+
+class NousLoginPollResult(Result):
+    """``approved``: the account is stored (auth.json) and Nous lists as signed in; ``model`` is the
+    default the config now carries when the sign-in moved it."""
+
+    status: Literal["pending", "approved", "expired", "cancelled", "error"]
+    error_message: str | None = None
+    model: str | None = None
+
+
+method("nous.login.poll", params=NousLoginParams, result=NousLoginPollResult,
+       doc="A Nous sign-in's progress; an unknown or other-profile login_id is an error status.")
+
+
+class NousLoginCancelResult(Result):
+    cancelled: bool
+
+
+method("nous.login.cancel", params=NousLoginParams, result=NousLoginCancelResult,
+       doc="Abandon a pending Nous sign-in; an approval that arrives later is not stored.")
+
+
 # ── profiles (methods_profiles) ───────────────────────────────────────────────────────────────
 
 

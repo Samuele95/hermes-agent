@@ -2023,6 +2023,60 @@
       }
     },
     {
+      "name": "nous.login.cancel",
+      "summary": "Abandon a pending Nous sign-in; an approval that arrives later is not stored.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/NousLoginParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/NousLoginCancelResult"
+        }
+      }
+    },
+    {
+      "name": "nous.login.poll",
+      "summary": "A Nous sign-in's progress; an unknown or other-profile login_id is an error status.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/NousLoginParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/NousLoginPollResult"
+        }
+      }
+    },
+    {
+      "name": "nous.login.start",
+      "summary": "Start a Nous Portal device-code sign-in: show user_code, open verification_url, poll nous.login.poll.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/NousLoginStartParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/NousLoginStartResult"
+        }
+      }
+    },
+    {
       "name": "onboarding.set_run",
       "summary": "Write onboarding.run in the root profile's config.yaml; answers the new state.",
       "params": [
@@ -20229,6 +20283,169 @@
           "kind"
         ],
         "title": "NotificationShowPayload",
+        "type": "object"
+      },
+      "NousLoginCancelResult": {
+        "additionalProperties": false,
+        "properties": {
+          "cancelled": {
+            "title": "Cancelled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "cancelled"
+        ],
+        "title": "NousLoginCancelResult",
+        "type": "object"
+      },
+      "NousLoginParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "login_id": {
+            "title": "Login Id",
+            "type": "string"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          }
+        },
+        "required": [
+          "login_id"
+        ],
+        "title": "NousLoginParams",
+        "type": "object"
+      },
+      "NousLoginPollResult": {
+        "additionalProperties": false,
+        "description": "``approved``: the account is stored (auth.json) and Nous lists as signed in; ``model`` is the\ndefault the config now carries when the sign-in moved it.",
+        "properties": {
+          "status": {
+            "enum": [
+              "pending",
+              "approved",
+              "expired",
+              "cancelled",
+              "error"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error Message"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "NousLoginPollResult",
+        "type": "object"
+      },
+      "NousLoginStartParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          }
+        },
+        "title": "NousLoginStartParams",
+        "type": "object"
+      },
+      "NousLoginStartResult": {
+        "additionalProperties": false,
+        "properties": {
+          "login_id": {
+            "title": "Login Id",
+            "type": "string"
+          },
+          "user_code": {
+            "title": "User Code",
+            "type": "string"
+          },
+          "verification_url": {
+            "title": "Verification Url",
+            "type": "string"
+          },
+          "expires_in": {
+            "title": "Expires In",
+            "type": "integer"
+          },
+          "poll_interval": {
+            "title": "Poll Interval",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "login_id",
+          "user_code",
+          "verification_url",
+          "expires_in",
+          "poll_interval"
+        ],
+        "title": "NousLoginStartResult",
         "type": "object"
       },
       "OkResult": {
