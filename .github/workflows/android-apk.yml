@@ -7,6 +7,8 @@ name: Android app
 #   2. apk (ubuntu-24.04): Gradle builds the APK around that payload and runs the
 #      app's JVM tests. Google's SDK tools are x86-64 only, so this job is not arm.
 # The APK is uploaded as an artifact; nothing is published or signed for release.
+# The payload job also uploads the wheel set as android-wheelhouse: a pull_request run builds at the
+# merge commit, so a local build takes that wheel set and assembles it with its own --ref HEAD.
 # Triggers: the app, its payload scripts, and what decides the wheel closure (pm/, pyproject.toml,
 # uv.lock). A core-only change does not rebuild the APK; workflow_dispatch does.
 
@@ -46,8 +48,9 @@ env:
   # from the release after its sigstore bundle verified; the assembler refuses any other file.
   PYTHON_ANDROID_URL: https://www.python.org/ftp/python/3.14.7/python-3.14.7-aarch64-linux-android.tar.gz
   PYTHON_ANDROID_SHA256: 6d50cc3aa66e414a439594089bcdfb5f1264358155c70c1f00471c24cfb477fb
-  # Optional features the app ships as pure-Python wheels: the SSH transport, the gateway's Telegram.
-  APP_EXTRAS: --extra asyncssh --extra telegram
+  # Optional features the app ships: the SSH transport, the gateway's Telegram, the MCP client SDK
+  # (its closure builds one native wheel, rpds-py).
+  APP_EXTRAS: --extra asyncssh --extra telegram --extra mcp
 
 jobs:
   payload:
@@ -69,6 +72,20 @@ jobs:
           bash scripts/termux/build_uv.sh "$out"
           # shellcheck disable=SC2086  # APP_EXTRAS is a list of flags
           bash scripts/termux/termux_build.sh --repo . --commit "$GITHUB_SHA" --out "$out" $APP_EXTRAS
+      - name: Upload the wheel set for local payload builds
+        # On a pull_request run $GITHUB_SHA is the merge commit, so the assembled payload below snapshots a
+        # tree that is not the branch tip. A local build takes this wheel set instead, checks index.json's
+        # inputs against its own uv.lock, and assembles with --ref HEAD.
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: android-wheelhouse
+          path: |
+            android-build/termux/wheelhouse
+            android-build/termux/runtime-libs
+            android-build/termux/index.json
+            android-build/termux/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
       - name: Assemble the payload
         run: |
           curl --fail --location --retry 3 --output python-android.tar.gz "$PYTHON_ANDROID_URL"
